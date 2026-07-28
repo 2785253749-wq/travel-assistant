@@ -1,12 +1,23 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from app.core.config import get_settings
+from app.core.logging import configure_logging, request_context
 from app.graph import chat
 from app.schemas import ChatRequest, ChatResponse, TravelProfile
 
 BASE = Path(__file__).resolve().parent
-app = FastAPI(title="旅行助手", version="0.1.0")
+configure_logging()
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    get_settings()
+    yield
+
+app = FastAPI(title="旅行助手", version="0.1.0", lifespan=lifespan)
+app.middleware("http")(request_context)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 
 @app.get("/", include_in_schema=False)
