@@ -6,13 +6,19 @@ class TravelProfile(BaseModel):
     destination: str | None = None
     start_date: str | None = None
     end_date: str | None = None
-    travelers: int | None = Field(default=None, ge=1)
+    travelers: int | None = None
     budget_cny: int | None = Field(default=None, ge=0)
     preferences: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
 
 class ExtractionResult(BaseModel):
     profile: TravelProfile
+
+
+class ProfileIssue(BaseModel):
+    code: str
+    field: str
+    message: str
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
