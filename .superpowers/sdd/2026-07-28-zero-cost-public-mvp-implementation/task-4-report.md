@@ -66,3 +66,35 @@ Result: **45 passed**, the same one third-party warning.
 ### Remaining concern
 
 No live Supabase project was contacted. The JWT client composition and public RPC are verified with no-network fakes and migration contracts; deployment must apply migration 002 before enabling the Supabase-configured application.
+
+## Fix round 2/5 (2026-07-29)
+
+### Regression fixes
+
+- Restored Supabase share-row deserialization after `create_share_link`, including UUIDs and timezone-aware timestamp fields. A fake Supabase insert response now exercises the production adapter path without network access.
+- Development/test mode without Supabase now shares one credential-free `InMemoryTripRepository` between private and public service dependencies. The no-override API regression covers create trip, create share, and anonymous share read end to end.
+- Removed `lru_cache` from both request-facing service dependencies. Every Supabase private request now constructs a new JWT-scoped repository/client, even when the same verified bearer is reused. Only the credential-free development repository has a bounded one-entry cache.
+
+### TDD evidence
+
+Focused RED command:
+
+```powershell
+Set-Location W:\; & T:\.venv\Scripts\python.exe -m pytest tests/unit/test_trip_production_wiring.py tests/integration/test_trip_api.py -v
+```
+
+Result before implementation: **3 failed, 5 passed**. The failures precisely reproduced JWT client reuse, the missing `_share_from_row`, and a development anonymous share read returning 404.
+
+The same focused command after the minimal fixes returned **8 passed**, with one existing third-party Starlette/httpx deprecation warning.
+
+Full verification command:
+
+```powershell
+Set-Location W:\; & T:\.venv\Scripts\python.exe -m pytest -v
+```
+
+Result: **48 passed**, with the same one third-party warning.
+
+### Remaining concern
+
+The Supabase adapter remains verified with representative fake responses and the RPC/migration contract rather than a live project. No bearer token, scoped client, service key, or other credential is retained in an application-level cache.

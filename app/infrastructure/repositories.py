@@ -137,6 +137,26 @@ class SupabaseTripRepository:
     def _trip_from_row(row: dict) -> Trip:
         return Trip(id=UUID(row["id"]), user_id=UUID(row["user_id"]), title=row["title"], status=row["status"], profile=TravelProfile.model_validate(row["profile"]), itinerary=row.get("itinerary"), created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else None, updated_at=datetime.fromisoformat(row["updated_at"]) if row.get("updated_at") else None)
 
+    @staticmethod
+    def _share_from_row(row: dict) -> ShareLink:
+        return ShareLink(
+            id=UUID(row["id"]),
+            user_id=UUID(row["user_id"]),
+            trip_id=UUID(row["trip_id"]),
+            token_hash=row["token_hash"],
+            expires_at=datetime.fromisoformat(row["expires_at"]),
+            revoked_at=(
+                datetime.fromisoformat(row["revoked_at"])
+                if row.get("revoked_at")
+                else None
+            ),
+            created_at=(
+                datetime.fromisoformat(row["created_at"])
+                if row.get("created_at")
+                else None
+            ),
+        )
+
 
 
 class SupabasePublicShareRepository:

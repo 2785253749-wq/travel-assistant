@@ -92,17 +92,21 @@ def _uses_supabase() -> bool:
     )
 
 
-@lru_cache
+@lru_cache(maxsize=1)
+def get_development_repository() -> InMemoryTripRepository:
+    """Share one credential-free store across local private and public dependencies."""
+    return InMemoryTripRepository()
+
+
 def get_trip_service(user: CurrentUser) -> TripService:
     if _uses_supabase():
         if not user.access_token:
             raise RuntimeError("A verified bearer token is required for Supabase trip access")
         return TripService(create_user_scoped_supabase_repository(user.access_token))
-    return TripService(InMemoryTripRepository())
+    return TripService(get_development_repository())
 
 
-@lru_cache
 def get_public_trip_service() -> TripService:
     if _uses_supabase():
         return TripService(InMemoryTripRepository(), create_public_share_repository())
-    return TripService(InMemoryTripRepository())
+    return TripService(get_development_repository())

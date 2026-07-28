@@ -95,3 +95,41 @@ def test_non_owner_cannot_list_mutate_or_manage_share_links(client):
         )
         assert response.status_code == 404
         assert response.json()["detail"]["code"] == "TRIP_NOT_FOUND"
+
+
+def test_development_default_services_share_one_in_memory_store(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    from app.core.config import get_settings
+    from app.trips import service as service_module
+
+    get_settings.cache_clear()
+    for name in ("get_trip_service", "get_public_trip_service", "get_development_repository"):
+        dependency = getattr(service_module, name, None)
+        if dependency is not None and hasattr(dependency, "cache_clear"):
+            dependency.cache_clear()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_supabase_auth_gateway_factory] = (
+        lambda: lambda: FakeAuthGateway()
+    )
+
+    with TestClient(app) as development_client:
+        trip = _create_trip(development_client)
+        share = development_client.post(
+            f"/api/trips/{trip['id']}/share", headers=_headers("user-a")
+        )
+        assert share.status_code == 201
+
+        public = development_client.get(f"/api/shared/{share.json()['token']}")
+
+    assert public.status_code == 200
+    assert public.json()["id"] == trip["id"]
+    app.dependency_overrides.clear()
+    get_settings.cache_clear()
+    for name in ("get_trip_service", "get_public_trip_service", "get_development_repository"):
+        dependency = getattr(service_module, name, None)
+        if dependency is not None and hasattr(dependency, "cache_clear"):
+            dependency.cache_clear()
