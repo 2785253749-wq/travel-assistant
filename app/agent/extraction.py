@@ -1,4 +1,5 @@
 from datetime import date
+import re
 
 from app.schemas import ProfileIssue, TravelProfile
 
@@ -47,6 +48,15 @@ def validate_profile(profile: TravelProfile) -> list[ProfileIssue]:
 
 def _parse_date(value: str | None, field: str, issues: list[ProfileIssue]) -> date | None:
     if value is None:
+        return None
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        issues.append(
+            ProfileIssue(
+                code="invalid_date",
+                field=field,
+                message="日期必须使用 YYYY-MM-DD 格式。",
+            )
+        )
         return None
     try:
         return date.fromisoformat(value)

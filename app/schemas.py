@@ -6,7 +6,7 @@ class TravelProfile(BaseModel):
     destination: str | None = None
     start_date: str | None = None
     end_date: str | None = None
-    travelers: int | None = None
+    travelers: int | None = Field(default=None, ge=1)
     budget_cny: int | None = Field(default=None, ge=0)
     preferences: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)

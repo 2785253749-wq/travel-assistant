@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from app.agent.extraction import merge_profile, validate_profile
 from app.schemas import TravelProfile
 
@@ -42,4 +45,31 @@ def test_profile_validation_rejects_trips_longer_than_seven_days():
 
     assert [(issue.code, issue.field) for issue in issues] == [
         ("trip_duration", "end_date"),
+    ]
+
+
+@pytest.mark.parametrize("travelers", [0, -1])
+def test_travel_profile_rejects_nonpositive_traveler_counts(travelers):
+    with pytest.raises(ValidationError):
+        TravelProfile(travelers=travelers)
+
+
+@pytest.mark.parametrize("travelers", [0, -1])
+def test_profile_validation_keeps_stable_code_for_bypassed_nonpositive_counts(travelers):
+    profile = TravelProfile.model_construct(travelers=travelers)
+
+    issues = validate_profile(profile)
+
+    assert [(issue.code, issue.field) for issue in issues] == [
+        ("traveler_count", "travelers"),
+    ]
+
+
+def test_profile_validation_rejects_compact_date_format():
+    profile = TravelProfile(start_date="20261001")
+
+    issues = validate_profile(profile)
+
+    assert [(issue.code, issue.field) for issue in issues] == [
+        ("invalid_date", "start_date"),
     ]
