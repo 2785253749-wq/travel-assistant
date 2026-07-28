@@ -5,15 +5,22 @@ from functools import lru_cache
 from uuid import UUID
 
 from app.core.errors import AppError
-from app.infrastructure.repositories import InMemoryTripRepository
+from app.api.auth import AuthenticatedUser, CurrentUser
+from app.core.config import get_settings
+from app.infrastructure.repositories import (
+    InMemoryTripRepository,
+    create_public_share_repository,
+    create_user_scoped_supabase_repository,
+)
 from app.schemas import TravelProfile
 from app.trips.models import ConversationMessage, ShareLink, Trip
-from app.trips.repository import TripRepository
+from app.trips.repository import PublicShareRepository, TripRepository
 
 
 class TripService:
-    def __init__(self, repository: TripRepository) -> None:
+    def __init__(self, repository: TripRepository, public_repository: PublicShareRepository | None = None) -> None:
         self._repository = repository
+        self._public_repository = public_repository or repository
 
     def create_trip(self, user_id: UUID, profile: TravelProfile) -> Trip:
         destination = profile.destination or "New"
@@ -68,19 +75,34 @@ class TripService:
         self._repository.revoke_share_links(user_id, trip_id)
 
     def get_shared_trip(self, token: str) -> dict:
-        share_link = self._repository.get_share_link(self._token_hash(token))
-        if share_link is None or share_link.revoked_at is not None or share_link.expires_at <= datetime.now(UTC):
-            raise AppError("SHARE_NOT_FOUND", "Shared trip not found")
-        trip = self._repository.get(share_link.user_id, share_link.trip_id)
+        trip = self._public_repository.get_shared_trip(self._token_hash(token))
         if trip is None:
             raise AppError("SHARE_NOT_FOUND", "Shared trip not found")
-        return {"id": str(trip.id), "title": trip.title, "status": trip.status, "profile": trip.profile.model_dump(mode="json"), "itinerary": trip.itinerary, "updated_at": trip.updated_at.isoformat() if trip.updated_at else None}
+        return trip
 
     @staticmethod
     def _token_hash(token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _uses_supabase() -> bool:
+    settings = get_settings()
+    return settings.app_env == "production" or (
+        settings.supabase_url is not None and settings.supabase_anon_key is not None
+    )
+
+
 @lru_cache
-def get_trip_service() -> TripService:
+def get_trip_service(user: CurrentUser) -> TripService:
+    if _uses_supabase():
+        if not user.access_token:
+            raise RuntimeError("A verified bearer token is required for Supabase trip access")
+        return TripService(create_user_scoped_supabase_repository(user.access_token))
+    return TripService(InMemoryTripRepository())
+
+
+@lru_cache
+def get_public_trip_service() -> TripService:
+    if _uses_supabase():
+        return TripService(InMemoryTripRepository(), create_public_share_repository())
     return TripService(InMemoryTripRepository())

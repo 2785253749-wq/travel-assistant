@@ -32,3 +32,37 @@ Result: **41 passed**, with the same one third-party deprecation warning.
 
 - `get_trip_service()` remains intentionally in-memory to keep local and test execution offline. `SupabaseTripRepository` is provided as the DTO/persistence adapter, but production composition must supply a user-scoped Supabase client so RLS remains authoritative.
 - No live Supabase integration was run, by design; the migration/RLS contract and no-network fakes cover the repository boundary.
+
+## Fix round 1/5 (2026-07-29)
+
+### Security and production wiring changes
+
+- Production (or configured Supabase) private trip service construction now uses a fresh Supabase client scoped with the already-verified bearer JWT. The service key is never used by trip endpoints. Test/development without Supabase remains explicitly in-memory and FastAPI tests override both service dependencies.
+- The anonymous shared endpoint now uses a dedicated public repository that can call only `get_shared_trip_by_token_hash`; it does not query `share_links` or `trips` directly.
+- Added migration `002_secure_public_share_rpc.sql`: a `SECURITY DEFINER` function with fixed `pg_catalog, public` search path validates hash, revocation and expiry in one query and returns only the public allowlist. It revokes base-table access from `PUBLIC` and `anon`, grants authenticated users their RLS-protected CRUD privileges, grants only RPC execution to `anon`/`authenticated`, and supplies a trip `updated_at` trigger.
+- Extended API isolation coverage to non-owner list, PATCH, DELETE, share creation and share revocation. The token-hash assertion now requires the exact SHA-256 digest.
+
+### TDD and verification evidence
+
+1. The initial red run failed during collection because `get_public_trip_service` did not exist.
+2. After implementing the composition/RPC boundary, the focused suite initially had 9 pass / 2 fail: its migration privilege assertion and DELETE test invocation exposed remaining gaps. The privilege migration and test harness invocation were corrected.
+3. A second red check for revoking `profiles` and `ai_usage` base-table permissions failed as expected; the migration was then tightened.
+4. Final focused command:
+
+```powershell
+Set-Location W:\; & T:\.venv\Scripts\python.exe -m pytest tests/unit/test_trip_production_wiring.py tests/integration/test_share_rpc_contract.py tests/integration/test_trip_api.py tests/unit/test_trip_service.py -v
+```
+
+Result: **11 passed**, one existing third-party Starlette/httpx deprecation warning.
+
+5. Full command:
+
+```powershell
+Set-Location W:\; & T:\.venv\Scripts\python.exe -m pytest -v
+```
+
+Result: **45 passed**, the same one third-party warning.
+
+### Remaining concern
+
+No live Supabase project was contacted. The JWT client composition and public RPC are verified with no-network fakes and migration contracts; deployment must apply migration 002 before enabling the Supabase-configured application.

@@ -8,7 +8,7 @@ from app.api.auth import CurrentUser
 from app.core.errors import AppError
 from app.schemas import TravelProfile
 from app.trips.models import Trip
-from app.trips.service import TripService, get_trip_service
+from app.trips.service import TripService, get_public_trip_service, get_trip_service
 
 
 router = APIRouter(tags=["trips"])
@@ -103,7 +103,7 @@ def revoke_share_link(trip_id: UUID, user: CurrentUser, service: TripService = D
 
 
 @router.get("/api/shared/{token}")
-def get_shared_trip(token: str, service: TripService = Depends(get_trip_service)):
+def get_shared_trip(token: str, service: TripService = Depends(get_public_trip_service)):
     try:
         return service.get_shared_trip(token)
     except AppError as error:

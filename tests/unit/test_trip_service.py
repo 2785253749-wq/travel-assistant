@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -48,7 +49,7 @@ def test_share_token_is_stored_as_hash(service, repository, trip):
     token = service.create_share_link(USER_A, trip.id)
 
     stored = repository.last_share_link
-    assert token not in stored.token_hash
+    assert stored.token_hash == hashlib.sha256(token.encode("utf-8")).hexdigest()
     assert stored.expires_at > datetime.now(UTC)
 
 

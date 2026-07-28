@@ -12,6 +12,7 @@ from app.infrastructure.supabase import InvalidAuthToken, SupabaseAuthGateway
 class AuthenticatedUser:
     id: UUID
     email: str | None
+    access_token: str | None = None
 
 
 class AuthGateway(Protocol):
@@ -54,7 +55,11 @@ def get_current_user(
         user_id = getattr(user, "id", None)
         if user_id is None:
             raise ValueError("Supabase did not return a user")
-        return AuthenticatedUser(id=UUID(str(user_id)), email=getattr(user, "email", None))
+        return AuthenticatedUser(
+            id=UUID(str(user_id)),
+            email=getattr(user, "email", None),
+            access_token=token,
+        )
     except InvalidAuthToken as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

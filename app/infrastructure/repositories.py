@@ -66,6 +66,22 @@ class InMemoryTripRepository:
     def get_share_link(self, token_hash: str) -> ShareLink | None:
         return next((link for link in self.share_links if link.token_hash == token_hash), None)
 
+    def get_shared_trip(self, token_hash: str) -> dict | None:
+        share_link = self.get_share_link(token_hash)
+        if share_link is None or share_link.revoked_at is not None or share_link.expires_at <= datetime.now(UTC):
+            return None
+        trip = self.get(share_link.user_id, share_link.trip_id)
+        if trip is None:
+            return None
+        return {
+            "id": str(trip.id),
+            "title": trip.title,
+            "status": trip.status,
+            "profile": trip.profile.model_dump(mode="json"),
+            "itinerary": trip.itinerary,
+            "updated_at": trip.updated_at.isoformat() if trip.updated_at else None,
+        }
+
 
 class SupabaseTripRepository:
     """Supabase adapter with owner filters on every private data operation.
@@ -106,10 +122,6 @@ class SupabaseTripRepository:
     def revoke_share_links(self, user_id: UUID, trip_id: UUID) -> None:
         self._client.table("share_links").update({"revoked_at": datetime.now(UTC).isoformat()}).eq("user_id", str(user_id)).eq("trip_id", str(trip_id)).is_("revoked_at", "null").execute()
 
-    def get_share_link(self, token_hash: str) -> ShareLink | None:
-        response = self._client.table("share_links").select("*").eq("token_hash", token_hash).execute()
-        return self._share_from_row(response.data[0]) if response.data else None
-
     @staticmethod
     def _one(response):
         return response.data[0]
@@ -125,6 +137,41 @@ class SupabaseTripRepository:
     def _trip_from_row(row: dict) -> Trip:
         return Trip(id=UUID(row["id"]), user_id=UUID(row["user_id"]), title=row["title"], status=row["status"], profile=TravelProfile.model_validate(row["profile"]), itinerary=row.get("itinerary"), created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else None, updated_at=datetime.fromisoformat(row["updated_at"]) if row.get("updated_at") else None)
 
-    @staticmethod
-    def _share_from_row(row: dict) -> ShareLink:
-        return ShareLink(id=UUID(row["id"]), user_id=UUID(row["user_id"]), trip_id=UUID(row["trip_id"]), token_hash=row["token_hash"], expires_at=datetime.fromisoformat(row["expires_at"]), revoked_at=datetime.fromisoformat(row["revoked_at"]) if row.get("revoked_at") else None, created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else None)
+
+
+class SupabasePublicShareRepository:
+    """Anonymous access is limited to the database's public share projection RPC."""
+
+    def __init__(self, client) -> None:
+        self._client = client
+
+    def get_shared_trip(self, token_hash: str) -> dict | None:
+        response = self._client.rpc(
+            "get_shared_trip_by_token_hash", {"p_token_hash": token_hash}
+        ).execute()
+        return response.data[0] if response.data else None
+
+
+def create_user_scoped_supabase_repository(access_token: str) -> SupabaseTripRepository:
+    """Create a client whose PostgREST requests carry the verified caller's JWT."""
+    from app.core.config import get_settings
+    from supabase import create_client
+
+    settings = get_settings()
+    client = create_client(
+        str(settings.supabase_url), settings.supabase_anon_key.get_secret_value()
+    )
+    client.postgrest.auth(access_token)
+    return SupabaseTripRepository(client)
+
+
+def create_public_share_repository() -> SupabasePublicShareRepository:
+    """Use only the anon key; the SECURITY DEFINER RPC is its sole data capability."""
+    from app.core.config import get_settings
+    from supabase import create_client
+
+    settings = get_settings()
+    client = create_client(
+        str(settings.supabase_url), settings.supabase_anon_key.get_secret_value()
+    )
+    return SupabasePublicShareRepository(client)
