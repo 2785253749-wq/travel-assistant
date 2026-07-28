@@ -30,13 +30,21 @@ class Settings(BaseSettings):
                     ("SUPABASE_ANON_KEY", self.supabase_anon_key),
                     ("SUPABASE_SERVICE_KEY", self.supabase_service_key),
                 )
-                if value is None
+                if self._is_missing(value)
             ]
             if missing:
                 raise ValueError(
                     "Production requires Supabase configuration: " + ", ".join(missing)
                 )
         return self
+
+    @staticmethod
+    def _is_missing(value: AnyHttpUrl | SecretStr | None) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, SecretStr):
+            return not value.get_secret_value().strip()
+        return not str(value).strip()
 
 
 @lru_cache
