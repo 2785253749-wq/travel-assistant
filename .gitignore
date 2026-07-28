@@ -10,3 +10,5 @@ __pycache__/
 *.sqlite3
 *.log
 build/
+.worktrees/
+.superpowers/
