@@ -1,0 +1,12 @@
+.env
+.venv/
+.agents/
+skills-lock.json
+__pycache__/
+.pytest_cache/
+*.pyc
+*.db
+*.sqlite
+*.sqlite3
+*.log
+build/
