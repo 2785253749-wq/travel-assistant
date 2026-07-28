@@ -16,26 +16,29 @@ create table public.trips (
   profile jsonb not null default '{}'::jsonb,
   itinerary jsonb,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  unique (id, user_id)
 );
 
 create table public.conversation_messages (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  trip_id uuid references public.trips(id) on delete cascade,
+  trip_id uuid,
   role text not null check (role in ('user', 'assistant')),
   content text not null check (char_length(content) between 1 and 4000),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  foreign key (trip_id, user_id) references public.trips(id, user_id) on delete cascade
 );
 
 create table public.share_links (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  trip_id uuid not null references public.trips(id) on delete cascade,
+  trip_id uuid not null,
   token_hash text not null unique,
   expires_at timestamptz not null,
   revoked_at timestamptz,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  foreign key (trip_id, user_id) references public.trips(id, user_id) on delete cascade
 );
 
 create table public.ai_usage (
