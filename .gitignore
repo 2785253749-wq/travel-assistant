@@ -1,6 +1,7 @@
 .env
 .venv/
 .agents/
+.claude/
 skills-lock.json
 __pycache__/
 .pytest_cache/
