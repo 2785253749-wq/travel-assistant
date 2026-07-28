@@ -8,6 +8,7 @@ from app.core.logging import configure_logging, request_context
 from app.graph import chat
 from app.schemas import ChatRequest, ChatResponse, TravelProfile
 from app.api.auth import CurrentUser
+from app.api.trips import router as trips_router
 
 BASE = Path(__file__).resolve().parent
 configure_logging()
@@ -31,10 +32,7 @@ def health(): return {"status":"ok"}
 def api_me(user: CurrentUser):
     return {"id": str(user.id), "email": user.email}
 
-@app.get("/api/trips")
-def list_trips(_: CurrentUser):
-    """Protected placeholder until the trip repository is introduced."""
-    return []
+app.include_router(trips_router)
 
 @app.post("/api/chat", response_model=ChatResponse)
 def api_chat(request: ChatRequest):
