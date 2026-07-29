@@ -73,7 +73,7 @@ class PlacesProvider:
         for feature in features:
             if not isinstance(feature, dict):
                 raise UpstreamPayloadError
-            properties = feature.get("properties", feature)
+            properties = feature.get("properties")
             if not isinstance(properties, dict):
                 raise UpstreamPayloadError
             name = properties.get("name")

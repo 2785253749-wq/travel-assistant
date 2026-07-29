@@ -124,6 +124,20 @@ def test_places_malformed_feature_is_invalid_instead_of_ignored() -> None:
     assert len(transport.requests) == 1
 
 
+def test_places_rejects_feature_fields_outside_properties_without_rewrite() -> None:
+    transport = RecordingTransport([
+        json_response({"features": [{"name": "西湖", "city": "杭州"}]})
+    ])
+    provider = PlacesProvider(client=httpx.Client(transport=transport))
+
+    result = provider.search(city="杭州", query="西湖")
+
+    assert result.data == []
+    assert result.degraded is True
+    assert result.error_code == "PLACES_INVALID_RESPONSE"
+    assert len(transport.requests) == 1
+
+
 @pytest.mark.parametrize("base_url", [
     "https://user@www.12306.cn/",
     "https://www.12306.cn:444/",

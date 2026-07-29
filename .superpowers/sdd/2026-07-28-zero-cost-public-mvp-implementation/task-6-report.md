@@ -42,3 +42,14 @@
 ### Concerns
 
 - A wall-clock timeout may abandon a Python worker thread because threads cannot be force-killed. That worker remains bounded by the same remaining HTTPX phase timeout and is not reused; the provider returns the stable timeout result at the operation deadline.
+
+---
+
+## Fix round 2/5 — exact Photon feature schema
+
+- Removed the fallback that interpreted fields directly on a Photon feature as its properties. Every feature must now be a dictionary containing a dictionary-valued `properties`; `properties.name` remains a required non-empty string and optional city data retains its existing type validation.
+- RED: `{"features": [{"name": "西湖", "city": "杭州"}]}` produced a normal `Place` under the fallback.
+- GREEN: the same payload returns degraded `PLACES_INVALID_RESPONSE`, empty data, and performs exactly one request without query rewriting.
+- Final focused: `14 passed in 1.15s`.
+- Final full suite: `88 passed, 1 warning in 1.52s`. The warning is the existing Starlette/httpx TestClient deprecation warning.
+- Booking-link authority checks and the shared six-second provider deadline were unchanged and remain covered by the focused suite.
