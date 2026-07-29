@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypedDict
 from uuid import UUID
@@ -16,7 +17,7 @@ from langchain_deepseek import ChatDeepSeek
 
 from app.agent.extraction import merge_profile, validate_profile
 from app.agent.intent import Intent, IntentResult, classify_intent
-from app.agent.safety import REFUSALS, assess_message, mark_unverified
+from app.agent.safety import REFUSALS, assess_destination, assess_message
 from app.core.config import get_settings
 from app.schemas import ExtractionResult, ProfileIssue, TravelProfile
 from app.trips.models import Trip
@@ -54,6 +55,42 @@ class ChatResult:
     error_code: str | None = None
 
 
+@dataclass(frozen=True)
+class PlanClaim:
+    text: str
+    source_url: str | None = None
+    source_type: str | None = None
+    verified: bool = False
+
+
+@dataclass(frozen=True)
+class PlanningResult:
+    claims: list[PlanClaim]
+
+
+class ChatSessionStore:
+    """Bounded in-process state containing only structured travel profiles."""
+
+    def __init__(self, max_sessions: int = 200) -> None:
+        self._max_sessions = max_sessions
+        self._profiles: OrderedDict[str, TravelProfile] = OrderedDict()
+
+    def get(self, thread_id: str) -> TravelProfile | None:
+        profile = self._profiles.get(thread_id)
+        if profile is not None:
+            self._profiles.move_to_end(thread_id)
+        return profile
+
+    def put(self, thread_id: str, profile: TravelProfile) -> None:
+        self._profiles[thread_id] = TravelProfile.model_validate(profile.model_dump())
+        self._profiles.move_to_end(thread_id)
+        while len(self._profiles) > self._max_sessions:
+            self._profiles.popitem(last=False)
+
+    def clear(self, thread_id: str) -> None:
+        self._profiles.pop(thread_id, None)
+
+
 class IntentClassifier(Protocol):
     def classify(self, message: str, has_trip: bool) -> IntentResult: ...
 
@@ -63,7 +100,7 @@ class TravelExtractor(Protocol):
 
 
 class Planner(Protocol):
-    def invoke(self, profile: TravelProfile) -> str: ...
+    def invoke(self, profile: TravelProfile) -> PlanningResult: ...
 
 
 class UsageGuard(Protocol):
@@ -107,7 +144,7 @@ def extract_profile(
 
 
 class ModelPlanner:
-    def invoke(self, profile: TravelProfile) -> str:
+    def invoke(self, profile: TravelProfile) -> PlanningResult:
         response = model().invoke([
             SystemMessage(content=(
                 "你是国内自由行规划助手。只能依据给定资料生成中文行程；不要声称实时价格、库存、余票或营业时间，"
@@ -115,7 +152,7 @@ class ModelPlanner:
             )),
             HumanMessage(content=profile.model_dump_json(ensure_ascii=False, indent=2)),
         ])
-        return str(response.content)
+        return PlanningResult([PlanClaim(text=str(response.content))])
 
 
 class SafeTravelAgent:
@@ -157,15 +194,25 @@ class SafeTravelAgent:
             missing = [name for name in REQUIRED_FIELDS if getattr(profile, name) in (None, "")]
             if issues or missing:
                 return self._collecting(profile, missing, issues)
+            destination = assess_destination(profile.destination)
+            if not destination.allowed:
+                if destination.code == "OUT_OF_SCOPE":
+                    return self._refusal(destination.code)
+                return ChatResult(
+                    "请确认具体的中国境内目的地（城市或省份），我不会猜测目的地。",
+                    "collecting", profile.model_dump(), error_code=destination.code,
+                )
             if self._usage_guard is not None and not self._usage_guard.allow(user_id):
                 return ChatResult("当前规划服务暂不可用，请稍后再试。", "collecting", profile.model_dump(), error_code="USAGE_LIMITED")
 
-            reply = mark_unverified(self._planner.invoke(profile), [])
-            result = ChatResult(reply, "planned", profile.model_dump())
+            result = self._verify_plan(self._planner.invoke(profile), profile)
             self._persist(trip, user_id, message, result)
             return result
-        except Exception:
-            logging.getLogger("app.agent").exception("agent_failed", extra={"error_type": "agent_failure"})
+        except Exception as exc:
+            logging.getLogger("app.agent").warning(
+                "agent_failed",
+                extra={"error_code": "AGENT_UNAVAILABLE", "exception_type": type(exc).__name__},
+            )
             return ChatResult("暂时无法生成行程，请稍后重试。", "collecting", {}, error_code="AGENT_UNAVAILABLE")
 
     @staticmethod
@@ -186,7 +233,31 @@ class SafeTravelAgent:
         self._repository.append_message(user_id=user_id, trip_id=trip.id, role="user", content=message)
         self._repository.append_message(user_id=user_id, trip_id=trip.id, role="assistant", content=result.reply)
 
+    @staticmethod
+    def _verify_plan(plan: PlanningResult | str, profile: TravelProfile) -> ChatResult:
+        claims = plan.claims if isinstance(plan, PlanningResult) else [PlanClaim(text=str(plan))]
+        verified = [
+            claim for claim in claims
+            if claim.verified and claim.source_type and claim.source_url and claim.source_url.startswith(("https://", "http://"))
+        ]
+        if not verified:
+            return ChatResult(
+                "我目前只能提供建议性行程框架：请按城市区域安排每日活动。待确认：请在出发前通过官方渠道确认交通、住宿、门票和开放信息。",
+                "planned", profile.model_dump(), error_code="UNVERIFIED_FACTS",
+            )
+        return ChatResult(
+            "\n".join(claim.text for claim in verified), "planned", profile.model_dump(),
+            sources=[{"url": claim.source_url, "type": claim.source_type} for claim in verified],
+        )
 
-def chat(user: Any | None, trip_id: UUID | None, message: str) -> ChatResult:
+
+_chat_store = ChatSessionStore()
+
+
+def chat(user: Any | None, trip_id: UUID | None, message: str, *, thread_id: str | None = None) -> ChatResult:
     """Public application entry point; authenticated persistence is wired in later tasks."""
-    return SafeTravelAgent().run(message, trip=None, user_id=getattr(user, "id", None))
+    profile = _chat_store.get(thread_id) if thread_id else None
+    result = SafeTravelAgent(initial_profile=profile).run(message, trip=None, user_id=getattr(user, "id", None))
+    if thread_id and result.profile and result.error_code not in {"OUT_OF_SCOPE", "AGENT_UNAVAILABLE"}:
+        _chat_store.put(thread_id, TravelProfile.model_validate(result.profile))
+    return result
