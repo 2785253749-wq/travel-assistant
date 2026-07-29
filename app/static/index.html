@@ -1,4 +1,125 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>旅行助手</title>
-<style>:root{--ink:#15342d;--brand:#087f68}*{box-sizing:border-box}body{margin:0;font-family:system-ui,"Microsoft YaHei";color:var(--ink);background:linear-gradient(135deg,#dff5ef,#f2e8d5);min-height:100vh}main{width:min(900px,94vw);margin:5vh auto;background:#fffdf7f0;border-radius:24px;box-shadow:0 18px 60px #173c3220;overflow:hidden}header{padding:28px 32px 18px;border-bottom:1px solid #15342d18}h1{margin:0 0 8px;font-size:clamp(26px,4vw,42px)}header p{margin:0;opacity:.72}#chat{height:56vh;overflow:auto;padding:24px 32px;display:flex;flex-direction:column;gap:14px}.msg{max-width:84%;padding:13px 16px;border-radius:18px;white-space:pre-wrap;line-height:1.65}.bot{align-self:flex-start;background:#e5f4ef}.user{align-self:flex-end;background:var(--brand);color:#fff}form{display:flex;gap:10px;padding:18px 24px 24px}input{flex:1;border:1px solid #15342d35;border-radius:14px;padding:14px 16px;font-size:16px}button{border:0;border-radius:14px;padding:0 24px;color:#fff;background:var(--brand);font-weight:700}</style></head>
-<body><main><header><h1>旅行助手</h1><p>告诉我目的地、日期、人数、预算与偏好。</p></header><section id="chat"><div class="msg bot">你好！请描述你的旅行计划。</div></section><form id="form"><input id="input" placeholder="例如：从上海去成都玩五天……"><button>发送</button></form></main>
-<script>const c=document.querySelector('#chat'),f=document.querySelector('#form'),i=document.querySelector('#input'),b=f.querySelector('button'),t=localStorage.travelThreadId||crypto.randomUUID();localStorage.travelThreadId=t;function add(x,k){let e=document.createElement('div');e.className='msg '+k;e.textContent=x;c.append(e);c.scrollTop=c.scrollHeight}f.onsubmit=async e=>{e.preventDefault();let m=i.value.trim();if(!m)return;add(m,'user');i.value='';b.disabled=true;try{let r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:m,thread_id:t})}),d=await r.json();if(!r.ok)throw Error(d.detail||'请求失败');add(d.reply,'bot')}catch(e){add('暂时无法处理：'+e.message,'bot')}finally{b.disabled=false;i.focus()}}</script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>旅行助手</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-app-state="signed_out">
+  <a class="skip-link" href="#message-input">跳到行程输入</a>
+  <main class="app-shell">
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">国内多日自由行</p>
+        <h1>旅行助手</h1>
+        <p>先补齐资料，再确认并生成可执行的行程框架。</p>
+      </div>
+      <section id="auth-panel" class="auth-panel" aria-label="账户">
+        <form id="auth-form">
+          <label for="email">邮箱</label>
+          <input id="email" name="email" type="email" autocomplete="email" inputmode="email">
+          <label for="password">密码</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" minlength="8">
+          <div class="button-row">
+            <button id="sign-in-button" type="submit">登录</button>
+            <button id="sign-up-button" type="button" class="secondary">注册</button>
+          </div>
+        </form>
+        <div id="account-summary" hidden>
+          <p id="account-email"></p>
+          <button id="sign-out-button" type="button" class="secondary">退出登录</button>
+        </div>
+        <p id="auth-help" class="help-text">未登录也可进行临时规划；登录后才能保存和管理历史行程。</p>
+      </section>
+    </header>
+
+    <p id="status-message" class="status-message" role="status" aria-live="polite"></p>
+    <section id="provider-notice" class="provider-notice" hidden role="status" aria-live="polite">
+      <strong>部分外部信息暂不可用。</strong><span id="provider-updated-at"></span>
+      仍可查看不依赖实时数据的行程框架。
+    </section>
+
+    <div class="workspace">
+      <section id="chat-panel" class="chat-panel" aria-labelledby="chat-heading">
+        <div class="section-heading">
+          <h2 id="chat-heading">规划对话</h2>
+          <p>请告诉我出发地、目的地、日期、人数、总预算和偏好。</p>
+        </div>
+        <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions">
+          <p class="message assistant">你好！我可以帮你规划国内 2 至 7 天的自由行。</p>
+        </div>
+        <form id="chat-form" class="chat-form">
+          <label for="message-input">旅行需求</label>
+          <textarea id="message-input" name="message" rows="3" required maxlength="4000" placeholder="例如：两个人从上海去成都，2026-10-01 到 2026-10-05，预算 6000 元，想吃川菜和看熊猫。"></textarea>
+          <div class="button-row">
+            <button id="send-button" type="submit">发送</button>
+            <span id="request-progress" class="help-text" aria-live="polite"></span>
+          </div>
+        </form>
+      </section>
+
+      <aside id="trip-history" class="trip-history" aria-labelledby="history-heading" hidden>
+        <div class="section-heading">
+          <h2 id="history-heading">我的行程</h2>
+          <p>仅显示当前登录账户的私有行程。</p>
+        </div>
+        <ul id="trip-history-list" class="history-list" aria-live="polite"></ul>
+      </aside>
+    </div>
+
+    <section id="profile-confirmation" class="profile-card" aria-labelledby="profile-title" hidden>
+      <h2 id="profile-title">确认旅行资料</h2>
+      <p>请核对以下资料；确认后才查看生成的规划。</p>
+      <dl id="profile-fields" class="profile-fields"></dl>
+      <div class="button-row">
+        <button id="confirm-profile-button" type="button">确认资料</button>
+        <button id="edit-profile-button" type="button" class="secondary">继续修改</button>
+      </div>
+    </section>
+
+    <section id="trip-view" class="trip-view" aria-labelledby="trip-title" hidden>
+      <div class="section-heading trip-heading">
+        <div>
+          <p class="eyebrow">行程建议</p>
+          <h2 id="trip-title">你的行程</h2>
+        </div>
+        <div id="trip-actions" class="button-row" hidden>
+          <button id="save-trip-button" type="button">保存行程</button>
+          <button id="share-trip-button" type="button" class="secondary">分享</button>
+        </div>
+      </div>
+      <div id="trip-content"></div>
+    </section>
+  </main>
+
+  <dialog id="share-dialog" aria-labelledby="share-title">
+    <form method="dialog" class="dialog-content">
+      <h2 id="share-title">只读分享链接</h2>
+      <p>链接不会公开你的账户信息或聊天记录。默认 30 天后过期。</p>
+      <label for="share-link">分享链接</label>
+      <input id="share-link" type="url" readonly>
+      <p id="share-expiry"></p>
+      <div class="button-row">
+        <button id="copy-share-link" type="button">复制链接</button>
+        <button id="revoke-share-link" type="button" class="danger">撤销链接</button>
+        <button type="submit" class="secondary">关闭</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="rename-dialog" aria-labelledby="rename-title">
+    <form id="rename-form" method="dialog" class="dialog-content">
+      <h2 id="rename-title">重命名行程</h2>
+      <label for="rename-input">行程名称</label>
+      <input id="rename-input" maxlength="100" required>
+      <div class="button-row">
+        <button type="submit">保存名称</button>
+        <button type="button" id="cancel-rename" class="secondary">取消</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
