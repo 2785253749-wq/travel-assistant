@@ -56,7 +56,7 @@ class PlacesProvider:
         except UpstreamPayloadError:
             return ProviderResult([], PLACES_SOURCE, fetched_at, True, "PLACES_INVALID_RESPONSE")
 
-        evidence = tuple(_place_evidence(place) for place in places)
+        evidence = tuple(_place_evidence(place, fetched_at) for place in places)
         return ProviderResult(places, PLACES_SOURCE, fetched_at, evidence=evidence)
 
     def _search(self, query: str, deadline: OperationDeadline) -> list[Place]:
@@ -91,11 +91,12 @@ def _normalized_alias(query: str) -> str:
     return normalized or query.strip()
 
 
-def _place_evidence(place: Place) -> TrustedEvidence:
+def _place_evidence(place: Place, fetched_at) -> TrustedEvidence:
     fact = f"{place.name}（{place.city or '地点城市待确认'}）"
     return TrustedEvidence(
         evidence_id=f"place-{sha256(fact.encode('utf-8')).hexdigest()[:16]}",
         fact=fact,
         source_url=PLACES_SOURCE,
         source_type="trusted_provider",
+        fetched_at=fetched_at,
     )

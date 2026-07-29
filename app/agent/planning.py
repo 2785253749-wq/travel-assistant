@@ -6,7 +6,7 @@ import json
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import ValidationError
@@ -39,10 +39,14 @@ class PlanValidationError(Exception):
         super().__init__(self.code)
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def validate_itinerary(
     itinerary: Itinerary,
     profile: TravelProfile,
-    sources: Iterable[TrustedEvidence | ProviderResult[Any]],
+    sources: Iterable[TrustedEvidence | ProviderResult[Any]], now: Callable[[], datetime] | None = None,
 ) -> list[PlanIssue]:
     """Validate cross-model constraints without trusting model-authored metadata."""
     issues: list[PlanIssue] = []
@@ -54,16 +58,17 @@ def validate_itinerary(
 
     if itinerary.budget.traveler_count != profile.travelers:
         issues.append(PlanIssue("TRAVELER_BASIS_MISMATCH", "budget.traveler_count", "Budget traveler count must match the profile."))
-    if profile.budget_cny is not None and itinerary.budget.total > profile.budget_cny:
+    if profile.budget_cny is not None and itinerary.budget.trip_total > profile.budget_cny:
         issues.append(PlanIssue("BUDGET_EXCEEDED", "budget.total", "Budget must not exceed the confirmed CNY budget."))
 
-    registry = _trusted_registry(sources)
+    registry, source_issues = _trusted_registry(sources, now or _utc_now)
+    issues.extend(source_issues)
     citations = _all_citations(itinerary)
     invalid_citations = [citation for citation in citations if not _citation_matches(citation, registry)]
     if invalid_citations:
         issues.append(PlanIssue("UNTRUSTED_EVIDENCE", "citations", "Citations must reference trusted provider evidence."))
 
-    if _contains_variable_fact(itinerary) and not citations:
+    if _contains_variable_fact(itinerary) and not _all_claims(itinerary):
         issues.append(PlanIssue("UNSOURCED_FACT", "notes", "Variable facts require trusted evidence."))
     return issues
 
@@ -71,14 +76,15 @@ def validate_itinerary(
 class Planner:
     """Parses one structured candidate and permits one bounded repair attempt."""
 
-    def __init__(self, generate: Callable[[TravelProfile, object, list[str] | None], object]) -> None:
+    def __init__(self, generate: Callable[[TravelProfile, object, list[str] | None], object], now: Callable[[], datetime] = _utc_now) -> None:
         self._generate = generate
+        self._now = now
 
     def plan(self, profile: TravelProfile, provider_results: object) -> Itinerary:
         repair_codes: list[str] | None = None
         for attempt in range(2):
             candidate = self._generate(profile, provider_results, repair_codes)
-            itinerary, issues = self._validate_candidate(candidate, profile, provider_results)
+            itinerary, issues = self._validate_candidate(candidate, profile, provider_results, self._now)
             if itinerary is not None and not issues:
                 return itinerary
             if attempt == 0:
@@ -89,7 +95,7 @@ class Planner:
 
     @staticmethod
     def _validate_candidate(
-        candidate: object, profile: TravelProfile, provider_results: object,
+        candidate: object, profile: TravelProfile, provider_results: object, now: Callable[[], datetime],
     ) -> tuple[Itinerary | None, list[PlanIssue]]:
         try:
             payload = json.loads(candidate) if isinstance(candidate, str) else candidate
@@ -98,7 +104,13 @@ class Planner:
             itinerary = Itinerary.model_validate(payload)
         except (ValidationError, ValueError, TypeError, json.JSONDecodeError):
             return None, [PlanIssue("SCHEMA_INVALID", "itinerary", "The itinerary must match the public JSON schema.")]
-        return itinerary, validate_itinerary(itinerary, profile, _iter_sources(provider_results))
+        registry, source_issues = _trusted_registry(_iter_sources(provider_results), now)
+        if source_issues:
+            return None, source_issues
+        normalized, claim_issues = _normalize_claims(itinerary, registry)
+        if claim_issues:
+            return None, claim_issues
+        return normalized, validate_itinerary(normalized, profile, _iter_sources(provider_results), now)
 
 
 def _profile_dates(profile: TravelProfile) -> tuple[date | None, date | None]:
@@ -118,20 +130,31 @@ def _iter_sources(value: object) -> Iterable[TrustedEvidence | ProviderResult[An
     return ()
 
 
-def _trusted_registry(sources: Iterable[TrustedEvidence | ProviderResult[Any]]) -> dict[str, TrustedEvidence]:
+def _trusted_registry(sources: Iterable[TrustedEvidence | ProviderResult[Any]], now: Callable[[], datetime]) -> tuple[dict[str, TrustedEvidence], list[PlanIssue]]:
     registry: dict[str, TrustedEvidence] = {}
+    issues: list[PlanIssue] = []
     for source in sources:
         evidence_items = source.evidence if isinstance(source, ProviderResult) else (source,)
         for evidence in evidence_items:
+            fetched_at = source.fetched_at if isinstance(source, ProviderResult) else getattr(evidence, "fetched_at", None)
             if (
                 evidence.evidence_id
                 and evidence.fact
                 and evidence.source_type in _TRUSTED_SOURCE_TYPES
                 and evidence.source_url.startswith("https://")
                 and ".test" not in evidence.source_url.lower()
-            ):
-                registry[evidence.evidence_id] = evidence
-    return registry
+            ) and fetched_at is not None and fetched_at.tzinfo is not None:
+                if fetched_at > now() or now() - fetched_at > _ttl(evidence.source_type):
+                    issues.append(PlanIssue("STALE_EVIDENCE", "sources", "Evidence freshness is outside its allowed TTL."))
+                else:
+                    registry[evidence.evidence_id] = TrustedEvidence(evidence.evidence_id, evidence.fact, evidence.source_url, evidence.source_type, fetched_at)
+            elif evidence.evidence_id:
+                issues.append(PlanIssue("MISSING_EVIDENCE_TIMESTAMP", "sources", "Trusted evidence requires provider fetch time."))
+    return registry, issues
+
+
+def _ttl(source_type: str) -> timedelta:
+    return timedelta(hours=24 if source_type == "trusted_provider" else 24 * 7)
 
 
 def _all_citations(itinerary: Itinerary) -> list[SourceCitation]:
@@ -148,6 +171,7 @@ def _citation_matches(citation: SourceCitation, registry: Mapping[str, TrustedEv
         evidence
         and citation.source_url == evidence.source_url
         and citation.source_type == evidence.source_type
+        and citation.fact == evidence.fact
         and citation.fetched_at.tzinfo is not None
         and citation.freshness.strip()
     )
@@ -159,3 +183,34 @@ def _contains_variable_fact(itinerary: Itinerary) -> bool:
         for activity in (day.morning, day.afternoon, day.evening):
             text.extend((activity.title, *activity.notes))
     return any(_VARIABLE_FACT.search(item) for item in text)
+
+
+def _all_claims(itinerary: Itinerary) -> list[tuple[object, object]]:
+    claims: list[tuple[object, object]] = []
+    for day in itinerary.days:
+        for activity in (day.morning, day.afternoon, day.evening):
+            claims.extend((activity, claim) for claim in activity.claims)
+    return claims
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+def _normalize_claims(itinerary: Itinerary, registry: Mapping[str, TrustedEvidence]) -> tuple[Itinerary, list[PlanIssue]]:
+    for activity, claim in _all_claims(itinerary):
+        evidence = registry.get(claim.evidence_id)
+        if evidence is None or _normalize(claim.text) != _normalize(evidence.fact):
+            return itinerary, [PlanIssue("CLAIM_EVIDENCE_MISMATCH", "claims", "Each claim must exactly match its trusted evidence.")]
+        citation = SourceCitation(
+            evidence_id=evidence.evidence_id, source_url=evidence.source_url, source_type=evidence.source_type,
+            fetched_at=evidence.fetched_at, freshness=f"Fetched {evidence.fetched_at.isoformat()}; reference only.", fact=evidence.fact,
+        )
+        activity.citations = [*activity.citations, citation]
+    # User/model supplied citation metadata never survives normalization.
+    for day in itinerary.days:
+        for activity in (day.morning, day.afternoon, day.evening):
+            if not activity.claims:
+                activity.citations = []
+    itinerary.citations = []
+    return itinerary, []

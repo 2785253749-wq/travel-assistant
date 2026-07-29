@@ -53,6 +53,7 @@ class SourceCitation(StrictSchema):
     source_type: Literal["official", "government", "trusted_provider"]
     fetched_at: datetime
     freshness: str = Field(min_length=1, max_length=500)
+    fact: str = Field(default="", max_length=1000)
 
     @property
     def source(self) -> str:
@@ -65,6 +66,7 @@ class Activity(StrictSchema):
     start_time: str = Field(pattern=r"^\d{2}:\d{2}$")
     end_time: str = Field(pattern=r"^\d{2}:\d{2}$")
     notes: list[str] = Field(default_factory=list, max_length=20)
+    claims: list["FactClaim"] = Field(default_factory=list, max_length=20)
     citations: list[SourceCitation] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
@@ -108,13 +110,55 @@ class BudgetBreakdown(StrictSchema):
     currency: Literal["CNY"]
     traveler_basis: Literal["trip_total", "per_person"]
     traveler_count: int = Field(ge=1, le=6)
+    trip_total: int = Field(ge=0)
+    estimate: "EstimateRange"
 
     @model_validator(mode="after")
     def _total_matches_categories(self) -> "BudgetBreakdown":
         categories = self.transport + self.hotel + self.food + self.tickets + self.reserve + self.other
         if self.total != categories:
             raise ValueError("budget total must equal its categories")
+        expected_trip_total = self.total if self.traveler_basis == "trip_total" else self.total * self.traveler_count
+        if self.trip_total != expected_trip_total:
+            raise ValueError("trip_total must match the traveler basis")
+        if self.estimate.currency != self.currency or self.estimate.basis != self.traveler_basis:
+            raise ValueError("estimate currency and basis must match budget")
+        if self.estimate.point != self.total:
+            raise ValueError("estimate point must equal budget total")
         return self
+
+
+class EstimateRange(StrictSchema):
+    low: int = Field(ge=0)
+    point: int = Field(ge=0)
+    high: int = Field(ge=0)
+    currency: Literal["CNY"]
+    basis: Literal["trip_total", "per_person"]
+    assumption_id: str = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def _contains_point(self) -> "EstimateRange":
+        if not self.low <= self.point <= self.high:
+            raise ValueError("estimate range must contain point")
+        return self
+
+
+class PlanningAssumption(StrictSchema):
+    assumption_id: str = Field(min_length=1, max_length=100)
+    category: Literal["budget", "transport", "pacing"]
+    description: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _is_not_a_variable_fact(self) -> "PlanningAssumption":
+        forbidden = ("price", "availability", "open", "price", "价格", "营业", "可订", "库存", "余票")
+        if any(term in self.description.lower() for term in forbidden):
+            raise ValueError("assumptions cannot state variable facts")
+        return self
+
+
+class FactClaim(StrictSchema):
+    text: str = Field(min_length=1, max_length=1000)
+    evidence_id: str = Field(min_length=1, max_length=200)
 
 
 class Itinerary(StrictSchema):
@@ -124,7 +168,7 @@ class Itinerary(StrictSchema):
     days: list[ItineraryDay] = Field(min_length=2, max_length=7)
     budget: BudgetBreakdown
     notes: list[str] = Field(default_factory=list, max_length=40)
-    assumptions: list[str] = Field(min_length=1, max_length=40)
+    assumptions: list[PlanningAssumption] = Field(min_length=1, max_length=40)
     citations: list[SourceCitation] = Field(default_factory=list, max_length=100)
 
     @model_validator(mode="after")

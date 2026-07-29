@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from app.agent.graph import TrustedEvidence
 from app.agent.planning import PlanValidationError, Planner, validate_itinerary
-from app.schemas import Activity, BudgetBreakdown, Itinerary, ItineraryDay, SourceCitation, TravelProfile
+from app.schemas import Activity, BudgetBreakdown, EstimateRange, FactClaim, Itinerary, ItineraryDay, PlanningAssumption, SourceCitation, TravelProfile
 
 
 def profile_factory(**overrides: object) -> TravelProfile:
@@ -50,9 +50,11 @@ def itinerary_factory(**overrides: object) -> Itinerary:
             "currency": "CNY",
             "traveler_basis": "trip_total",
             "traveler_count": 2,
+            "trip_total": 3500,
+            "estimate": {"low": 3200, "point": 3500, "high": 3800, "currency": "CNY", "basis": "trip_total", "assumption_id": "cost-v1"},
         },
         "notes": [],
-        "assumptions": ["All costs are planning estimates, not live prices."],
+        "assumptions": [{"assumption_id": "cost-v1", "category": "budget", "description": "Offline planning estimate; verify before departure."}],
     }
     values.update(overrides)
     return Itinerary(**values)
@@ -104,6 +106,7 @@ def test_citations_must_reference_trusted_evidence_and_disclose_freshness() -> N
         fact="West Lake is in Hangzhou.",
         source_url="https://photon.komoot.io/api/",
         source_type="trusted_provider",
+        fetched_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
     )
     citation = SourceCitation(
         evidence_id="place-1",
@@ -111,6 +114,7 @@ def test_citations_must_reference_trusted_evidence_and_disclose_freshness() -> N
         source_type="trusted_provider",
         fetched_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
         freshness="reference only; verify before departure",
+        fact="West Lake is in Hangzhou.",
     )
     itinerary = itinerary_factory(days=[
         ItineraryDay(
@@ -122,10 +126,10 @@ def test_citations_must_reference_trusted_evidence_and_disclose_freshness() -> N
         itinerary_factory().days[1],
     ])
 
-    assert validate_itinerary(itinerary, profile_factory(), [evidence]) == []
+    assert validate_itinerary(itinerary, profile_factory(), [evidence], now=lambda: datetime(2026, 7, 1, tzinfo=timezone.utc)) == []
 
     invalid = itinerary.model_copy(update={"citations": [citation.model_copy(update={"evidence_id": "made-up"})]})
-    assert {issue.code for issue in validate_itinerary(invalid, profile_factory(), [evidence])} == {"UNTRUSTED_EVIDENCE"}
+    assert {issue.code for issue in validate_itinerary(invalid, profile_factory(), [evidence], now=lambda: datetime(2026, 7, 1, tzinfo=timezone.utc))} == {"UNTRUSTED_EVIDENCE"}
 
 
 def test_planner_repairs_once_then_fails_closed() -> None:
@@ -142,3 +146,41 @@ def test_planner_repairs_once_then_fails_closed() -> None:
 
     assert calls[0] is None
     assert calls[1] == ["SCHEMA_INVALID"]
+
+
+def test_per_person_budget_is_compared_as_a_trip_total() -> None:
+    itinerary = itinerary_factory(budget={
+        "transport": 1000, "hotel": 500, "food": 300, "tickets": 100, "reserve": 100, "other": 0,
+        "total": 2000, "trip_total": 4000, "currency": "CNY", "traveler_basis": "per_person", "traveler_count": 2,
+        "estimate": {"low": 1800, "point": 2000, "high": 2200, "currency": "CNY", "basis": "per_person", "assumption_id": "cost-v1"},
+    })
+
+    assert {issue.code for issue in validate_itinerary(itinerary, profile_factory(budget_cny=3500), [])} == {"BUDGET_EXCEEDED"}
+
+
+def test_claim_metadata_is_derived_from_timestamped_registry_not_model_payload() -> None:
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    evidence = TrustedEvidence("hotel-1", "Hotel estimate range is CNY 300–500.", "https://provider.example/hotel", "trusted_provider", now)
+    candidate = itinerary_factory(days=[
+        ItineraryDay(
+            date=date(2026, 8, 1),
+            morning=Activity(title="Hotel planning", start_time="09:00", end_time="11:00", claims=[FactClaim(text="Hotel estimate range is CNY 300–500.", evidence_id="hotel-1")]),
+            afternoon=itinerary_factory().days[0].afternoon, evening=itinerary_factory().days[0].evening,
+        ), itinerary_factory().days[1],
+    ])
+    repaired = Planner(lambda *_: candidate.model_dump(mode="json"), now=lambda: now).plan(profile_factory(), [evidence])
+
+    assert repaired.days[0].morning.citations[0].source_url == "https://provider.example/hotel"
+    assert repaired.days[0].morning.citations[0].fetched_at == now
+
+
+def test_stale_future_and_free_text_assumptions_fail_closed() -> None:
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    stale = TrustedEvidence("place-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", datetime(2026, 6, 20, tzinfo=timezone.utc))
+    future = TrustedEvidence("place-2", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", datetime(2026, 7, 3, tzinfo=timezone.utc))
+    with pytest.raises(ValidationError):
+        itinerary_factory(assumptions=[{"assumption_id": "cost-v1", "category": "budget", "description": "Hotel price is CNY 399."}])
+    with pytest.raises(PlanValidationError):
+        Planner(lambda *_: itinerary_factory().model_dump(mode="json"), now=lambda: now).plan(profile_factory(), [stale])
+    with pytest.raises(PlanValidationError):
+        Planner(lambda *_: itinerary_factory().model_dump(mode="json"), now=lambda: now).plan(profile_factory(), [future])

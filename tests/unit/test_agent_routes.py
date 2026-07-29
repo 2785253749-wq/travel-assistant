@@ -1,4 +1,5 @@
 from unittest.mock import Mock
+from datetime import datetime, timezone
 
 from app.agent.graph import (
     ChatSessionStore,
@@ -10,6 +11,7 @@ from app.agent.graph import (
 )
 from app.agent.intent import IntentResult
 from app.schemas import TravelProfile
+from app.agent.planning import PlanValidationError, Planner as StructuredPlanner
 
 
 class StubClassifier:
@@ -307,3 +309,30 @@ def test_agent_logs_only_stable_error_metadata(caplog):
     assert record.error_code == "AGENT_UNAVAILABLE"
     assert record.exception_type == "RuntimeError"
     assert "jwt-super-secret" not in caplog.text
+
+
+def test_agent_uses_structured_planner_repair_and_fails_closed_after_second_error():
+    profile = TravelProfile(origin="北京", destination="杭州", start_date="2026-10-01", end_date="2026-10-02", travelers=2, budget_cny=3000)
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    valid = {
+        "title": "Weekend", "start_date": "2026-10-01", "end_date": "2026-10-02",
+        "days": [
+            {"date": "2026-10-01", "morning": {"title": "Walk", "start_time": "09:00", "end_time": "11:00"}, "afternoon": {"title": "Museum", "start_time": "13:00", "end_time": "15:00"}, "evening": {"title": "Dinner", "start_time": "18:00", "end_time": "20:00"}},
+            {"date": "2026-10-02", "morning": {"title": "Park", "start_time": "09:00", "end_time": "11:00"}, "afternoon": {"title": "Market", "start_time": "13:00", "end_time": "15:00"}, "evening": {"title": "Return", "start_time": "17:00", "end_time": "19:00"}},
+        ],
+        "budget": {"transport": 800, "hotel": 1000, "food": 800, "tickets": 200, "reserve": 200, "other": 0, "total": 3000, "trip_total": 3000, "currency": "CNY", "traveler_basis": "trip_total", "traveler_count": 2, "estimate": {"low": 2800, "point": 3000, "high": 3200, "currency": "CNY", "basis": "trip_total", "assumption_id": "cost-v1"}},
+        "notes": [], "assumptions": [{"assumption_id": "cost-v1", "category": "budget", "description": "Offline planning estimate."}],
+    }
+    calls = []
+    def repaired(_profile, _sources, repair_codes):
+        calls.append(repair_codes)
+        return {"invalid": True} if repair_codes is None else valid
+    evidence = StubEvidenceProvider([TrustedEvidence("ev-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)])
+
+    result = make_agent(profile=profile, planner=StructuredPlanner(repaired, now=lambda: now), evidence_provider=evidence).run("plan", trip=None)
+
+    assert result.stage == "planned"
+    assert calls == [None, ["SCHEMA_INVALID"]]
+
+    failed = make_agent(profile=profile, planner=StructuredPlanner(lambda *_: {"invalid": True}, now=lambda: now), evidence_provider=evidence).run("plan", trip=None)
+    assert failed.error_code == "PLAN_VALIDATION_FAILED"

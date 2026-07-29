@@ -12,6 +12,7 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypedDict
+from datetime import datetime
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -74,6 +75,7 @@ class TrustedEvidence:
     fact: str
     source_url: str
     source_type: str
+    fetched_at: datetime | None = None
 
 
 class ChatSessionStore:
@@ -116,7 +118,7 @@ class TravelExtractor(Protocol):
     def extract(self, message: str, profile: TravelProfile) -> TravelProfile: ...
 
 
-class Planner(Protocol):
+class LegacyPlanner(Protocol):
     def invoke(
         self, profile: TravelProfile, evidence: tuple[TrustedEvidence, ...]
     ) -> PlanningResult: ...
@@ -191,6 +193,35 @@ class ModelPlanner:
         return PlanningResult([PlanClaim(text=str(response.content))])
 
 
+class ModelStructuredPlanner:
+    """Production planner: model output is accepted only through the structured gate."""
+
+    def __init__(self) -> None:
+        from app.agent.planning import Planner
+
+        self._planner = Planner(self._generate)
+
+    def plan(self, profile: TravelProfile, provider_results: object):
+        return self._planner.plan(profile, provider_results)
+
+    @staticmethod
+    def _generate(profile: TravelProfile, provider_results: object, repair_codes: list[str] | None) -> object:
+        from app.schemas import Itinerary
+
+        response = model().with_structured_output(Itinerary, method="json_mode").invoke([
+            SystemMessage(content="Generate only a structured itinerary. Claims require evidence_id; never supply source metadata."),
+            HumanMessage(content=json.dumps({
+                "profile": profile.model_dump(mode="json"),
+                "repair_codes": repair_codes,
+                "allowed_evidence": [
+                    {"evidence_id": evidence.evidence_id, "fact": evidence.fact}
+                    for evidence in _planning_evidence(provider_results)
+                ],
+            }, ensure_ascii=False)),
+        ])
+        return response.model_dump(mode="json") if hasattr(response, "model_dump") else response
+
+
 class SafeTravelAgent:
     """Coordinates a bounded journey from collection through safe generation."""
 
@@ -198,7 +229,7 @@ class SafeTravelAgent:
         self,
         classifier: IntentClassifier | None = None,
         extractor: TravelExtractor | None = None,
-        planner: Planner | None = None,
+        planner: Any | None = None,
         repository: Any | None = None,
         usage_guard: UsageGuard | None = None,
         evidence_provider: TrustedEvidenceProvider | None = None,
@@ -206,7 +237,7 @@ class SafeTravelAgent:
     ) -> None:
         self._classifier = classifier or ModelIntentClassifier()
         self._extractor = extractor or ModelTravelExtractor()
-        self._planner = planner or ModelPlanner()
+        self._planner = planner or ModelStructuredPlanner()
         self._repository = repository
         self._usage_guard = usage_guard
         self._evidence_provider = evidence_provider or NullEvidenceProvider()
@@ -251,6 +282,21 @@ class SafeTravelAgent:
             evidence = tuple(self._evidence_provider.fetch(profile))
             if not evidence:
                 result = self._unverified_framework(profile)
+            elif not hasattr(self._planner, "invoke") and hasattr(self._planner, "plan"):
+                from app.agent.planning import PlanValidationError
+                try:
+                    itinerary = self._planner.plan(profile, evidence)
+                except PlanValidationError:
+                    result = ChatResult(
+                        "Unable to safely validate this itinerary; please try again.", "collecting", profile.model_dump(),
+                        error_code="PLAN_VALIDATION_FAILED",
+                    )
+                else:
+                    citations = _itinerary_citations(itinerary)
+                    result = ChatResult(
+                        itinerary.model_dump_json(), "planned", profile.model_dump(),
+                        sources=[citation.model_dump(mode="json") for citation in citations],
+                    )
             else:
                 result = self._verify_plan(self._planner.invoke(profile, evidence), evidence, profile)
             self._persist(trip, user_id, message, result)
@@ -356,3 +402,24 @@ def _trusted_source(evidence: TrustedEvidence) -> bool:
         and bool(evidence.evidence_id.strip())
         and bool(evidence.fact.strip())
     )
+
+
+def _planning_evidence(value: object) -> list[TrustedEvidence]:
+    from app.providers.base import ProviderResult
+
+    output: list[TrustedEvidence] = []
+    values = value if isinstance(value, (list, tuple)) else (value,)
+    for item in values:
+        if isinstance(item, ProviderResult):
+            output.extend(item.evidence)
+        elif isinstance(item, TrustedEvidence):
+            output.append(item)
+    return output
+
+
+def _itinerary_citations(itinerary: Any) -> list[Any]:
+    citations = list(itinerary.citations)
+    for day in itinerary.days:
+        for activity in (day.morning, day.afternoon, day.evening):
+            citations.extend(activity.citations)
+    return citations

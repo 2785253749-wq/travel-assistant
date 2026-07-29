@@ -98,5 +98,6 @@ class WeatherProvider:
             fact=fact,
             source_url=WEATHER_SOURCE,
             source_type="trusted_provider",
+            fetched_at=fetched_at,
         )
         return ProviderResult(summary, WEATHER_SOURCE, fetched_at, evidence=(evidence,))
