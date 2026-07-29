@@ -16,7 +16,7 @@
 ## Verification
 
 - `node --check app/static/app.js` — passed.
-- `node --test tests/frontend/app.test.js` — **13 passed**.
+- `node --test tests/frontend/app.test.js` — **14 passed**.
 - `git diff --check` — passed.
 - `python -m pytest -v` (via the project virtual environment) — **177 passed**.
 
@@ -54,3 +54,13 @@ Browser authentication expects deployment bootstrap configuration in `window.TRA
 
 1. RED: 4 of 13 executable behavior tests failed for residual signed-out chat/private values, a second `401` retaining login, a thrown refresh exception retaining login, and an invalid allowed-host citation exposing a link and forged metadata.
 2. GREEN: all 13 behavior tests pass after the focused changes; focused Python tests pass 6/6 and the full Python suite passes 177/177.
+
+## Round 3 ordering fix
+
+- Private DOM cleanup now clears text, values, and child nodes before hiding the corresponding account, history, profile, trip, and provider-notice regions.
+- The provider warning recreates its static labels when displayed after cleanup, while canonical timestamp and freshness handling remain unchanged.
+
+### Round 3 TDD evidence
+
+1. RED: the new observable mutation-order test recorded `history-hide` before `history-clear`, and also exposed the provider notice being hidden before its timestamp/children were cleared.
+2. GREEN: all 14 executable behavior tests pass after the focused reordering; the test asserts mutation order rather than only final DOM state. Focused Python integration tests pass 6/6, and the full Python suite passes 177/177.

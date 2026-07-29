@@ -7,6 +7,35 @@ const { FakeElement, FakeSupabaseAuth, createHarness, descendants, findByText, j
 const SESSION = { access_token: "access-one", refresh_token: "refresh-one", expires_at: 2000000000, user: { email: "owner@example.test" } };
 const REFRESHED = { access_token: "access-two", refresh_token: "refresh-two", expires_at: 2000003600, user: { email: "owner@example.test" } };
 
+function observeHidden(element, label, events) {
+  let value = element.hidden;
+  Object.defineProperty(element, "hidden", {
+    configurable: true,
+    get() { return value; },
+    set(next) { value = next; if (next === true) events.push(label); },
+  });
+}
+
+function observeChildClear(element, label, events) {
+  const removeChild = element.removeChild.bind(element);
+  element.removeChild = (child) => { events.push(label); return removeChild(child); };
+}
+
+function observeEmptyText(element, label, events) {
+  let value = element.textContent;
+  Object.defineProperty(element, "textContent", {
+    configurable: true,
+    get() { return value; },
+    set(next) { value = String(next); if (next === "") events.push(label); },
+  });
+}
+
+function assertBefore(events, first, second) {
+  assert.notEqual(events.indexOf(first), -1, `${first} was not observed: ${events.join(", ")}`);
+  assert.notEqual(events.indexOf(second), -1, `${second} was not observed: ${events.join(", ")}`);
+  assert.ok(events.indexOf(first) < events.indexOf(second), `${first} must precede ${second}: ${events.join(", ")}`);
+}
+
 test("login uses the Supabase session lifecycle and starts a fresh authenticated conversation", async () => {
   const chatCalls = [];
   const auth = new FakeSupabaseAuth({ loginSession: SESSION });
@@ -83,6 +112,48 @@ test("logout clears every private value and private DOM region", async () => {
   assert.equal(harness.elements.get("rename-dialog").open, false);
   assert.equal(harness.elements.get("account-summary").hidden, true);
   assert.equal(harness.elements.get("auth-form").hidden, false);
+});
+
+test("logout clears private nodes before hiding each containing region", async () => {
+  const events = [];
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ auth, fetch: async (call) => call.url === "/api/trips" ? jsonResponse(200, []) : jsonResponse(200, {}) });
+  await settle();
+  const historyList = harness.elements.get("trip-history-list");
+  const history = harness.elements.get("trip-history");
+  const tripContent = harness.elements.get("trip-content");
+  const tripView = harness.elements.get("trip-view");
+  const profileFields = harness.elements.get("profile-fields");
+  const profileCard = harness.elements.get("profile-confirmation");
+  const notice = harness.elements.get("provider-notice");
+  const updatedAt = harness.elements.get("provider-updated-at");
+  historyList.append(new FakeElement("li"));
+  tripContent.append(new FakeElement("p"));
+  profileFields.append(new FakeElement("dd"));
+  notice.append(new FakeElement("span"));
+  updatedAt.textContent = "private provider time";
+  history.hidden = false;
+  tripView.hidden = false;
+  profileCard.hidden = false;
+  notice.hidden = false;
+  observeChildClear(historyList, "history-clear", events);
+  observeHidden(history, "history-hide", events);
+  observeChildClear(tripContent, "trip-clear", events);
+  observeHidden(tripView, "trip-hide", events);
+  observeChildClear(profileFields, "profile-clear", events);
+  observeHidden(profileCard, "profile-hide", events);
+  observeEmptyText(updatedAt, "provider-time-clear", events);
+  observeChildClear(notice, "provider-notice-clear", events);
+  observeHidden(notice, "provider-notice-hide", events);
+
+  await harness.elements.get("sign-out-button").dispatch("click");
+  await settle();
+
+  assertBefore(events, "history-clear", "history-hide");
+  assertBefore(events, "trip-clear", "trip-hide");
+  assertBefore(events, "profile-clear", "profile-hide");
+  assertBefore(events, "provider-time-clear", "provider-notice-hide");
+  assertBefore(events, "provider-notice-clear", "provider-notice-hide");
 });
 
 test("a private API 401 refreshes once and retries with the new Authorization token", async () => {

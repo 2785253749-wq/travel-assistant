@@ -137,13 +137,21 @@
 
   function showProviderNotice(warnings, itinerary = null) {
     if (!Array.isArray(warnings) || warnings.length === 0) {
+      elements.providerUpdatedAt.textContent = "";
+      clearChildren(elements.providerNotice);
       elements.providerNotice.hidden = true;
       return;
     }
     const citation = canonicalCitations(itinerary)[0];
+    clearChildren(elements.providerNotice);
+    const summary = document.createElement("strong");
+    summary.textContent = "部分外部信息暂不可用。";
     elements.providerUpdatedAt.textContent = citation
       ? ` 数据获取时间：${citation.fetched_at}；${citation.freshness}`
       : " 更新时间未知；数据可能降级。";
+    const fallback = document.createElement("span");
+    fallback.textContent = " 仍可查看不依赖实时数据的行程框架。";
+    elements.providerNotice.append(summary, elements.providerUpdatedAt, fallback);
     elements.providerNotice.hidden = false;
   }
 
@@ -420,8 +428,8 @@
     elements.email.value = "";
     elements.authFormPanel.hidden = false;
     elements.account.hidden = true;
-    elements.history.hidden = true;
     clearChildren(elements.historyList);
+    elements.history.hidden = true;
     setState("signed_out");
   }
 
@@ -438,11 +446,8 @@
     clearChildren(elements.profileFields);
     clearChildren(elements.tripContent);
     elements.tripTitle.textContent = "";
-    elements.profileCard.hidden = true;
-    elements.tripView.hidden = true;
-    elements.tripActions.hidden = true;
-    elements.providerNotice.hidden = true;
     elements.providerUpdatedAt.textContent = "";
+    clearChildren(elements.providerNotice);
     elements.shareLink.value = "";
     elements.shareExpiry.textContent = "";
     elements.renameInput.value = "";
@@ -452,6 +457,10 @@
     if (elements.renameDialog.open) elements.renameDialog.close();
     clearChildren(elements.messages);
     if (options.showWelcome !== false) resetMessages();
+    elements.profileCard.hidden = true;
+    elements.tripView.hidden = true;
+    elements.tripActions.hidden = true;
+    elements.providerNotice.hidden = true;
   }
 
   function applySession(session, options = {}) {
