@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
+import secrets
 
 from app.api.auth import AuthenticatedUser
 from app.core.config import get_settings
@@ -23,7 +24,7 @@ def test_production_service_uses_verified_bearer_for_jwt_scoped_repository(monke
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-test-key")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "unused-by-trips")
-    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")
+    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", secrets.token_urlsafe(32))
     get_settings.cache_clear()
     from app.trips import service as service_module
 
@@ -50,7 +51,7 @@ def test_same_verified_token_does_not_reuse_jwt_scoped_client(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-test-key")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "unused-by-trips")
-    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")
+    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", secrets.token_urlsafe(32))
     get_settings.cache_clear()
     from app.trips import service as service_module
 

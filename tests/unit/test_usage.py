@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from app.core.errors import AppError
-from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircuitBreaker, SupabaseUsageRepository, UsageGuard, classify_provider_error, model_usage_scope
+from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircuitBreaker, ReserveResult, SupabaseUsageRepository, UsageGuard, classify_provider_error, model_usage_scope
 
 
 TODAY = datetime(2026, 7, 29, tzinfo=UTC).date()
@@ -131,13 +131,23 @@ def test_service_role_repository_uses_reservation_rpc_contract():
     class Query:
         def __init__(self, name, args): self.name, self.args = name, args
         def execute(self):
-            calls.append((self.name, self.args)); return type("Result", (), {"data": "reservation-1"})()
+            calls.append((self.name, self.args)); return type("Result", (), {"data": {"allowed": True, "reservation_id": "reservation-1", "reason": None}})()
     class Client:
         def rpc(self, name, args): return Query(name, args)
     repo = SupabaseUsageRepository(Client())
-    reservation_id = repo.reserve("user:1", TODAY, 5, 100)
-    repo.commit(reservation_id, "user:1", TODAY, 3, 4)
-    repo.rollback(reservation_id, "user:1", TODAY)
+    result = repo.reserve("user:1", TODAY, 5, 100)
+    assert result == ReserveResult("reservation-1", None)
+    repo.commit(result.reservation_id, "user:1", TODAY, 3, 4)
+    repo.rollback(result.reservation_id, "user:1", TODAY)
     assert [name for name, _ in calls] == ["reserve_ai_usage", "commit_ai_usage", "rollback_ai_usage"]
     assert calls[0][1]["p_global_limit"] == 100
     assert calls[1][1]["p_reservation_id"] == "reservation-1"
+
+
+def test_atomic_reserve_results_do_not_cross_contaminate_failure_reasons():
+    repository = InMemoryUsageRepository()
+    repository.set_user_count("full", 5, day=TODAY)
+    user_result = repository.reserve("full", TODAY, 5, 100)
+    global_result = repository.reserve("other", TODAY, 5, 0)
+    assert user_result.failure_reason == "user_limit"
+    assert global_result.failure_reason == "global_limit"

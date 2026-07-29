@@ -47,3 +47,15 @@
 - `tests/conftest.py` supplies an explicit test-only DeepSeek key to the offline fake model seam. Production wiring fixtures now use a real compliant base64url 32-byte session secret; this does not relax production validation.
 - Fresh focused command: `python -m pytest tests/unit/test_usage.py tests/unit/test_intent.py -q` → `17 passed in 1.27s`.
 - Fresh full command: `python -m pytest -q` → `147 passed, 1 warning in 1.78s` (existing Starlette/httpx deprecation warning).
+
+## Review fix round 3
+
+- `UsageRepository.reserve` now returns immutable `ReserveResult(reservation_id, failure_reason)`. `UsageGuard` maps only that operation-local reason; it has no shared failure state or stale read-after-unlock classification.
+- The service-role adapter requires a structured reserve response (`allowed`, `reservation_id`, `reason`) and the contract test covers reserve, commit, and rollback IDs and parameters.
+- Production session secrets accept only canonical unpadded base64url that decodes to at least 32 high-diversity bytes and round-trips byte-for-byte. Whitespace, padding, non-alphabet characters, placeholder/repeated patterns, and weak decoded byte strings are rejected.
+
+### Verification
+
+- RED: the new reserve-result tests failed to import `ReserveResult` before the refactor.
+- Focused: `python -m pytest tests/unit/test_usage.py tests/unit/test_config.py -q` → `20 passed in 0.07s`.
+- Full: `python -m pytest -q` → `154 passed, 1 warning in 1.76s`.

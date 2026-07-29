@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 import base64
+import re
 
 from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -45,14 +46,21 @@ class Settings(BaseSettings):
     def _valid_session_secret(self) -> bool:
         if self.anon_session_signing_secret is None:
             return False
-        value = self.anon_session_signing_secret.get_secret_value().strip()
-        if len(value) < 43 or len(set(value)) < 8 or value.lower().startswith(("replace", "your", "example")):
+        value = self.anon_session_signing_secret.get_secret_value()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43,}", value):
+            return False
+        if value.lower().startswith(("replace", "your", "example", "test")):
             return False
         try:
             decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
         except Exception:
             return False
-        return len(decoded) >= 32
+        canonical = base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii")
+        if canonical != value or len(decoded) < 32:
+            return False
+        if len(set(decoded)) < 8 or len(decoded) % 2 == 0 and decoded[: len(decoded) // 2] == decoded[len(decoded) // 2 :]:
+            return False
+        return True
 
     @staticmethod
     def _is_missing(value: AnyHttpUrl | SecretStr | None) -> bool:
