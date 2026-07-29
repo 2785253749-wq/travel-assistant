@@ -6,6 +6,10 @@
     origin: "出发地", destination: "目的地", start_date: "出发日期", end_date: "返回日期",
     travelers: "出行人数", budget_cny: "总预算（元）", preferences: "偏好", constraints: "限制",
   };
+  const ALLOWED_EXTERNAL_HOSTS = new Set([
+    "api.open-meteo.com", "geocoding-api.open-meteo.com", "photon.komoot.io",
+    "www.12306.cn", "www.ctrip.com",
+  ]);
   const $ = (id) => document.getElementById(id);
   const elements = {
     body: document.body, authForm: $("auth-form"), email: $("email"), password: $("password"),
@@ -19,14 +23,15 @@
     tripContent: $("trip-content"), tripActions: $("trip-actions"), save: $("save-trip-button"),
     share: $("share-trip-button"), history: $("trip-history"), historyList: $("trip-history-list"),
     shareDialog: $("share-dialog"), shareLink: $("share-link"), shareExpiry: $("share-expiry"),
-    copyShare: $("copy-share-link"), revokeShare: $("revoke-share-link"), renameDialog: $("rename-dialog"),
+    copyShare: $("copy-share-link"), revokeShare: $("revoke-share-link"), closeShare: $("close-share-dialog"), renameDialog: $("rename-dialog"),
     renameForm: $("rename-form"), renameInput: $("rename-input"), cancelRename: $("cancel-rename"),
   };
   const state = {
-    name: "signed_out", busy: false, accessToken: null, user: null, profile: null,
+    name: "signed_out", busy: false, session: null, authClient: null, user: null, profile: null,
     pendingResult: null, currentTrip: null, renameTripId: null, shareTripId: null,
     threadId: makeThreadId(),
   };
+  let refreshPromise = null;
 
   function makeThreadId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
@@ -46,9 +51,7 @@
 
   function setBusy(busy, message = "") {
     state.busy = busy;
-    for (const control of [elements.send, elements.signIn, elements.signUp, elements.signOut, elements.confirm, elements.edit, elements.save, elements.share]) {
-      if (control) control.disabled = busy;
-    }
+    for (const control of document.querySelectorAll("button,input,textarea")) control.disabled = busy;
     elements.progress.textContent = busy ? message || "正在处理，请稍候。" : "";
   }
 
@@ -72,17 +75,21 @@
   }
 
   function authorizationHeaders(headers = {}) {
-    if (!state.accessToken) return headers;
-    return { ...headers, Authorization: `Bearer ${state.accessToken}` };
+    if (!state.session || !state.session.access_token) return headers;
+    return { ...headers, Authorization: `Bearer ${state.session.access_token}` };
   }
 
-  async function requestJson(path, options = {}) {
+  async function requestJson(path, options = {}, allowRefresh = true) {
     const response = await fetch(path, {
       method: options.method || "GET",
       headers: authorizationHeaders({ "Content-Type": "application/json", ...(options.headers || {}) }),
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
     const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && allowRefresh && state.session) {
+      const refreshed = await refreshBrowserSession();
+      if (refreshed) return requestJson(path, options, false);
+    }
     if (!response.ok) {
       const detail = payload && payload.detail;
       const code = (detail && detail.code) || payload.code || "REQUEST_FAILED";
@@ -113,18 +120,33 @@
   }
 
   function showError(error) {
-    if (error && error.status === 401) clearSession();
     setState("error");
     setStatus(publicError(error && error.code), true);
   }
 
-  function showProviderNotice(warnings) {
+  function showProviderNotice(warnings, itinerary = null) {
     if (!Array.isArray(warnings) || warnings.length === 0) {
       elements.providerNotice.hidden = true;
       return;
     }
-    elements.providerUpdatedAt.textContent = ` 数据更新于 ${new Date().toLocaleString("zh-CN")}。`;
+    const citation = canonicalCitations(itinerary)[0];
+    elements.providerUpdatedAt.textContent = citation
+      ? ` 数据获取时间：${citation.fetched_at}；${citation.freshness}`
+      : " 更新时间未知；数据可能降级。";
     elements.providerNotice.hidden = false;
+  }
+
+  function canonicalCitations(itinerary) {
+    if (!itinerary || typeof itinerary !== "object") return [];
+    const citations = Array.isArray(itinerary.citations) ? [...itinerary.citations] : [];
+    for (const day of Array.isArray(itinerary.days) ? itinerary.days : []) {
+      for (const slot of ["morning", "afternoon", "evening"]) {
+        if (day && day[slot] && Array.isArray(day[slot].citations)) citations.push(...day[slot].citations);
+      }
+    }
+    return citations.filter((citation) => citation && citation.evidence_id && citation.fact && citation.fetched_at
+      && citation.freshness && ["official", "government", "trusted_provider"].includes(citation.source_type)
+      && allowedExternalUrl(citation.source_url || citation.source));
   }
 
   function renderProfile(profile) {
@@ -153,10 +175,25 @@
     return node;
   }
 
+  function allowedExternalUrl(url) {
+    try {
+      const raw = String(url);
+      const authority = /^https:\/\/([^/?#]+)/i.exec(raw);
+      const parsed = new URL(raw);
+      if (
+        parsed.protocol !== "https:" || !authority || authority[1].toLowerCase() !== parsed.hostname.toLowerCase()
+        || parsed.username || parsed.password || parsed.port || !ALLOWED_EXTERNAL_HOSTS.has(parsed.hostname.toLowerCase())
+      ) return null;
+      return parsed;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function safeExternalLink(url, text) {
     try {
-      const parsed = new URL(String(url));
-      if (parsed.protocol !== "https:") return null;
+      const parsed = allowedExternalUrl(url);
+      if (!parsed) return null;
       const link = document.createElement("a");
       link.href = parsed.href;
       link.target = "_blank";
@@ -197,7 +234,8 @@
         const activity = day[slot];
         if (!activity) continue;
         const titleText = `${slot}: ${activity.title || "待确认"} (${activity.start_time || ""}-${activity.end_time || ""})`;
-        appendTextBlock(slots, "li", titleText);
+        const item = appendTextBlock(slots, "li", titleText);
+        renderSources(item, activity.citations);
       }
       card.append(slots);
       days.append(card);
@@ -216,8 +254,14 @@
     for (const citation of citations) {
       const item = document.createElement("li");
       const link = safeExternalLink(citation && (citation.source_url || citation.source), citation && citation.source_type);
-      if (link) item.append(link);
-      appendTextBlock(item, "span", citation && citation.fetched_at ? `；获取时间：${citation.fetched_at}` : "；仅供参考");
+      if (link) {
+        item.append(link);
+      } else {
+        appendTextBlock(item, "span", `不可点击来源：${citation && (citation.source_url || citation.source) || "未知"}`);
+      }
+      if (citation && citation.fact) appendTextBlock(item, "p", `事实：${citation.fact}`);
+      appendTextBlock(item, "p", citation && citation.fetched_at ? `获取时间：${citation.fetched_at}` : "更新时间未知");
+      appendTextBlock(item, "p", citation && citation.freshness ? `新鲜度：${citation.freshness}` : "数据可能降级");
       list.append(item);
     }
     section.append(list);
@@ -247,7 +291,7 @@
     const itinerary = trip && trip.itinerary && typeof trip.itinerary === "object" ? trip.itinerary : asItinerary(trip && trip.reply);
     elements.tripContent.append(itinerary ? renderStructuredItinerary(itinerary) : renderReply(trip && trip.reply));
     state.currentTrip = options.public ? null : trip;
-    elements.tripActions.hidden = Boolean(options.public || !state.accessToken);
+    elements.tripActions.hidden = Boolean(options.public || !state.session);
     elements.tripView.hidden = false;
     elements.profileCard.hidden = true;
     setState("planned");
@@ -265,8 +309,9 @@
     try {
       const response = await requestJson("/api/chat", { method: "POST", body: { message, thread_id: state.threadId } });
       addMessage(response.reply, "assistant");
-      showProviderNotice(response.warnings);
-      state.pendingResult = { reply: response.reply, profile: response.profile || {}, itinerary: asItinerary(response.reply) };
+      const itinerary = asItinerary(response.reply);
+      showProviderNotice(response.warnings, itinerary);
+      state.pendingResult = { reply: response.reply, profile: response.profile || {}, itinerary };
       if (isCompleteProfile(response.profile)) {
         renderProfile(response.profile);
         setState("confirming");
@@ -285,12 +330,13 @@
   }
 
   function confirmProfile() {
-    if (!state.pendingResult) return;
+    if (state.busy || !state.pendingResult) return;
     renderTrip(state.pendingResult);
     setStatus("已根据确认资料展示行程建议。", false);
   }
 
   function editProfile() {
+    if (state.busy) return;
     setState("collecting");
     elements.profileCard.hidden = true;
     elements.message.focus();
@@ -298,8 +344,9 @@
   }
 
   async function authRequest(mode) {
+    if (state.busy) return;
     const config = browserAuthConfig();
-    if (!config) {
+    if (!config || !state.authClient) {
       setStatus("当前部署尚未配置浏览器认证；你仍可进行临时规划。", true);
       return;
     }
@@ -311,26 +358,15 @@
     }
     setBusy(true, mode === "signup" ? "正在注册…" : "正在登录…");
     try {
-      const endpoint = mode === "signup" ? "/auth/v1/signup" : "/auth/v1/token?grant_type=password";
-      const response = await fetch(`${config.url}${endpoint}`, {
-        method: "POST", headers: { apikey: config.anonKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw Object.assign(new Error("AUTH_FAILED"), { code: "AUTH_REQUIRED", status: response.status });
-      if (!payload.access_token) {
+      const operation = mode === "signup" ? state.authClient.auth.signUp({ email, password }) : state.authClient.auth.signInWithPassword({ email, password });
+      const { data, error } = await operation;
+      if (error) throw Object.assign(new Error("AUTH_FAILED"), { code: "AUTH_REQUIRED", status: 401 });
+      if (!data || !data.session) {
         setStatus("注册请求已提交，请按邮箱提示完成验证后登录。", false);
         return;
       }
-      state.accessToken = payload.access_token;
-      state.user = payload.user || {};
+      applySession(data.session, { resetConversation: true });
       elements.password.value = "";
-      elements.accountEmail.textContent = state.user.email || email;
-      elements.authFormPanel.hidden = true;
-      elements.account.hidden = false;
-      elements.history.hidden = false;
-      setState("collecting");
-      setStatus("已登录。现在可以保存、管理和分享行程。", false);
       await refreshHistory();
     } catch (error) {
       showError(error);
@@ -340,13 +376,10 @@
   }
 
   async function signOut() {
-    const config = browserAuthConfig();
-    const token = state.accessToken;
+    if (state.busy) return;
     setBusy(true, "正在退出…");
     try {
-      if (config && token) {
-        await fetch(`${config.url}/auth/v1/logout`, { method: "POST", headers: { apikey: config.anonKey, Authorization: `Bearer ${token}` } });
-      }
+      if (state.authClient) await state.authClient.auth.signOut();
     } finally {
       clearSession();
       setBusy(false);
@@ -355,10 +388,14 @@
   }
 
   function clearSession() {
-    state.accessToken = null;
+    state.session = null;
     state.user = null;
+    clearConversationState();
+    state.profile = null;
+    state.pendingResult = null;
     state.currentTrip = null;
-    state.threadId = makeThreadId();
+    state.renameTripId = null;
+    state.shareTripId = null;
     elements.password.value = "";
     elements.authFormPanel.hidden = false;
     elements.account.hidden = true;
@@ -367,8 +404,64 @@
     setState("signed_out");
   }
 
+  function resetMessages() {
+    clearChildren(elements.messages);
+    addMessage("你好！我可以帮你规划国内 2 至 7 天的自由行。", "assistant");
+  }
+
+  function clearConversationState() {
+    state.profile = null;
+    state.pendingResult = null;
+    state.currentTrip = null;
+    state.threadId = makeThreadId();
+    clearChildren(elements.profileFields);
+    clearChildren(elements.tripContent);
+    elements.profileCard.hidden = true;
+    elements.tripView.hidden = true;
+    elements.tripActions.hidden = true;
+    elements.providerNotice.hidden = true;
+    elements.providerUpdatedAt.textContent = "";
+    elements.shareLink.value = "";
+    elements.shareExpiry.textContent = "";
+    elements.renameInput.value = "";
+    elements.message.value = "";
+    elements.accountEmail.textContent = "";
+    if (elements.shareDialog.open) elements.shareDialog.close();
+    if (elements.renameDialog.open) elements.renameDialog.close();
+    resetMessages();
+  }
+
+  function applySession(session, options = {}) {
+    state.session = session;
+    state.user = session.user || {};
+    if (options.resetConversation) clearConversationState();
+    elements.accountEmail.textContent = state.user.email || "已登录账户";
+    elements.authFormPanel.hidden = true;
+    elements.account.hidden = false;
+    elements.history.hidden = false;
+    setState("collecting");
+    if (options.resetConversation) setStatus("已切换登录会话，请重新确认行程资料。", false);
+  }
+
+  async function refreshBrowserSession() {
+    if (!state.authClient) return false;
+    if (!refreshPromise) {
+      refreshPromise = (async () => {
+        const { data, error } = await state.authClient.auth.refreshSession();
+        if (error || !data || !data.session) {
+          try { await state.authClient.auth.signOut(); } catch (_) { /* Local privacy cleanup still runs below. */ }
+          clearSession();
+          return false;
+        }
+        applySession(data.session);
+        return true;
+      })().finally(() => { refreshPromise = null; });
+    }
+    return refreshPromise;
+  }
+
   function requireAuthentication() {
-    if (state.accessToken) return true;
+    if (state.session) return true;
     setState("signed_out");
     setStatus("请先登录后再管理私有行程。", true);
     elements.email.focus();
@@ -376,7 +469,7 @@
   }
 
   async function refreshHistory() {
-    if (!state.accessToken) return;
+    if (!state.session) return;
     try {
       const trips = await requestJson("/api/trips");
       clearChildren(elements.historyList);
@@ -401,6 +494,7 @@
       button.type = "button";
       button.className = operation === "delete" ? "danger" : "secondary";
       button.textContent = label;
+      button.disabled = state.busy;
       button.addEventListener("click", () => historyOperation(operation, trip));
       controls.append(button);
     }
@@ -441,6 +535,7 @@
 
   async function renameTrip(event) {
     event.preventDefault();
+    if (state.busy) return;
     const title = elements.renameInput.value.trim();
     if (!state.renameTripId || !title) return;
     setBusy(true, "正在更新名称…");
@@ -464,6 +559,7 @@
   }
 
   async function createShare() {
+    if (state.busy) return;
     if (!requireAuthentication() || !state.currentTrip || !state.currentTrip.id) {
       setStatus("请先保存行程后再创建分享链接。", true);
       return;
@@ -482,7 +578,7 @@
   }
 
   async function revokeShare() {
-    if (!state.shareTripId) return;
+    if (state.busy || !state.shareTripId) return;
     setBusy(true, "正在撤销分享链接…");
     try {
       await requestJson(`/api/trips/${encodeURIComponent(state.shareTripId)}/share`, { method: "DELETE" });
@@ -492,6 +588,7 @@
   }
 
   async function copyShareLink() {
+    if (state.busy) return;
     try {
       await navigator.clipboard.writeText(elements.shareLink.value);
       setStatus("分享链接已复制。", false);
@@ -502,6 +599,7 @@
   }
 
   async function showPublicShare() {
+    if (state.busy) return false;
     const match = /^#share=([^&]+)$/.exec(window.location.hash);
     if (!match) return false;
     const token = decodeURIComponent(match[1]);
@@ -516,6 +614,28 @@
     return true;
   }
 
+  async function initializeAuth() {
+    const config = browserAuthConfig();
+    if (!config || !window.supabase || typeof window.supabase.createClient !== "function") return;
+    state.authClient = window.supabase.createClient(config.url, config.anonKey, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+    });
+    state.authClient.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_OUT") clearSession();
+      else if (session) applySession(session);
+    });
+    const { data, error } = await state.authClient.auth.getSession();
+    if (!error && data && data.session) {
+      applySession(data.session);
+      await refreshHistory();
+    }
+  }
+
+  async function initializeApp() {
+    if (await showPublicShare()) return;
+    await initializeAuth();
+  }
+
   elements.chatForm.addEventListener("submit", sendMessage);
   elements.confirm.addEventListener("click", confirmProfile);
   elements.edit.addEventListener("click", editProfile);
@@ -526,7 +646,8 @@
   elements.share.addEventListener("click", createShare);
   elements.copyShare.addEventListener("click", copyShareLink);
   elements.revokeShare.addEventListener("click", revokeShare);
+  elements.closeShare.addEventListener("click", () => { if (!state.busy) elements.shareDialog.close(); });
   elements.renameForm.addEventListener("submit", renameTrip);
-  elements.cancelRename.addEventListener("click", () => elements.renameDialog.close());
-  showPublicShare();
+  elements.cancelRename.addEventListener("click", () => { if (!state.busy) elements.renameDialog.close(); });
+  initializeApp();
 })();

@@ -1,0 +1,260 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const test = require("node:test");
+const { FakeElement, FakeSupabaseAuth, createHarness, descendants, findByText, jsonResponse, settle } = require("./dom-harness");
+
+const SESSION = { access_token: "access-one", refresh_token: "refresh-one", expires_at: 2000000000, user: { email: "owner@example.test" } };
+const REFRESHED = { access_token: "access-two", refresh_token: "refresh-two", expires_at: 2000003600, user: { email: "owner@example.test" } };
+
+test("login uses the Supabase session lifecycle and starts a fresh authenticated conversation", async () => {
+  const chatCalls = [];
+  const auth = new FakeSupabaseAuth({ loginSession: SESSION });
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url === "/api/trips") return jsonResponse(200, []);
+    if (call.url === "/api/chat") {
+      chatCalls.push(JSON.parse(call.options.body));
+      return jsonResponse(200, { reply: "请继续", stage: "collecting", profile: { origin: "上海" } });
+    }
+    throw new Error(`unexpected ${call.url}`);
+  } });
+  await settle();
+  harness.elements.get("message-input").value = "匿名资料";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+  harness.elements.get("email").value = "owner@example.test";
+  harness.elements.get("password").value = "password1";
+  await harness.elements.get("auth-form").dispatch("submit");
+  await settle();
+  harness.elements.get("message-input").value = "登录资料";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  assert.equal(harness.window.supabaseCreate.clientOptions.auth.persistSession, true);
+  assert.equal(harness.window.supabaseCreate.clientOptions.auth.autoRefreshToken, true);
+  assert.equal(harness.window.supabaseCreate.clientOptions.auth.detectSessionInUrl, true);
+  assert.equal(chatCalls.length, 2);
+  assert.notEqual(chatCalls[0].thread_id, chatCalls[1].thread_id);
+  assert.match(harness.elements.get("status-message").textContent, /已切换登录会话|资料/);
+  const authenticatedCall = harness.fetchCalls.filter((call) => call.url === "/api/chat")[1];
+  assert.equal(authenticatedCall.options.headers.Authorization, "Bearer access-one");
+});
+
+test("logout clears every private value and private DOM region", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ auth, fetch: async (call) => call.url === "/api/trips" ? jsonResponse(200, []) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("profile-fields").append(Object.assign(new FakeElement("dd"), { textContent: "private profile" }));
+  harness.elements.get("trip-content").append(Object.assign(new FakeElement("p"), { textContent: "private trip" }));
+  harness.elements.get("trip-view").hidden = false;
+  harness.elements.get("profile-confirmation").hidden = false;
+  harness.elements.get("share-link").value = "https://travel.example/#share=secret";
+  harness.elements.get("rename-input").value = "private title";
+  harness.elements.get("message-input").value = "private draft";
+  harness.elements.get("share-dialog").showModal();
+  harness.elements.get("rename-dialog").showModal();
+
+  await harness.elements.get("sign-out-button").dispatch("click");
+  await settle();
+
+  assert.equal(auth.signOutCalls, 1);
+  assert.equal(harness.elements.get("trip-content").textContent, "");
+  assert.equal(harness.elements.get("profile-fields").textContent, "");
+  assert.equal(harness.elements.get("trip-view").hidden, true);
+  assert.equal(harness.elements.get("profile-confirmation").hidden, true);
+  assert.equal(harness.elements.get("trip-history").hidden, true);
+  assert.equal(harness.elements.get("share-link").value, "");
+  assert.equal(harness.elements.get("rename-input").value, "");
+  assert.equal(harness.elements.get("message-input").value, "");
+  assert.equal(harness.elements.get("account-email").textContent, "");
+  assert.equal(harness.elements.get("share-dialog").open, false);
+  assert.equal(harness.elements.get("rename-dialog").open, false);
+  assert.equal(harness.elements.get("account-summary").hidden, true);
+  assert.equal(harness.elements.get("auth-form").hidden, false);
+});
+
+test("a private API 401 refreshes once and retries with the new Authorization token", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION, refreshedSession: REFRESHED });
+  let privateCalls = 0;
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url !== "/api/trips") throw new Error(`unexpected ${call.url}`);
+    privateCalls += 1;
+    return privateCalls === 1 ? jsonResponse(401, { detail: { code: "AUTH_INVALID" } }) : jsonResponse(200, []);
+  } });
+  await settle();
+
+  assert.equal(auth.refreshCalls, 1);
+  assert.equal(privateCalls, 2);
+  assert.equal(harness.fetchCalls[0].options.headers.Authorization, "Bearer access-one");
+  assert.equal(harness.fetchCalls[1].options.headers.Authorization, "Bearer access-two");
+  assert.equal(harness.elements.get("account-summary").hidden, false);
+});
+
+test("only refresh failure clears the restored authenticated session", async () => {
+  const successfulAuth = new FakeSupabaseAuth({ initialSession: SESSION, refreshedSession: REFRESHED });
+  const stillSignedIn = createHarness({ auth: successfulAuth, fetch: async () => jsonResponse(401, { detail: { code: "AUTH_INVALID" } }) });
+  await settle();
+  assert.equal(successfulAuth.refreshCalls, 1);
+  assert.equal(successfulAuth.signOutCalls, 0);
+  assert.equal(stillSignedIn.elements.get("account-summary").hidden, false);
+
+  const failedAuth = new FakeSupabaseAuth({ initialSession: SESSION, refreshedSession: null });
+  const signedOut = createHarness({ auth: failedAuth, fetch: async () => jsonResponse(401, { detail: { code: "AUTH_INVALID" } }) });
+  await settle();
+  assert.equal(failedAuth.refreshCalls, 1);
+  assert.equal(failedAuth.signOutCalls, 1);
+  assert.equal(signedOut.elements.get("account-summary").hidden, true);
+  assert.equal(signedOut.elements.get("auth-form").hidden, false);
+});
+
+test("Supabase auth state changes replace the token used by later private calls", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ auth, fetch: async (call) => call.url === "/api/trips" ? jsonResponse(200, []) : jsonResponse(200, { reply: "继续", stage: "collecting", profile: {} }) });
+  await settle();
+  auth.emit("TOKEN_REFRESHED", REFRESHED);
+  harness.elements.get("message-input").value = "刷新后请求";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+  const chatCall = harness.fetchCalls.find((call) => call.url === "/api/chat");
+  assert.equal(chatCall.options.headers.Authorization, "Bearer access-two");
+});
+
+test("busy state prevents duplicate fetches and disables static and dynamic actions", async () => {
+  let release;
+  let chatCalls = 0;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const harness = createHarness({ fetch: async (call) => {
+    if (call.url !== "/api/chat") return jsonResponse(200, []);
+    chatCalls += 1;
+    await pending;
+    return jsonResponse(200, { reply: "继续", stage: "collecting", profile: {} });
+  } });
+  await settle();
+  const dynamicAction = harness.document.createElement("button");
+  dynamicAction.textContent = "动态删除";
+  harness.elements.get("trip-history-list").append(dynamicAction);
+  harness.elements.get("message-input").value = "第一次";
+  const first = harness.elements.get("chat-form").dispatch("submit");
+  await settle(1);
+  harness.elements.get("message-input").value = "第二次";
+  const second = harness.elements.get("chat-form").dispatch("submit");
+
+  assert.equal(chatCalls, 1);
+  assert.equal(dynamicAction.disabled, true);
+  assert.equal(harness.elements.get("close-share-dialog").disabled, true);
+  release();
+  await Promise.all([first, second]);
+  await settle();
+  assert.equal(dynamicAction.disabled, false);
+  assert.equal(harness.elements.get("message-input").disabled, false);
+});
+
+test("Task 7 activity citations render canonical freshness and reject malicious links", async () => {
+  const root = path.resolve(__dirname, "..", "..");
+  const itinerary = JSON.parse(fs.readFileSync(path.join(root, "tests", "fixtures", "task7_itinerary.json"), "utf8"));
+  itinerary.title = "<img src=x onerror=alert(1)>";
+  itinerary.days[0].afternoon.citations.push({
+    evidence_id: "evil-1", source_url: "https://api.open-meteo.com.evil.example/path",
+    source_type: "official", fetched_at: "2099-01-01T00:00:00Z", freshness: "fresh", fact: "forged",
+  });
+  itinerary.days[0].evening.citations.push({
+    evidence_id: "evil-2", source_url: "https://user@api.open-meteo.com/path",
+    source_type: "official", fetched_at: "2099-01-01T00:00:00Z", freshness: "fresh", fact: "userinfo",
+  });
+  itinerary.days[1].morning.citations.push({
+    evidence_id: "booking-1", source_url: "https://www.12306.cn/index/index.html",
+    source_type: "official", fetched_at: "2026-09-30T08:30:00Z", freshness: "reference only", fact: "铁路搜索入口",
+  });
+  itinerary.days[1].afternoon.citations.push({
+    evidence_id: "evil-3", source_url: "https://api.open-meteo.com:444/path",
+    source_type: "official", fetched_at: "2099-01-01T00:00:00Z", freshness: "fresh", fact: "port",
+  });
+  itinerary.days[1].evening.citations.push({
+    evidence_id: "evil-4", source_url: "https://unknown.example/path",
+    source_type: "official", fetched_at: "2099-01-01T00:00:00Z", freshness: "fresh", fact: "unknown",
+  });
+  const harness = createHarness({ hash: "#share=opaque", fetch: async (call) => {
+    assert.equal(call.url, "/api/shared/opaque");
+    return jsonResponse(200, { id: "trip-1", title: "shared", status: "planned", profile: {}, itinerary, updated_at: null });
+  } });
+  await settle();
+  const nodes = descendants(harness.elements.get("trip-content"));
+  const links = nodes.filter((node) => node.tagName === "A");
+
+  assert.equal(links.length, 2);
+  assert.equal(links[0].href, "https://api.open-meteo.com/v1/forecast");
+  assert.equal(links[0].rel, "noopener noreferrer");
+  assert.equal(links[1].href, "https://www.12306.cn/index/index.html");
+  assert.match(harness.elements.get("trip-content").textContent, /成都 2026-10-01 的最高气温为 24°C/);
+  assert.match(harness.elements.get("trip-content").textContent, /2026-09-30T08:30:00\+00:00/);
+  assert.match(harness.elements.get("trip-content").textContent, /reference only/);
+  assert.match(harness.elements.get("trip-content").textContent, /api\.open-meteo\.com\.evil\.example/);
+  assert.equal(nodes.some((node) => node.tagName === "IMG"), false);
+  assert.equal(links.some((link) => link.href.includes("evil.example") || link.href.includes("user@") || link.href.includes(":444") || link.href.includes("unknown.example")), false);
+});
+
+test("provider warning without canonical citation time says the update time is unknown", async () => {
+  const harness = createHarness({ fetch: async () => jsonResponse(200, {
+    reply: "基础框架", stage: "collecting", profile: {}, warnings: ["WEATHER_TIMEOUT"],
+  }) });
+  await settle();
+  harness.elements.get("message-input").value = "需要天气";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+  assert.match(harness.elements.get("provider-updated-at").textContent, /更新时间未知|数据可能降级/);
+});
+
+test("provider warning uses only the backend canonical citation timestamp and freshness", async () => {
+  const root = path.resolve(__dirname, "..", "..");
+  const itinerary = JSON.parse(fs.readFileSync(path.join(root, "tests", "fixtures", "task7_itinerary.json"), "utf8"));
+  const harness = createHarness({ fetch: async () => jsonResponse(200, {
+    reply: JSON.stringify(itinerary), stage: "planned",
+    profile: { origin: "上海", destination: "成都", start_date: "2026-10-01", end_date: "2026-10-02", travelers: 2, budget_cny: 5000 },
+    warnings: ["PLACES_TIMEOUT"],
+  }) });
+  await settle();
+  harness.elements.get("message-input").value = "生成行程";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+  assert.match(harness.elements.get("provider-updated-at").textContent, /2026-09-30T08:30:00\+00:00/);
+  assert.match(harness.elements.get("provider-updated-at").textContent, /reference only/);
+});
+
+test("private history executes authenticated CRUD and revocable sharing", async () => {
+  const trip = { id: "trip-1", title: "成都", status: "planned", profile: {}, itinerary: { title: "成都", days: [], budget: null }, updated_at: "2026-01-01T00:00:00Z" };
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ auth, fetch: async (call) => {
+    const method = call.options.method || "GET";
+    if (call.url === "/api/trips" && method === "GET") return jsonResponse(200, [trip]);
+    if (call.url === "/api/trips" && method === "POST") return jsonResponse(201, { ...trip, id: "trip-copy" });
+    if (call.url === "/api/trips/trip-1" && method === "GET") return jsonResponse(200, trip);
+    if (call.url.startsWith("/api/trips/") && method === "PATCH") return jsonResponse(200, trip);
+    if (call.url === "/api/trips/trip-1" && method === "DELETE") return jsonResponse(204, {});
+    if (call.url === "/api/trips/trip-1/share" && method === "POST") return jsonResponse(201, { token: "opaque-token" });
+    if (call.url === "/api/trips/trip-1/share" && method === "DELETE") return jsonResponse(204, {});
+    throw new Error(`unexpected ${method} ${call.url}`);
+  } });
+  await settle();
+  const history = harness.elements.get("trip-history-list");
+  await findByText(history, "打开").dispatch("click");
+  await settle();
+  await harness.elements.get("share-trip-button").dispatch("click");
+  await settle();
+  assert.match(harness.elements.get("share-link").value, /#share=opaque-token$/);
+  await harness.elements.get("revoke-share-link").dispatch("click");
+  await settle();
+  await findByText(history, "重命名").dispatch("click");
+  harness.elements.get("rename-input").value = "成都新版";
+  await harness.elements.get("rename-form").dispatch("submit");
+  await settle();
+  await findByText(history, "复制").dispatch("click");
+  await settle();
+  await findByText(history, "删除").dispatch("click");
+  await settle();
+
+  const privateCalls = harness.fetchCalls.filter((call) => call.url.startsWith("/api/trips"));
+  assert.ok(privateCalls.some((call) => (call.options.method || "GET") === "POST"));
+  assert.ok(privateCalls.some((call) => call.options.method === "PATCH"));
+  assert.ok(privateCalls.some((call) => call.options.method === "DELETE"));
+  assert.ok(privateCalls.every((call) => call.options.headers.Authorization === "Bearer access-one"));
+});

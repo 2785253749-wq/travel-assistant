@@ -5,7 +5,7 @@
 - Replaced the inline single-page demo with a responsive, mobile-first workspace.
 - Added sign-up, sign-in, in-memory session handling, sign-out, anonymous chat, profile confirmation, structured itinerary rendering, provider-degradation notice, private trip history, rename/copy/delete, and revocable read-only sharing.
 - Rendered all API/model/provider values through DOM `textContent`; external HTTPS links use `target="_blank"`, `rel="noopener noreferrer"`, and an explicit “搜索跳转” label.
-- Kept access tokens in memory only. They are sent only in `Authorization` headers, are never logged, added to HTML, or persisted in browser storage. Sign-out clears the in-memory session and private UI state.
+- Delegated session persistence, refresh scheduling, reload recovery, and auth-state notifications to the Supabase browser SDK. Tokens are consumed only from the SDK session and sent to this application only in `Authorization` headers; the application creates no token storage key and never logs or renders a token.
 - Added executable FastAPI/HTML contract tests for core regions, accessibility labels, responsive asset loading, signed-out controls, private-history defaults, and the public share contract.
 
 ## TDD evidence
@@ -16,6 +16,7 @@
 ## Verification
 
 - `node --check app/static/app.js` — passed.
+- `node --test tests/frontend/app.test.js` — **10 passed**.
 - `git diff --check` — passed.
 - `python -m pytest -v` (via the project virtual environment) — **177 passed**.
 
@@ -24,3 +25,21 @@ The test environment reports one existing Starlette `TestClient` deprecation war
 ## Deployment note
 
 Browser authentication expects deployment bootstrap configuration in `window.TRAVEL_ASSISTANT_CONFIG` with `supabaseUrl` and the public Supabase anonymous key. No key or token is committed or embedded in the HTML. Without that explicitly supplied deployment configuration, the workspace remains safely usable for anonymous temporary planning and says that browser authentication is unavailable.
+
+## Round 1 Important fixes
+
+- Logout now removes the profile, pending result, current trip, history, trip/profile content, share and rename values, dialogs, authenticated account summary, and the previous thread before exposing the signed-out workspace.
+- Authentication now uses the Supabase browser SDK lifecycle (`getSession`, `onAuthStateChange`, SDK persistence and automatic refresh). A private API `401` performs one `refreshSession` and one retry; only refresh failure clears the session.
+- Anonymous-to-authenticated login explicitly clears the anonymous conversation and starts a new thread with a re-confirmation notice.
+- Citation links use an exact HTTPS hostname allowlist for the configured weather, place, rail, and hotel/flight providers. Userinfo, explicit ports, unknown hosts, and lookalike subdomains render as non-clickable text.
+- Task 7 citations are rendered at their canonical `Activity.citations` location, including fact, source type, fetched timestamp, and freshness. Optional top-level citations remain supported.
+- Provider warnings use a canonical citation timestamp/freshness when present; otherwise they say the update time is unknown and data may be degraded.
+- Busy state disables every current input, textarea, static button, and dynamically generated history action. Every action entry point also rejects re-entry until its request finishes.
+- Added an offline executable Node behavior suite with a minimal DOM and controlled fetch/Supabase boundaries. It runs login/logout, reload recovery, auth-state changes, refresh and retry, authenticated CRUD/share, public shares, XSS-safe rendering, URL rejection, busy de-duplication, and activity citation rendering.
+
+### Round 1 TDD evidence
+
+1. Initial behavior RED: 7 tests failed because the previous frontend bypassed the SDK lifecycle, incompletely cleared logout state, did not refresh/retry, left dynamic actions enabled, ignored activity citations, invented update times, and did not restore authenticated history.
+2. First behavior GREEN: 7 tests passed after the focused implementation.
+3. Follow-up RED: 2 tests failed for uncleared private draft/title fields and failure to surface a canonical citation timestamp.
+4. Follow-up GREEN: the expanded behavior suite passes 10 tests.
