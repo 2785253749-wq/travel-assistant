@@ -72,3 +72,15 @@
 - RED: `python -m pytest tests/unit/test_usage.py tests/unit/test_config.py -q` produced `13 failed, 22 passed`; failures covered the old text SQL protocol, unsafe response parsing, RPC exception leakage, and the three weak-secret classes.
 - Focused GREEN: `python -m pytest tests/unit/test_usage.py tests/unit/test_config.py -q` produced `35 passed in 0.10s`.
 - Full: `python -m pytest tests -q` produced `169 passed, 1 warning in 1.80s` (the existing Starlette/httpx deprecation warning).
+
+## Review fix round 5
+
+- Restored the already-published `002_ai_usage_reservations.sql` reserve function to its original `returns text` signature and behavior. The structured response now ships in `003_ai_usage_reservation_protocol.sql`, which drops the exact existing function identity before recreating it with the same RPC parameters, `returns jsonb`, and fresh service-role-only privileges. This supports both fresh migration runs and databases where `002` is already recorded as applied.
+- Usage contract tests parse the real ordered migration files to obtain the final reserve/commit/rollback parameter names, order, types, and return types. They also verify the JSON response keys, exact revoke/grant signatures, and the `003` drop-before-recreate upgrade sequence.
+- The service-role adapter test builds its valid response from the parsed SQL JSON keys and compares each captured RPC payload's ordered keys directly with the parsed final SQL parameters. Reserve, UUID-based commit, and UUID-based rollback drift now fails one shared boundary test. Existing strict reserve response validation and production service-role wiring remain unchanged.
+
+### Verification
+
+- RED: focused `tests/unit/test_usage.py` produced `2 failed, 22 passed`; failures identified the illegal in-place `002` return-type change and the missing `003` upgrade migration.
+- Focused GREEN: `tests/unit/test_usage.py` produced `24 passed in 0.07s`.
+- Full: `tests` produced `171 passed, 1 warning in 1.80s` (the existing Starlette/httpx deprecation warning).

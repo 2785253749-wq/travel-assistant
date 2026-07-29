@@ -16,6 +16,54 @@ from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircui
 
 TODAY = datetime(2026, 7, 29, tzinfo=UTC).date()
 RESERVATION_ID = "11111111-1111-4111-8111-111111111111"
+MIGRATIONS = Path(__file__).parents[2] / "supabase" / "migrations"
+RESERVE_SIGNATURE = ("text", "date", "integer", "integer")
+COMMIT_SIGNATURE = ("uuid", "text", "date", "integer", "integer")
+ROLLBACK_SIGNATURE = ("uuid", "text", "date")
+
+
+def _parse_usage_functions(sql: str, migration_name: str):
+    contracts = {}
+    pattern = re.compile(
+        r"create(?:\s+or\s+replace)?\s+function\s+public\."
+        r"(?P<name>reserve_ai_usage|commit_ai_usage|rollback_ai_usage)\s*"
+        r"\((?P<parameters>.*?)\)\s*returns\s+(?P<return_type>\w+)\s+"
+        r"language\s+\w+.*?\bas\s+\$\$(?P<body>.*?)\$\$;",
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in pattern.finditer(sql):
+        parameters = []
+        for declaration in match.group("parameters").split(","):
+            name, sql_type = declaration.strip().split(None, 1)
+            parameters.append((name.lower(), sql_type.lower()))
+        key = (match.group("name").lower(), tuple(sql_type for _, sql_type in parameters))
+        contracts[key] = {
+            "parameters": parameters,
+            "return_type": match.group("return_type").lower(),
+            "body": match.group("body"),
+            "migration_name": migration_name,
+            "migration_sql": sql,
+        }
+    return contracts
+
+
+def _final_usage_contracts():
+    contracts = {}
+    for migration in sorted(MIGRATIONS.glob("*.sql")):
+        sql = migration.read_text(encoding="utf-8")
+        contracts.update(_parse_usage_functions(sql, migration.name))
+    return contracts
+
+
+def _normalized(sql: str) -> str:
+    return " ".join(sql.lower().split())
+
+
+def _assert_service_role_grant(contract, function_name: str, parameter_types: tuple[str, ...]):
+    signature = f"public.{function_name}({', '.join(parameter_types)})"
+    sql = _normalized(contract["migration_sql"])
+    assert f"revoke all on function {signature} from public;" in sql
+    assert f"grant execute on function {signature} to service_role;" in sql
 
 
 def make_guard(*, user_limit: int = 5, global_limit: int = 100, enabled: bool = True):
@@ -132,31 +180,129 @@ def test_gateway_never_invokes_model_after_circuit_opens_and_collects_tokens():
     assert usage.calls == 0
 
 
-def test_reserve_sql_declares_the_structured_jsonb_contract_for_every_branch():
-    migration = Path(__file__).parents[2] / "supabase" / "migrations" / "002_ai_usage_reservations.sql"
+def test_002_keeps_its_published_text_reserve_contract():
+    migration = MIGRATIONS / "002_ai_usage_reservations.sql"
+    contracts = _parse_usage_functions(migration.read_text(encoding="utf-8"), migration.name)
+    reserve = contracts[("reserve_ai_usage", RESERVE_SIGNATURE)]
+
+    assert reserve["parameters"] == [
+        ("p_subject_key", "text"),
+        ("p_usage_date", "date"),
+        ("p_user_limit", "integer"),
+        ("p_global_limit", "integer"),
+    ]
+    assert reserve["return_type"] == "text"
+    assert "jsonb_build_object" not in reserve["body"].lower()
+    assert "return 'user_limit'" in reserve["body"].lower()
+    assert "return 'global_limit'" in reserve["body"].lower()
+    assert "return new_reservation::text" in reserve["body"].lower()
+
+
+def test_003_drops_and_recreates_reserve_with_the_final_jsonb_contract():
+    migration = MIGRATIONS / "003_ai_usage_reservation_protocol.sql"
     sql = migration.read_text(encoding="utf-8")
-    definition = re.search(
-        r"create or replace function public\.reserve_ai_usage\(.*?\$\$;",
-        sql,
-        re.IGNORECASE | re.DOTALL,
+    normalized = _normalized(sql)
+    drop_statement = (
+        "drop function if exists public.reserve_ai_usage"
+        "(text, date, integer, integer);"
+    )
+    create_statement = "create function public.reserve_ai_usage("
+    revoke_statement = (
+        "revoke all on function public.reserve_ai_usage"
+        "(text, date, integer, integer) from public;"
+    )
+    grant_statement = (
+        "grant execute on function public.reserve_ai_usage"
+        "(text, date, integer, integer) to service_role;"
     )
 
-    assert definition is not None
-    normalized = " ".join(definition.group(0).lower().split())
-    assert ") returns jsonb language plpgsql" in normalized
-    assert normalized.count("jsonb_build_object(") == 3
-    assert "'allowed', false, 'reservation_id', null, 'reason', 'user_limit'" in normalized
-    assert "'allowed', false, 'reservation_id', null, 'reason', 'global_limit'" in normalized
-    assert "'allowed', true, 'reservation_id', new_reservation::text, 'reason', null" in normalized
+    assert drop_statement in normalized
+    assert create_statement in normalized
+    assert revoke_statement in normalized
+    assert grant_statement in normalized
+    assert (
+        normalized.index(drop_statement)
+        < normalized.index(create_statement)
+        < normalized.index(revoke_statement)
+        < normalized.index(grant_statement)
+    )
+
+    contracts = _parse_usage_functions(sql, migration.name)
+    reserve = contracts[("reserve_ai_usage", RESERVE_SIGNATURE)]
+    assert reserve["parameters"] == [
+        ("p_subject_key", "text"),
+        ("p_usage_date", "date"),
+        ("p_user_limit", "integer"),
+        ("p_global_limit", "integer"),
+    ]
+    assert reserve["return_type"] == "jsonb"
+
+    json_objects = re.findall(
+        r"jsonb_build_object\((.*?)\)", reserve["body"], re.IGNORECASE | re.DOTALL
+    )
+    assert len(json_objects) == 3
+    assert [re.findall(r"'([^']+)'\s*,", obj) for obj in json_objects] == [
+        ["allowed", "reservation_id", "reason"],
+        ["allowed", "reservation_id", "reason"],
+        ["allowed", "reservation_id", "reason"],
+    ]
+    body = _normalized(reserve["body"])
+    assert "'allowed', false, 'reservation_id', null, 'reason', 'user_limit'" in body
+    assert "'allowed', false, 'reservation_id', null, 'reason', 'global_limit'" in body
+    assert "'allowed', true, 'reservation_id', new_reservation::text, 'reason', null" in body
+    _assert_service_role_grant(reserve, "reserve_ai_usage", RESERVE_SIGNATURE)
+
+
+def test_final_commit_and_rollback_sql_contracts_keep_exact_signatures_and_grants():
+    contracts = _final_usage_contracts()
+    expected = {
+        ("commit_ai_usage", COMMIT_SIGNATURE): (
+            [
+                ("p_reservation_id", "uuid"),
+                ("p_subject_key", "text"),
+                ("p_usage_date", "date"),
+                ("p_input_tokens", "integer"),
+                ("p_output_tokens", "integer"),
+            ],
+            "void",
+        ),
+        ("rollback_ai_usage", ROLLBACK_SIGNATURE): (
+            [
+                ("p_reservation_id", "uuid"),
+                ("p_subject_key", "text"),
+                ("p_usage_date", "date"),
+            ],
+            "void",
+        ),
+    }
+
+    for (function_name, signature), (parameters, return_type) in expected.items():
+        contract = contracts[(function_name, signature)]
+        assert contract["parameters"] == parameters
+        assert contract["return_type"] == return_type
+        _assert_service_role_grant(contract, function_name, signature)
 
 
 def test_service_role_repository_uses_exact_complete_reservation_rpc_contract():
     calls = []
+    contracts = _final_usage_contracts()
+    reserve_contract = contracts[("reserve_ai_usage", RESERVE_SIGNATURE)]
+    json_keys = re.findall(
+        r"'([^']+)'\s*,",
+        re.findall(
+            r"jsonb_build_object\((.*?)\)",
+            reserve_contract["body"],
+            re.IGNORECASE | re.DOTALL,
+        )[-1],
+    )
+    assert json_keys == ["allowed", "reservation_id", "reason"]
+
     class Query:
         def __init__(self, name, args): self.name, self.args = name, args
         def execute(self):
             calls.append((self.name, self.args))
-            return type("Result", (), {"data": {"allowed": True, "reservation_id": RESERVATION_ID, "reason": None}})()
+            data = dict(zip(json_keys, (True, RESERVATION_ID, None), strict=True))
+            return type("Result", (), {"data": data})()
     class Client:
         def rpc(self, name, args): return Query(name, args)
     repo = SupabaseUsageRepository(Client())
@@ -164,10 +310,25 @@ def test_service_role_repository_uses_exact_complete_reservation_rpc_contract():
     assert result == ReserveResult(RESERVATION_ID, None)
     repo.commit(result.reservation_id, "user:1", TODAY, 3, 4)
     repo.rollback(result.reservation_id, "user:1", TODAY)
-    assert calls == [
-        ("reserve_ai_usage", {"p_subject_key": "user:1", "p_usage_date": "2026-07-29", "p_user_limit": 5, "p_global_limit": 100}),
-        ("commit_ai_usage", {"p_reservation_id": RESERVATION_ID, "p_subject_key": "user:1", "p_usage_date": "2026-07-29", "p_input_tokens": 3, "p_output_tokens": 4}),
-        ("rollback_ai_usage", {"p_reservation_id": RESERVATION_ID, "p_subject_key": "user:1", "p_usage_date": "2026-07-29"}),
+
+    expected_contracts = [
+        contracts[("reserve_ai_usage", RESERVE_SIGNATURE)],
+        contracts[("commit_ai_usage", COMMIT_SIGNATURE)],
+        contracts[("rollback_ai_usage", ROLLBACK_SIGNATURE)],
+    ]
+    assert [name for name, _ in calls] == [
+        "reserve_ai_usage",
+        "commit_ai_usage",
+        "rollback_ai_usage",
+    ]
+    assert [list(args) for _, args in calls] == [
+        [name for name, _ in contract["parameters"]]
+        for contract in expected_contracts
+    ]
+    assert [list(args.values()) for _, args in calls] == [
+        ["user:1", "2026-07-29", 5, 100],
+        [RESERVATION_ID, "user:1", "2026-07-29", 3, 4],
+        [RESERVATION_ID, "user:1", "2026-07-29"],
     ]
 
 
