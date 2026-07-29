@@ -344,14 +344,13 @@ def _observe_places_empty_retry(message: str) -> ScenarioObservation:
         profile.destination or "",
         "fixture scenic area",
     )
-    no_places = result.data == []
-    action: ACTION = "degrade" if result.degraded or no_places else "plan"
+    action: ACTION = "degrade" if result.degraded else "plan"
     return _observation(
         message,
         "places_provider",
         action,
         result.error_code,
-        fallback_safe=result.degraded or no_places,
+        fallback_safe=result.degraded,
         attempts=attempts,
     )
 

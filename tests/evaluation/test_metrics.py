@@ -353,7 +353,7 @@ def test_global_limit_case_reaches_real_in_memory_reservation_branch(monkeypatch
     ("case_id", "component", "action", "error_code"),
     [
         ("E001", "weather_provider", "degrade", "WEATHER_TIMEOUT"),
-        ("E002", "places_provider", "degrade", None),
+        ("E002", "places_provider", "plan", None),
         ("E003", "model_gateway", "degrade", "AI_CIRCUIT_OPEN"),
         ("E004", "model_gateway", "degrade", "AI_UNAVAILABLE"),
         ("E005", "model_gateway", "degrade", "AI_RATE_LIMITED"),
@@ -394,7 +394,28 @@ def test_places_empty_retry_observes_two_real_attempts_without_inventing_an_erro
 
     assert observation.attempts == 2
     assert observation.error_code is None
-    assert observation.action == "degrade"
+
+
+def test_places_empty_result_does_not_synthesize_degradation_from_expected_values() -> None:
+    case = next(
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.id == "E002"
+    )
+
+    observation = runner.observe_scenario(case.messages[-1])
+    prediction = run_case(case)
+    changed_expectation = replace(
+        case,
+        expected_action="ask",
+        expected_error="INVENTED_EXPECTATION",
+    )
+
+    assert observation.action == "plan"
+    assert observation.error_code is None
+    assert observation.fallback_safe is False
+    assert prediction == observation.to_prediction()
+    assert run_case(changed_expectation) == prediction
 
 
 def test_planner_failure_observes_both_real_repair_attempts() -> None:
