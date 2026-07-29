@@ -22,6 +22,7 @@ from app.agent.extraction import merge_profile, validate_profile
 from app.agent.intent import Intent, IntentResult, classify_intent
 from app.agent.safety import REFUSALS, assess_destination, assess_message
 from app.core.config import get_settings
+from app.core.usage import ProviderUnavailable, get_model_gateway
 from app.schemas import ExtractionResult, ProfileIssue, TravelProfile
 from app.trips.models import Trip
 
@@ -160,13 +161,13 @@ def extract_profile(
 ) -> TravelProfile:
     """Extract only explicit values, with a factory seam for offline tests."""
     schema = json.dumps(ExtractionResult.model_json_schema(), ensure_ascii=False)
-    result = model_factory().with_structured_output(ExtractionResult, method="json_mode").invoke([
+    result = get_model_gateway(model_factory).invoke([
             SystemMessage(content=(
                 "从用户最新消息提取旅行资料。未明确的信息不得猜测；日期为 YYYY-MM-DD，预算为人民币整数。"
                 f"\nJSON Schema: {schema}\n已有资料：{profile.model_dump_json(ensure_ascii=False)}"
             )),
             HumanMessage(content=message),
-    ])
+    ], structured=ExtractionResult)
     return merge_profile(profile, ExtractionResult.model_validate(result).profile)
 
 
@@ -179,7 +180,7 @@ class ModelPlanner:
     def invoke(
         self, profile: TravelProfile, evidence: tuple[TrustedEvidence, ...]
     ) -> PlanningResult:
-        response = model().invoke([
+        response = get_model_gateway(model).invoke([
             SystemMessage(content=(
                 "你是国内自由行规划助手。只能依据给定资料生成中文行程；不要声称实时价格、库存、余票或营业时间，"
                 "不要执行预订或支付；无法核实的事实必须写为待确认。"
@@ -210,7 +211,7 @@ class ModelStructuredPlanner:
     def _generate(profile: TravelProfile, provider_results: object, repair_codes: list[str] | None) -> object:
         from app.schemas import Itinerary
 
-        response = model().invoke([
+        response = get_model_gateway(model).invoke([
             SystemMessage(content=(
                 "Generate only one raw JSON object matching the supplied JSON Schema. "
                 "Claims require evidence_id; never supply source metadata."
@@ -307,6 +308,8 @@ class SafeTravelAgent:
                 result = self._verify_plan(self._planner.invoke(profile, evidence), evidence, profile)
             self._persist(trip, user_id, message, result)
             return result
+        except ProviderUnavailable:
+            raise
         except Exception as exc:
             logging.getLogger("app.agent").warning(
                 "agent_failed",

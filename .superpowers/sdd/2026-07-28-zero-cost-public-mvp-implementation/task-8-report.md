@@ -17,3 +17,16 @@
 ## Concern
 
 - The SQL RPC adapter is covered by the same strict RPC parameter shapes in code, but this offline suite cannot execute Supabase/Postgres. Apply `002_ai_usage_reservations.sql` before production deployment.
+
+## Review fix round 1
+
+- All production DeepSeek invocations now pass through `ModelGateway`, including extraction and structured-planner repair. It records response usage metadata in a request-local collector, turns 429/5xx failures into stable codes, and refuses calls while its circuit is open.
+- Chat reserves before entering the agent, settles with aggregate input/output metadata, and charges at least one input token per model call when metadata is absent. Provider failures roll back and return a safe warning without rerunning `chat` outside the guard.
+- Reservations now carry server-generated IDs. The Supabase migration has active reservation records, five-minute expiry cleanup during atomic reserve, subject-scoped idempotent commit/rollback functions, and service-role-only grants. The in-memory test implementation mirrors ID settlement and expiry handling.
+- Production settings require a non-empty 32-character `ANON_SESSION_SIGNING_SECRET`; dev/test retain an ephemeral process-local secret. Cookies are signed from that configuration rather than a module hard-code.
+
+### Verification
+
+- RED: the new model gateway test failed to import `ModelGateway` before the invocation boundary existed.
+- Focused green: `17 passed, 1 warning in 1.44s` for chat and usage tests.
+- Full: `146 passed, 1 warning in 1.80s`.

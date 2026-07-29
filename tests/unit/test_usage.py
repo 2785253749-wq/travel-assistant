@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from app.core.errors import AppError
-from app.core.usage import InMemoryUsageRepository, ProviderCircuitBreaker, UsageGuard, classify_provider_error
+from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircuitBreaker, UsageGuard, classify_provider_error, model_usage_scope
 
 
 TODAY = datetime(2026, 7, 29, tzinfo=UTC).date()
@@ -101,3 +101,26 @@ def test_circuit_breaker_opens_after_consecutive_upstream_failures():
     breaker.record_failure("AI_PROVIDER_UNAVAILABLE")
 
     assert not breaker.allow()
+
+
+def test_gateway_never_invokes_model_after_circuit_opens_and_collects_tokens():
+    class Model:
+        def __init__(self): self.calls = 0
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls < 3:
+                error = RuntimeError("upstream")
+                error.status_code = 503
+                raise error
+            return type("Response", (), {"content": "ok", "usage_metadata": {"input_tokens": 7, "output_tokens": 11}})()
+
+    model = Model()
+    gateway = ModelGateway(lambda: model, ProviderCircuitBreaker(failure_threshold=2))
+    with model_usage_scope() as usage:
+        for _ in range(2):
+            with pytest.raises(Exception): gateway.invoke([])
+        with pytest.raises(Exception) as error: gateway.invoke([])
+
+    assert getattr(error.value, "code") == "AI_CIRCUIT_OPEN"
+    assert model.calls == 2
+    assert usage.calls == 0

@@ -15,14 +15,20 @@ from fastapi.responses import JSONResponse
 from app.agent.graph import chat
 from app.api.auth import OptionalCurrentUser
 from app.core.errors import AppError, ERROR_STATUS, safe_error_detail
-from app.core.usage import ProviderUnavailable, get_usage_guard
+from app.core.config import get_settings
+from app.core.usage import ProviderUnavailable, get_usage_guard, model_usage_scope
 from app.schemas import ChatRequest, ChatResponse, TravelProfile
 
 
 router = APIRouter()
 _SESSION_COOKIE = "travel_session"
 _SESSION_COMPONENT = re.compile(r"^[A-Za-z0-9_-]{43}$")
-_SESSION_SIGNING_SECRET = secrets.token_bytes(32)
+_DEVELOPMENT_SESSION_SECRET = secrets.token_bytes(32)
+
+
+def _session_signing_secret() -> bytes:
+    configured = get_settings().anon_session_signing_secret
+    return configured.get_secret_value().encode("utf-8") if configured is not None else _DEVELOPMENT_SESSION_SECRET
 
 
 def _base64url(value: bytes) -> str:
@@ -31,7 +37,7 @@ def _base64url(value: bytes) -> str:
 
 def _sign_session_id(session_id: str) -> str:
     return _base64url(
-        hmac.digest(_SESSION_SIGNING_SECRET, session_id.encode("ascii"), "sha256")
+        hmac.digest(_session_signing_secret(), session_id.encode("ascii"), "sha256")
     )
 
 
@@ -78,22 +84,22 @@ def api_chat(
                     max_age=60 * 60 * 24,
                 )
             session_scope = "anon:" + hashlib.sha256(session_id.encode("ascii")).hexdigest()
+        reservation = get_usage_guard().reserve(session_scope)
         try:
-            reservation = get_usage_guard().reserve(session_scope)
-        except ProviderUnavailable:
-            # Keep deterministic/fake chat paths compatible while ensuring a
-            # real unavailable provider produces an explicit safe warning.
-            result = chat(user, None, request.message, thread_id=request.thread_id, session_scope=session_scope)
-            return JSONResponse({"reply": result.reply, "stage": result.stage, "profile": TravelProfile.model_validate(result.profile).model_dump(mode="json"), "warnings": ["AI_PROVIDER_UNAVAILABLE"]})
-        try:
-            result = chat(user, None, request.message, thread_id=request.thread_id, session_scope=session_scope)
+            with model_usage_scope() as model_usage:
+                result = chat(user, None, request.message, thread_id=request.thread_id, session_scope=session_scope)
+        except ProviderUnavailable as exc:
+            reservation.rollback()
+            return JSONResponse({"reply": "AI provider is temporarily unavailable.", "stage": "collecting", "profile": TravelProfile().model_dump(mode="json"), "warnings": [exc.code]})
         except Exception:
             reservation.rollback()
             raise
         if result.error_code == "AGENT_UNAVAILABLE":
             reservation.rollback()
             return JSONResponse({"reply": result.reply, "stage": result.stage, "profile": TravelProfile.model_validate(result.profile).model_dump(mode="json"), "warnings": ["AI_PROVIDER_UNAVAILABLE"]})
-        reservation.commit()
+        # Missing provider metadata is charged conservatively: one token per
+        # model call, never a zero-cost successful request.
+        reservation.commit(max(model_usage.input_tokens, model_usage.calls), model_usage.output_tokens)
         return ChatResponse(
             reply=result.reply,
             stage=result.stage,
@@ -101,6 +107,9 @@ def api_chat(
         )
     except AppError as exc:
         raise HTTPException(status_code=ERROR_STATUS.get(exc.code, 503), detail=safe_error_detail(exc)) from None
+    except ProviderUnavailable as exc:
+        code = exc.code if exc.code in {"AI_RATE_LIMITED", "AI_UNAVAILABLE", "AI_CIRCUIT_OPEN"} else "AI_UNAVAILABLE"
+        return JSONResponse({"reply": "AI provider is temporarily unavailable.", "stage": "collecting", "profile": TravelProfile().model_dump(mode="json"), "warnings": [code]})
     except Exception as exc:
         logging.getLogger("app.api.chat").warning(
             "chat_request_failed",

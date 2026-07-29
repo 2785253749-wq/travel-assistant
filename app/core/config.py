@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     supabase_url: AnyHttpUrl | None = None
     supabase_anon_key: SecretStr | None = None
     supabase_service_key: SecretStr | None = None
+    anon_session_signing_secret: SecretStr | None = None
     ai_enabled: bool = True
     ai_user_daily_limit: int = Field(default=5, ge=0, le=100)
     ai_global_daily_limit: int = Field(default=100, ge=0, le=10_000)
@@ -32,6 +33,8 @@ class Settings(BaseSettings):
                 )
                 if self._is_missing(value)
             ]
+            if self._is_missing(self.anon_session_signing_secret) or len(self.anon_session_signing_secret.get_secret_value()) < 32:
+                missing.append("ANON_SESSION_SIGNING_SECRET")
             if missing:
                 raise ValueError(
                     "Production requires Supabase configuration: " + ", ".join(missing)

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from threading import Lock
-from typing import Callable, Protocol
+from threading import Lock, RLock
+from typing import Any, Callable, Protocol
+from contextlib import contextmanager
+from contextvars import ContextVar
+from uuid import uuid4
 
 from app.core.config import get_settings
 from app.core.errors import AppError
@@ -18,6 +21,10 @@ from app.core.errors import AppError
 
 class ProviderUnavailable(Exception):
     """Stable internal signal for an unavailable or unconfigured provider."""
+
+    def __init__(self, code: str = "AI_UNAVAILABLE") -> None:
+        self.code = code
+        super().__init__(code)
 
 
 def classify_provider_error(error: Exception) -> str:
@@ -39,7 +46,7 @@ class ProviderCircuitBreaker:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._failures = 0
         self._open_until: datetime | None = None
-        self._lock = Lock()
+        self._lock = RLock()
 
     def allow(self) -> bool:
         with self._lock:
@@ -65,6 +72,70 @@ class ProviderCircuitBreaker:
             self._open_until = None
 
 
+@dataclass
+class ModelUsage:
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    def record(self, response: object) -> None:
+        metadata = getattr(response, "usage_metadata", None) or getattr(response, "usage", None) or {}
+        self.calls += 1
+        self.input_tokens += max(0, int(metadata.get("input_tokens", metadata.get("prompt_tokens", 0)) or 0))
+        self.output_tokens += max(0, int(metadata.get("output_tokens", metadata.get("completion_tokens", 0)) or 0))
+
+
+_model_usage: ContextVar[ModelUsage | None] = ContextVar("model_usage", default=None)
+
+
+@contextmanager
+def model_usage_scope():
+    usage = ModelUsage()
+    token = _model_usage.set(usage)
+    try:
+        yield usage
+    finally:
+        _model_usage.reset(token)
+
+
+class ModelGateway:
+    """The only production DeepSeek invocation boundary."""
+
+    def __init__(self, factory: Callable[[], Any], breaker: ProviderCircuitBreaker | None = None) -> None:
+        self._factory = factory
+        self._breaker = breaker or ProviderCircuitBreaker()
+
+    def invoke(self, messages: Any, *, structured: Any | None = None) -> Any:
+        if not self._breaker.allow():
+            raise ProviderUnavailable("AI_CIRCUIT_OPEN")
+        try:
+            client = self._factory()
+            if structured is not None:
+                client = client.with_structured_output(structured, method="json_mode")
+            response = client.invoke(messages)
+        except ProviderUnavailable:
+            raise
+        except Exception as exc:
+            code = classify_provider_error(exc)
+            self._breaker.record_failure(code)
+            raise ProviderUnavailable("AI_RATE_LIMITED" if code == "AI_PROVIDER_RATE_LIMITED" else "AI_UNAVAILABLE") from None
+        self._breaker.record_success()
+        collector = _model_usage.get()
+        if collector is not None:
+            collector.record(response)
+        return response
+
+
+_model_gateways: dict[int, ModelGateway] = {}
+
+
+def get_model_gateway(factory: Callable[[], Any]) -> ModelGateway:
+    key = id(factory)
+    if key not in _model_gateways:
+        _model_gateways[key] = ModelGateway(factory)
+    return _model_gateways[key]
+
+
 @dataclass(frozen=True)
 class UsageCount:
     request_count: int = 0
@@ -80,9 +151,9 @@ class UsageCount:
 class UsageRepository(Protocol):
     def get_daily(self, user_key: str, day: date) -> UsageCount: ...
     def get_global_daily(self, day: date) -> UsageCount: ...
-    def reserve(self, user_key: str, day: date, user_limit: int, global_limit: int) -> bool: ...
-    def commit(self, user_key: str, day: date, input_tokens: int, output_tokens: int) -> None: ...
-    def rollback(self, user_key: str, day: date) -> None: ...
+    def reserve(self, user_key: str, day: date, user_limit: int, global_limit: int) -> str | None: ...
+    def commit(self, reservation_id: str, user_key: str, day: date, input_tokens: int, output_tokens: int) -> None: ...
+    def rollback(self, reservation_id: str, user_key: str, day: date) -> None: ...
 
 
 class InMemoryUsageRepository:
@@ -92,6 +163,7 @@ class InMemoryUsageRepository:
         self._lock = Lock()
         self._users: dict[tuple[str, date], UsageCount] = {}
         self._global: dict[date, UsageCount] = {}
+        self._reservations: dict[str, tuple[str, date, datetime, str]] = {}
 
     def get_daily(self, user_key: str, day: date) -> UsageCount:
         with self._lock:
@@ -108,27 +180,37 @@ class InMemoryUsageRepository:
             global_count = self._global.get(day, UsageCount())
             self._global[day] = UsageCount(request_count, global_count.pending, global_count.input_tokens, global_count.output_tokens)
 
-    def reserve(self, user_key: str, day: date, user_limit: int, global_limit: int) -> bool:
+    def reserve(self, user_key: str, day: date, user_limit: int, global_limit: int) -> str | None:
         with self._lock:
             user = self._users.get((user_key, day), UsageCount())
             global_count = self._global.get(day, UsageCount())
             if user.reserved_count >= user_limit:
-                return False
+                return None
             if global_count.reserved_count >= global_limit:
-                return False
+                return None
             self._users[(user_key, day)] = UsageCount(user.request_count, user.pending + 1, user.input_tokens, user.output_tokens)
             self._global[day] = UsageCount(global_count.request_count, global_count.pending + 1, global_count.input_tokens, global_count.output_tokens)
-            return True
+            reservation_id = str(uuid4())
+            self._reservations[reservation_id] = (user_key, day, datetime.now(UTC) + timedelta(minutes=5), "reserved")
+            return reservation_id
 
-    def commit(self, user_key: str, day: date, input_tokens: int, output_tokens: int) -> None:
+    def commit(self, reservation_id: str, user_key: str, day: date, input_tokens: int, output_tokens: int) -> None:
         with self._lock:
+            reservation = self._reservations.get(reservation_id)
+            if reservation is None or reservation[:2] != (user_key, day) or reservation[3] == "committed": return
+            if reservation[2] < datetime.now(UTC):
+                self.rollback(reservation_id, user_key, day); return
             self._users[(user_key, day)] = self._commit_count(self._users.get((user_key, day), UsageCount()), input_tokens, output_tokens)
             self._global[day] = self._commit_count(self._global.get(day, UsageCount()), input_tokens, output_tokens)
+            self._reservations[reservation_id] = (*reservation[:3], "committed")
 
-    def rollback(self, user_key: str, day: date) -> None:
+    def rollback(self, reservation_id: str, user_key: str, day: date) -> None:
         with self._lock:
+            reservation = self._reservations.get(reservation_id)
+            if reservation is None or reservation[:2] != (user_key, day) or reservation[3] != "reserved": return
             self._users[(user_key, day)] = self._rollback_count(self._users.get((user_key, day), UsageCount()))
             self._global[day] = self._rollback_count(self._global.get(day, UsageCount()))
+            self._reservations[reservation_id] = (*reservation[:3], "rolled_back")
 
     @staticmethod
     def _commit_count(count: UsageCount, input_tokens: int, output_tokens: int) -> UsageCount:
@@ -174,20 +256,21 @@ class SupabaseUsageRepository:
         if isinstance(row, list): row = row[0] if row else {}
         return UsageCount(**{key: int(row.get(key, 0)) for key in UsageCount.__dataclass_fields__})
 
-    def reserve(self, user_key: str, day: date, user_limit: int, global_limit: int) -> bool:
+    def reserve(self, user_key: str, day: date, user_limit: int, global_limit: int) -> str | None:
         result = self._data(self._client.rpc("reserve_ai_usage", {"p_subject_key": user_key, "p_usage_date": day.isoformat(), "p_user_limit": user_limit, "p_global_limit": global_limit}).execute())
-        return result == "reserved"
+        return result if isinstance(result, str) and result not in {"user_limit", "global_limit"} else None
 
-    def commit(self, user_key: str, day: date, input_tokens: int, output_tokens: int) -> None:
-        self._client.rpc("commit_ai_usage", {"p_subject_key": user_key, "p_usage_date": day.isoformat(), "p_input_tokens": input_tokens, "p_output_tokens": output_tokens}).execute()
+    def commit(self, reservation_id: str, user_key: str, day: date, input_tokens: int, output_tokens: int) -> None:
+        self._client.rpc("commit_ai_usage", {"p_reservation_id": reservation_id, "p_subject_key": user_key, "p_usage_date": day.isoformat(), "p_input_tokens": input_tokens, "p_output_tokens": output_tokens}).execute()
 
-    def rollback(self, user_key: str, day: date) -> None:
-        self._client.rpc("rollback_ai_usage", {"p_subject_key": user_key, "p_usage_date": day.isoformat()}).execute()
+    def rollback(self, reservation_id: str, user_key: str, day: date) -> None:
+        self._client.rpc("rollback_ai_usage", {"p_reservation_id": reservation_id, "p_subject_key": user_key, "p_usage_date": day.isoformat()}).execute()
 
 
 class UsageReservation:
-    def __init__(self, repository: UsageRepository, user_key: str, day: date) -> None:
+    def __init__(self, repository: UsageRepository, reservation_id: str, user_key: str, day: date) -> None:
         self._repository = repository
+        self.id = reservation_id
         self._user_key = user_key
         self._day = day
         self._settled = False
@@ -195,13 +278,13 @@ class UsageReservation:
     def commit(self, input_tokens: int = 0, output_tokens: int = 0) -> None:
         if self._settled:
             return
-        self._repository.commit(self._user_key, self._day, max(0, input_tokens), max(0, output_tokens))
+        self._repository.commit(self.id, self._user_key, self._day, max(0, input_tokens), max(0, output_tokens))
         self._settled = True
 
     def rollback(self) -> None:
         if self._settled:
             return
-        self._repository.rollback(self._user_key, self._day)
+        self._repository.rollback(self.id, self._user_key, self._day)
         self._settled = True
 
 
@@ -226,12 +309,13 @@ class UsageGuard:
         global_count = self.repository.get_global_daily(day)
         if global_count.reserved_count >= self._global_daily_limit:
             raise AppError("AI_GLOBAL_DAILY_LIMIT_REACHED", "AI global daily limit reached")
-        if not self.repository.reserve(user_key, day, self._user_daily_limit, self._global_daily_limit):
+        reservation_id = self.repository.reserve(user_key, day, self._user_daily_limit, self._global_daily_limit)
+        if not reservation_id:
             # A concurrent transaction won the race. Re-read only stable counts.
             if self.repository.get_daily(user_key, day).reserved_count >= self._user_daily_limit:
                 raise AppError("AI_DAILY_LIMIT_REACHED", "AI daily limit reached")
             raise AppError("AI_GLOBAL_DAILY_LIMIT_REACHED", "AI global daily limit reached")
-        return UsageReservation(self.repository, user_key, day)
+        return UsageReservation(self.repository, reservation_id, user_key, day)
 
 
 _repository = InMemoryUsageRepository()
@@ -239,11 +323,9 @@ _repository = InMemoryUsageRepository()
 
 def get_usage_guard() -> UsageGuard:
     settings = get_settings()
-    # The route still enters the established chat seam when a key is absent so
-    # deterministic collection/refusal paths remain available.  The model
-    # factory below fails closed before any network request; its result is
-    # surfaced as a warning rather than a secret-bearing provider failure.
-    configured = True
+    configured = settings.app_env != "production" or (
+        settings.deepseek_api_key is not None and bool(settings.deepseek_api_key.get_secret_value().strip())
+    )
     repository: UsageRepository = _repository if settings.app_env != "production" else SupabaseUsageRepository.from_settings()
     return UsageGuard(
         repository=repository,

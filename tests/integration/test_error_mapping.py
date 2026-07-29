@@ -52,5 +52,5 @@ def test_no_model_key_degrades_to_a_warning_without_provider_body(monkeypatch):
     response = TestClient(app).post("/api/chat", json={"message": "hello", "thread_id": "thread-8"})
 
     assert response.status_code == 200
-    assert response.json()["warnings"] == ["AI_PROVIDER_UNAVAILABLE"]
+    assert response.json()["warnings"] == ["AI_UNAVAILABLE"]
     assert "do-not-leak" not in response.text
