@@ -1,6 +1,8 @@
 """HTTP boundary for the legacy public chat contract."""
 
+import base64
 import hashlib
+import hmac
 import logging
 import os
 import re
@@ -16,7 +18,38 @@ from app.schemas import ChatRequest, ChatResponse, TravelProfile
 
 router = APIRouter()
 _SESSION_COOKIE = "travel_session"
-_OPAQUE_SESSION = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+_SESSION_COMPONENT = re.compile(r"^[A-Za-z0-9_-]{43}$")
+_SESSION_SIGNING_SECRET = secrets.token_bytes(32)
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _sign_session_id(session_id: str) -> str:
+    return _base64url(
+        hmac.digest(_SESSION_SIGNING_SECRET, session_id.encode("ascii"), "sha256")
+    )
+
+
+def _issue_anonymous_session() -> tuple[str, str]:
+    session_id = secrets.token_urlsafe(32)
+    return session_id, f"{session_id}.{_sign_session_id(session_id)}"
+
+
+def _verify_anonymous_session(cookie: str | None) -> str | None:
+    if not cookie:
+        return None
+    parts = cookie.split(".")
+    if (
+        len(parts) != 2
+        or not _SESSION_COMPONENT.fullmatch(parts[0])
+        or not _SESSION_COMPONENT.fullmatch(parts[1])
+    ):
+        return None
+    session_id, presented_signature = parts
+    expected_signature = _sign_session_id(session_id)
+    return session_id if hmac.compare_digest(presented_signature, expected_signature) else None
 
 
 @router.post("/api/chat", response_model=ChatResponse)
@@ -30,21 +63,18 @@ def api_chat(
         if user is not None:
             session_scope = f"user:{user.id}"
         else:
-            opaque_session = (
-                anonymous_session
-                if anonymous_session and _OPAQUE_SESSION.fullmatch(anonymous_session)
-                else secrets.token_urlsafe(32)
-            )
-            session_scope = "anon:" + hashlib.sha256(opaque_session.encode("ascii")).hexdigest()
-            if opaque_session != anonymous_session:
+            session_id = _verify_anonymous_session(anonymous_session)
+            if session_id is None:
+                session_id, signed_cookie = _issue_anonymous_session()
                 response.set_cookie(
                     _SESSION_COOKIE,
-                    opaque_session,
+                    signed_cookie,
                     httponly=True,
                     samesite="lax",
                     secure=os.environ.get("APP_ENV", "development").lower() == "production",
                     max_age=60 * 60 * 24,
                 )
+            session_scope = "anon:" + hashlib.sha256(session_id.encode("ascii")).hexdigest()
         result = chat(
             user, None, request.message,
             thread_id=request.thread_id,

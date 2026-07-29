@@ -93,7 +93,92 @@ def test_anonymous_session_cookie_scopes_same_thread_per_client(monkeypatch):
     assert "SameSite=lax" in first_a.headers["set-cookie"]
     assert second_b.json()["profile"]["destination"] is None
     assert second_a.json()["profile"]["destination"] == "杭州"
+    assert "set-cookie" not in second_a.headers
     assert len({scope for scope, _ in profiles}) == 2
+
+
+def test_well_formed_client_supplied_legacy_cookie_is_rotated(monkeypatch):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+
+    scopes = []
+    monkeypatch.setattr(
+        chat_api,
+        "chat",
+        lambda user, trip_id, message, **kwargs: (
+            scopes.append(kwargs["session_scope"])
+            or ChatResult("ok", "collecting", {})
+        ),
+    )
+    client = TestClient(app)
+    forged_legacy = "A" * 43
+    client.cookies.set("travel_session", forged_legacy)
+
+    response = client.post("/api/chat", json={"message": "first", "thread_id": "same"})
+    rotated = response.cookies.get("travel_session")
+
+    assert response.status_code == 200
+    assert rotated and rotated != forged_legacy
+    assert "." in rotated
+    assert forged_legacy not in scopes[0]
+
+
+def test_well_formed_forged_signature_is_rotated(monkeypatch):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+
+    monkeypatch.setattr(
+        chat_api, "chat",
+        lambda *args, **kwargs: ChatResult("ok", "collecting", {}),
+    )
+    client = TestClient(app)
+    forged = f"{'A' * 43}.{'B' * 43}"
+    client.cookies.set("travel_session", forged)
+
+    response = client.post("/api/chat", json={"message": "first", "thread_id": "same"})
+    rotated = response.cookies.get("travel_session")
+
+    assert response.status_code == 200
+    assert rotated and rotated != forged
+
+
+def test_tampered_real_cookie_cannot_access_existing_profile(monkeypatch):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+
+    profiles = {}
+
+    def fake_chat(user, trip_id, message, *, thread_id, session_scope):
+        key = (session_scope, thread_id)
+        profile = dict(profiles.get(key, {}))
+        if message == "first":
+            profile["destination"] = "杭州"
+        profiles[key] = profile
+        return ChatResult("ok", "collecting", profile)
+
+    monkeypatch.setattr(chat_api, "chat", fake_chat)
+    owner = TestClient(app)
+    owner_response = owner.post(
+        "/api/chat", json={"message": "first", "thread_id": "same"}
+    )
+    genuine = owner_response.cookies.get("travel_session")
+    assert genuine
+    session_id, signature = genuine.split(".")
+    assert all(session_id not in scope and signature not in scope for scope, _ in profiles)
+
+    tampered = genuine[:-1] + ("A" if genuine[-1] != "A" else "B")
+    attacker = TestClient(app)
+    attacker.cookies.set("travel_session", tampered)
+    attack_response = attacker.post(
+        "/api/chat", json={"message": "second", "thread_id": "same"}
+    )
+
+    assert attack_response.status_code == 200
+    assert attack_response.json()["profile"]["destination"] is None
+    assert attack_response.cookies.get("travel_session") != tampered
 
 
 def test_authenticated_users_scope_same_thread_by_verified_user_id(monkeypatch):
