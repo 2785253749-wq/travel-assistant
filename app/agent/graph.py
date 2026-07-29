@@ -139,6 +139,8 @@ class ModelIntentClassifier:
 
 def model() -> ChatDeepSeek:
     settings = get_settings()
+    if settings.deepseek_api_key is None or not settings.deepseek_api_key.get_secret_value().strip():
+        raise RuntimeError("AI provider is not configured")
     return ChatDeepSeek(
         model=settings.deepseek_model,
         api_key=settings.deepseek_api_key.get_secret_value(),

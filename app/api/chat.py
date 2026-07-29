@@ -10,9 +10,12 @@ import secrets
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, HTTPException, Response
+from fastapi.responses import JSONResponse
 
 from app.agent.graph import chat
 from app.api.auth import OptionalCurrentUser
+from app.core.errors import AppError, ERROR_STATUS, safe_error_detail
+from app.core.usage import ProviderUnavailable, get_usage_guard
 from app.schemas import ChatRequest, ChatResponse, TravelProfile
 
 
@@ -58,7 +61,7 @@ def api_chat(
     response: Response,
     user: OptionalCurrentUser,
     anonymous_session: Annotated[str | None, Cookie(alias=_SESSION_COOKIE)] = None,
-) -> ChatResponse:
+) -> ChatResponse | JSONResponse:
     try:
         if user is not None:
             session_scope = f"user:{user.id}"
@@ -75,16 +78,29 @@ def api_chat(
                     max_age=60 * 60 * 24,
                 )
             session_scope = "anon:" + hashlib.sha256(session_id.encode("ascii")).hexdigest()
-        result = chat(
-            user, None, request.message,
-            thread_id=request.thread_id,
-            session_scope=session_scope,
-        )
+        try:
+            reservation = get_usage_guard().reserve(session_scope)
+        except ProviderUnavailable:
+            # Keep deterministic/fake chat paths compatible while ensuring a
+            # real unavailable provider produces an explicit safe warning.
+            result = chat(user, None, request.message, thread_id=request.thread_id, session_scope=session_scope)
+            return JSONResponse({"reply": result.reply, "stage": result.stage, "profile": TravelProfile.model_validate(result.profile).model_dump(mode="json"), "warnings": ["AI_PROVIDER_UNAVAILABLE"]})
+        try:
+            result = chat(user, None, request.message, thread_id=request.thread_id, session_scope=session_scope)
+        except Exception:
+            reservation.rollback()
+            raise
+        if result.error_code == "AGENT_UNAVAILABLE":
+            reservation.rollback()
+            return JSONResponse({"reply": result.reply, "stage": result.stage, "profile": TravelProfile.model_validate(result.profile).model_dump(mode="json"), "warnings": ["AI_PROVIDER_UNAVAILABLE"]})
+        reservation.commit()
         return ChatResponse(
             reply=result.reply,
             stage=result.stage,
             profile=TravelProfile.model_validate(result.profile),
         )
+    except AppError as exc:
+        raise HTTPException(status_code=ERROR_STATUS.get(exc.code, 503), detail=safe_error_detail(exc)) from None
     except Exception as exc:
         logging.getLogger("app.api.chat").warning(
             "chat_request_failed",

@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
-    deepseek_api_key: SecretStr
+    deepseek_api_key: SecretStr | None = None
     deepseek_model: str = "deepseek-v4-flash"
     deepseek_api_base: AnyHttpUrl = "https://api.deepseek.com"
     supabase_url: AnyHttpUrl | None = None
