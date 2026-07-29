@@ -29,3 +29,15 @@
 
 - RED: the expanded planning test initially failed at collection because `EstimateRange` did not exist; the production wiring test then failed with the agent treating ASCII `Hangzhou` as an unallowlisted destination, confirming the test exercised the real routing gate. It was corrected to the existing Chinese allowlisted destination before validating planner behavior.
 - GREEN focused: `T:\.venv\Scripts\python.exe -m pytest tests\unit\test_agent_routes.py tests\unit\test_planning.py -q` → `27 passed in 1.18s`.
+
+## Fix round 2/5 — activity-scoped facts and canonical citations
+
+- Replaced activity output `claims` with canonical `facts` (the legacy input alias remains only for compatibility). Titles and notes reject variable price/availability/opening/inventory assertions; facts belong to the specific activity and must independently match a registry evidence record.
+- Citation metadata supplied in a candidate is discarded. After claim validation, each activity receives a fresh, deduplicated citation list created solely from the canonical registry, with its provider fetch time and freshness message.
+- Assumptions retain structured `assumption_id`, allowlisted category, and guarded description. Itinerary validation now requires unique assumption IDs and requires `estimate.assumption_id` to point to exactly one existing assumption.
+
+### Round-2 verification
+
+- RED: new activity-fact cases failed because `Activity.facts` was not part of the strict schema, and missing/duplicate estimate assumption IDs were accepted.
+- GREEN focused: `tests\unit\test_planning.py` → `12 passed in 1.18s`.
+- Full: `T:\.venv\Scripts\python.exe -m pytest -q` → `101 passed, 1 warning in 1.55s` (existing Starlette/httpx deprecation warning).

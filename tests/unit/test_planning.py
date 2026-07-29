@@ -184,3 +184,45 @@ def test_stale_future_and_free_text_assumptions_fail_closed() -> None:
         Planner(lambda *_: itinerary_factory().model_dump(mode="json"), now=lambda: now).plan(profile_factory(), [stale])
     with pytest.raises(PlanValidationError):
         Planner(lambda *_: itinerary_factory().model_dump(mode="json"), now=lambda: now).plan(profile_factory(), [future])
+
+
+def test_activity_facts_cannot_authorize_another_activity_or_title() -> None:
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    hotel = TrustedEvidence("hotel-1", "Hotel estimate range is CNY 300–500.", "https://provider.example/hotel", "trusted_provider", now)
+    restaurant = TrustedEvidence("food-1", "Restaurant opens at 10:00.", "https://provider.example/food", "trusted_provider", now)
+    with pytest.raises(ValidationError):
+        Activity(title="Restaurant opens at 10:00.", start_time="13:00", end_time="15:00")
+    candidate = itinerary_factory(days=[
+        ItineraryDay(date=date(2026, 8, 1), morning=Activity(title="Hotel planning", start_time="09:00", end_time="11:00", facts=[FactClaim(text=hotel.fact, evidence_id="hotel-1")]), afternoon=Activity(title="Restaurant", start_time="13:00", end_time="15:00"), evening=Activity(title="Dinner", start_time="18:00", end_time="20:00")), itinerary_factory().days[1],
+    ])
+    planned = Planner(lambda *_: candidate.model_dump(mode="json"), now=lambda: now).plan(profile_factory(), [hotel, restaurant])
+    assert planned.days[0].afternoon.citations == []
+
+
+def test_registry_replaces_forged_and_duplicate_citation_metadata() -> None:
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    evidence = TrustedEvidence("place-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)
+    forged = SourceCitation(evidence_id="place-1", source_url="https://evil.example", source_type="official", fetched_at=datetime(2030, 1, 1, tzinfo=timezone.utc), freshness="forged", fact="forged")
+    candidate = itinerary_factory(days=[
+        ItineraryDay(
+            date=date(2026, 8, 1),
+            morning=Activity(title="Walk", start_time="09:00", end_time="11:00", facts=[FactClaim(text=evidence.fact, evidence_id="place-1")], citations=[forged, forged]),
+            afternoon=itinerary_factory().days[0].afternoon, evening=itinerary_factory().days[0].evening,
+        ), itinerary_factory().days[1],
+    ])
+    planned = Planner(lambda *_: candidate.model_dump(mode="json"), now=lambda: now).plan(profile_factory(), [evidence])
+    citations = planned.days[0].morning.citations
+    assert len(citations) == 1
+    assert citations[0].source_url == evidence.source_url
+    assert citations[0].fetched_at == now
+
+
+def test_estimate_range_must_reference_one_unique_assumption() -> None:
+    values = itinerary_factory().model_dump(mode="json")
+    values["budget"]["estimate"]["assumption_id"] = "missing"
+    with pytest.raises(ValidationError):
+        Itinerary.model_validate(values)
+    values = itinerary_factory().model_dump(mode="json")
+    values["assumptions"].append(values["assumptions"][0])
+    with pytest.raises(ValidationError):
+        Itinerary.model_validate(values)

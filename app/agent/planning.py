@@ -189,7 +189,7 @@ def _all_claims(itinerary: Itinerary) -> list[tuple[object, object]]:
     claims: list[tuple[object, object]] = []
     for day in itinerary.days:
         for activity in (day.morning, day.afternoon, day.evening):
-            claims.extend((activity, claim) for claim in activity.claims)
+            claims.extend((activity, claim) for claim in activity.facts)
     return claims
 
 
@@ -202,15 +202,15 @@ def _normalize_claims(itinerary: Itinerary, registry: Mapping[str, TrustedEviden
         evidence = registry.get(claim.evidence_id)
         if evidence is None or _normalize(claim.text) != _normalize(evidence.fact):
             return itinerary, [PlanIssue("CLAIM_EVIDENCE_MISMATCH", "claims", "Each claim must exactly match its trusted evidence.")]
-        citation = SourceCitation(
-            evidence_id=evidence.evidence_id, source_url=evidence.source_url, source_type=evidence.source_type,
-            fetched_at=evidence.fetched_at, freshness=f"Fetched {evidence.fetched_at.isoformat()}; reference only.", fact=evidence.fact,
-        )
-        activity.citations = [*activity.citations, citation]
     # User/model supplied citation metadata never survives normalization.
     for day in itinerary.days:
         for activity in (day.morning, day.afternoon, day.evening):
-            if not activity.claims:
-                activity.citations = []
+            activity.citations = []
+    for activity, claim in _all_claims(itinerary):
+        evidence = registry[claim.evidence_id]
+        activity.citations.append(SourceCitation(
+            evidence_id=evidence.evidence_id, source_url=evidence.source_url, source_type=evidence.source_type,
+            fetched_at=evidence.fetched_at, freshness=f"Fetched {evidence.fetched_at.isoformat()}; reference only.", fact=evidence.fact,
+        ))
     itinerary.citations = []
     return itinerary, []

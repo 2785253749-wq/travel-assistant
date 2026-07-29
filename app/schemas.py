@@ -66,7 +66,7 @@ class Activity(StrictSchema):
     start_time: str = Field(pattern=r"^\d{2}:\d{2}$")
     end_time: str = Field(pattern=r"^\d{2}:\d{2}$")
     notes: list[str] = Field(default_factory=list, max_length=20)
-    claims: list["FactClaim"] = Field(default_factory=list, max_length=20)
+    facts: list["FactClaim"] = Field(default_factory=list, max_length=20, validation_alias=AliasChoices("facts", "claims"))
     citations: list[SourceCitation] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
@@ -75,7 +75,14 @@ class Activity(StrictSchema):
         end = time.fromisoformat(self.end_time)
         if end <= start:
             raise ValueError("activity end_time must be after start_time")
+        variable_terms = ("price", "availability", "open", "可订", "价格", "营业", "库存", "余票", "实时")
+        if any(term in value.lower() for value in (self.title, *self.notes) for term in variable_terms):
+            raise ValueError("variable facts must be expressed in activity facts")
         return self
+
+    @property
+    def claims(self) -> list["FactClaim"]:
+        return self.facts
 
 
 class ItineraryDay(StrictSchema):
@@ -181,4 +188,9 @@ class Itinerary(StrictSchema):
         for offset, day in enumerate(self.days):
             if day.date != self.start_date.fromordinal(self.start_date.toordinal() + offset):
                 raise ValueError("itinerary day dates must be continuous")
+        assumption_ids = [assumption.assumption_id for assumption in self.assumptions]
+        if len(assumption_ids) != len(set(assumption_ids)):
+            raise ValueError("assumption ids must be unique")
+        if self.budget.estimate.assumption_id not in assumption_ids:
+            raise ValueError("estimate assumption_id must reference an itinerary assumption")
         return self
