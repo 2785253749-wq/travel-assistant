@@ -38,6 +38,7 @@ _PLANS: tuple[tuple[str, dict[str, Any]], ...] = (
 )
 
 PROFILE_BY_MESSAGE = {message: profile for message, profile in _PLANS}
+SOURCE_IDS_BY_MESSAGE = {message: [f"p{index:03d}"] for index, (message, _) in enumerate(_PLANS, start=1)}
 PROFILE_BY_MESSAGE.update({
     "上海去苏州，0个人，预算2000": {"origin":"上海","destination":"苏州","travelers":0,"budget_cny":2000},
     "上海去苏州，7个人，预算2000": {"origin":"上海","destination":"苏州","travelers":7,"budget_cny":2000},
@@ -47,6 +48,16 @@ PROFILE_BY_MESSAGE.update({
     "不要早起，改晚一点": {"origin":"成都","destination":"重庆","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":3000},
     "把酒店偏好换成地铁附近": {"origin":"昆明","destination":"大理","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":3600},
 })
+SOURCE_IDS_BY_MESSAGE.update({
+    "把第二天改成西湖": ["m016"], "行程改成两个人": ["m017"], "把预算改为5000": ["m018"],
+    "不要早起，改晚一点": ["m019"], "把酒店偏好换成地铁附近": ["m020"],
+    "上次那个杭州行程，第二天换西湖": ["p001"], "the second day不要太赶": ["p001"], "把day 2改成museum": ["p001"],
+    "福州到黄山两天两人3600": ["e009"],
+})
+
+
+def source_ids_for(message: str) -> list[str]:
+    return list(SOURCE_IDS_BY_MESSAGE.get(message, []))
 INTENT_BY_MESSAGE = {message: "plan_trip" for message, _ in _PLANS}
 INTENT_BY_MESSAGE.update({
     "把第二天改成西湖": "modify_trip", "行程改成两个人": "modify_trip", "把预算改为5000": "modify_trip",

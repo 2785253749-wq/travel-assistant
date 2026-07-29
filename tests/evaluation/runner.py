@@ -27,7 +27,7 @@ from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircui
 from app.schemas import Itinerary, TravelProfile
 from app.providers.free_weather import WeatherProvider
 from app.providers.places import PlacesProvider
-from tests.evaluation.offline_fixtures import ERROR_BY_SCENARIO, OfflineModel, SCENARIO_BY_MESSAGE, model_factory
+from tests.evaluation.offline_fixtures import OfflineModel, SCENARIO_BY_MESSAGE, model_factory, source_ids_for
 
 
 ACTION = Literal["ask", "refuse", "plan", "modify", "explain", "degrade"]
@@ -264,7 +264,7 @@ def load_baseline(path: str | Path = "tests/evaluation/baseline.json") -> dict[s
 def run_case(case: EvaluationCase) -> Prediction:
     scenario = SCENARIO_BY_MESSAGE.get(case.messages[-1])
     classifier = OfflineClassifier()
-    evidence_provider = FixtureEvidenceProvider(case.allowed_sources, scenario)
+    evidence_provider = FixtureEvidenceProvider(source_ids_for(case.messages[-1]), scenario)
     usage_guard = FixtureUsageGuard(scenario)
     repository = FailingEvaluationRepository() if scenario == "database_failure" else None
     agent = SafeTravelAgent(
@@ -287,9 +287,7 @@ def run_case(case: EvaluationCase) -> Prediction:
     fields = result.profile
     schema_valid, budget_valid, citation_ids = _structured_output(result)
     predicted_action = _action_for(case, result, classifier.last_intent)
-    error_code = usage_guard.error_code or evidence_provider.error_code or ERROR_BY_SCENARIO.get(scenario, result.error_code)
-    if scenario is not None:
-        predicted_action = "degrade"
+    error_code = usage_guard.error_code or evidence_provider.error_code or result.error_code
     unsupported_facts = _unsupported_fact_count(result)
     return Prediction(
         intent=classifier.last_intent, action=predicted_action, fields=fields, error_code=error_code,

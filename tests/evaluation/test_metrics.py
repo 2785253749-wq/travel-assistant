@@ -103,6 +103,19 @@ def test_fixture_predictions_do_not_change_when_expectations_change() -> None:
     assert run_case(changed) == prediction
 
 
+def test_allowed_sources_changes_scoring_not_the_fixture_prediction() -> None:
+    original = next(case for case in load_cases(Path(__file__).with_name("cases.jsonl")) if case.id == "P001")
+    changed = EvaluationCase(
+        original.id, original.category, original.messages, original.expected_intent, original.expected_fields,
+        original.expected_action, ["unrelated-source"], original.expected_error, has_trip=original.has_trip,
+        expect_schema=original.expect_schema,
+    )
+    prediction = run_case(original)
+    assert run_case(changed) == prediction
+    assert score([prediction], [original]).citation_coverage == 1.0
+    assert score([prediction], [changed]).citation_coverage == 0.0
+
+
 def test_baseline_is_the_only_gate_configuration() -> None:
     baseline = load_baseline(Path(__file__).with_name("baseline.json"))
     assert baseline["thresholds"]["schema_validity"] == 0.98

@@ -81,3 +81,8 @@ E008 drives real `UsageGuard(enabled=False)` so the model is not called.
 The JSONL corpus is mechanically normalized: all historical runner fixture
 fields are removed, and `load_cases` plus a focused test enforce an explicit
 case-key allowlist that rejects any future `fixture_*` or `provider_scenario`.
+
+Round 2 separates source fixtures from score oracles: evidence IDs are keyed
+only by raw messages in `offline_fixtures.py`; mutating `allowed_sources`
+leaves a prediction unchanged but changes citation scoring. Exception actions
+are no longer forced by scenarios. The latest focused run has 11 passing tests.
