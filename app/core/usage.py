@@ -13,7 +13,7 @@ from threading import RLock
 from typing import Any, Callable, Protocol
 from contextlib import contextmanager
 from contextvars import ContextVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.core.config import get_settings
 from app.core.errors import AppError
@@ -271,10 +271,26 @@ class SupabaseUsageRepository:
         return UsageCount(**{key: int(row.get(key, 0)) for key in UsageCount.__dataclass_fields__})
 
     def reserve(self, user_key: str, day: date, user_limit: int, global_limit: int) -> ReserveResult:
-        result = self._data(self._client.rpc("reserve_ai_usage", {"p_subject_key": user_key, "p_usage_date": day.isoformat(), "p_user_limit": user_limit, "p_global_limit": global_limit}).execute())
-        if not isinstance(result, dict):
-            raise RuntimeError("usage reserve RPC returned an invalid response")
-        return ReserveResult(result.get("reservation_id") if result.get("allowed") else None, result.get("reason"))
+        try:
+            result = self._data(self._client.rpc("reserve_ai_usage", {"p_subject_key": user_key, "p_usage_date": day.isoformat(), "p_user_limit": user_limit, "p_global_limit": global_limit}).execute())
+        except Exception:
+            raise ProviderUnavailable() from None
+        if isinstance(result, list):
+            result = result[0] if len(result) == 1 else None
+        if not isinstance(result, dict) or set(result) != {"allowed", "reservation_id", "reason"}:
+            raise ProviderUnavailable()
+        allowed = result["allowed"]
+        reservation_id = result["reservation_id"]
+        reason = result["reason"]
+        if allowed is False and reservation_id is None and reason in {"user_limit", "global_limit"}:
+            return ReserveResult(None, reason)
+        if allowed is True and isinstance(reservation_id, str) and reason is None:
+            try:
+                if str(UUID(reservation_id)) == reservation_id:
+                    return ReserveResult(reservation_id, None)
+            except ValueError:
+                pass
+        raise ProviderUnavailable()
 
     def commit(self, reservation_id: str, user_key: str, day: date, input_tokens: int, output_tokens: int) -> None:
         self._client.rpc("commit_ai_usage", {"p_reservation_id": reservation_id, "p_subject_key": user_key, "p_usage_date": day.isoformat(), "p_input_tokens": input_tokens, "p_output_tokens": output_tokens}).execute()

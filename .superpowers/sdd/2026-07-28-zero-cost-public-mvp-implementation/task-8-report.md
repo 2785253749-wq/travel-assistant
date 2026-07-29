@@ -59,3 +59,16 @@
 - RED: the new reserve-result tests failed to import `ReserveResult` before the refactor.
 - Focused: `python -m pytest tests/unit/test_usage.py tests/unit/test_config.py -q` → `20 passed in 0.07s`.
 - Full: `python -m pytest -q` → `154 passed, 1 warning in 1.76s`.
+
+## Review fix round 4
+
+- `reserve_ai_usage` now returns one JSONB protocol on every branch: the exact `allowed`, `reservation_id`, and `reason` fields carry an allowed UUID, `user_limit`, or `global_limit` result while retaining the advisory transaction lock and expired-reservation cleanup.
+- `SupabaseUsageRepository` normalizes the real dict/single-row-list response shapes, validates the complete state and canonical UUID strictly, and maps malformed, unknown, or failed RPC responses to the stable fail-closed `AI_UNAVAILABLE` signal.
+- Production session secrets now reject any exact periodic repetition, decoded common placeholders, and empirical Shannon total entropy below 128 bits after canonical base64url decoding. A fresh `secrets.token_urlsafe(32)` remains accepted.
+- Contract coverage asserts the migration's JSONB shape (and fails against the former `returns text` function), exact reserve/commit/rollback RPC payloads, all three reserve outcomes, malformed/unknown responses, RPC exceptions, and service-role production wiring.
+
+### Verification
+
+- RED: `python -m pytest tests/unit/test_usage.py tests/unit/test_config.py -q` produced `13 failed, 22 passed`; failures covered the old text SQL protocol, unsafe response parsing, RPC exception leakage, and the three weak-secret classes.
+- Focused GREEN: `python -m pytest tests/unit/test_usage.py tests/unit/test_config.py -q` produced `35 passed in 0.10s`.
+- Full: `python -m pytest tests -q` produced `169 passed, 1 warning in 1.80s` (the existing Starlette/httpx deprecation warning).

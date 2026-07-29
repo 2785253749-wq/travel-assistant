@@ -1,5 +1,10 @@
 import pytest
 import secrets
+import base64
+
+
+def _base64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
 def test_production_requires_supabase(monkeypatch):
@@ -66,3 +71,25 @@ def test_production_accepts_a_canonical_random_base64url_session_secret(monkeypa
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "service-key")
     monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", secrets.token_urlsafe(32))
     assert Settings(_env_file=None).app_env == "production"
+
+
+@pytest.mark.parametrize(
+    "decoded",
+    [
+        b"abcdefghijk" * 3,
+        b"a" * 16 + b"bcdefghijklmnopq",
+        b"replace-me-with-a-secure-secret!!",
+    ],
+)
+def test_production_rejects_periodic_low_entropy_or_decoded_placeholder_secrets(monkeypatch, decoded):
+    from app.core.config import Settings
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-key")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "service-key")
+    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", _base64url(decoded))
+
+    with pytest.raises(ValueError, match="ANON_SESSION_SIGNING_SECRET"):
+        Settings(_env_file=None)

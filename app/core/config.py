@@ -1,6 +1,8 @@
 from functools import lru_cache
 from typing import Literal
 import base64
+from collections import Counter
+from math import log2
 import re
 
 from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
@@ -58,7 +60,32 @@ class Settings(BaseSettings):
         canonical = base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii")
         if canonical != value or len(decoded) < 32:
             return False
-        if len(set(decoded)) < 8 or len(decoded) % 2 == 0 and decoded[: len(decoded) // 2] == decoded[len(decoded) // 2 :]:
+        if any(
+            len(decoded) % period == 0
+            and decoded == decoded[:period] * (len(decoded) // period)
+            for period in range(1, len(decoded) // 2 + 1)
+        ):
+            return False
+        frequencies = Counter(decoded)
+        total_entropy_bits = sum(
+            -count * log2(count / len(decoded)) for count in frequencies.values()
+        )
+        if total_entropy_bits < 128:
+            return False
+        decoded_lower = decoded.lower()
+        if any(
+            placeholder in decoded_lower
+            for placeholder in (
+                b"replace",
+                b"change-me",
+                b"changeme",
+                b"your-secret",
+                b"example",
+                b"placeholder",
+                b"test-secret",
+                b"secret-key",
+            )
+        ):
             return False
         return True
 

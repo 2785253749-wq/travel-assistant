@@ -2,14 +2,20 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from types import SimpleNamespace
+import re
+import sys
 
 import pytest
 
 from app.core.errors import AppError
-from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircuitBreaker, ReserveResult, SupabaseUsageRepository, UsageGuard, classify_provider_error, model_usage_scope
+from app.core.config import get_settings
+from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircuitBreaker, ProviderUnavailable, ReserveResult, SupabaseUsageRepository, UsageGuard, classify_provider_error, get_usage_guard, model_usage_scope
 
 
 TODAY = datetime(2026, 7, 29, tzinfo=UTC).date()
+RESERVATION_ID = "11111111-1111-4111-8111-111111111111"
 
 
 def make_guard(*, user_limit: int = 5, global_limit: int = 100, enabled: bool = True):
@@ -126,22 +132,113 @@ def test_gateway_never_invokes_model_after_circuit_opens_and_collects_tokens():
     assert usage.calls == 0
 
 
-def test_service_role_repository_uses_reservation_rpc_contract():
+def test_reserve_sql_declares_the_structured_jsonb_contract_for_every_branch():
+    migration = Path(__file__).parents[2] / "supabase" / "migrations" / "002_ai_usage_reservations.sql"
+    sql = migration.read_text(encoding="utf-8")
+    definition = re.search(
+        r"create or replace function public\.reserve_ai_usage\(.*?\$\$;",
+        sql,
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    assert definition is not None
+    normalized = " ".join(definition.group(0).lower().split())
+    assert ") returns jsonb language plpgsql" in normalized
+    assert normalized.count("jsonb_build_object(") == 3
+    assert "'allowed', false, 'reservation_id', null, 'reason', 'user_limit'" in normalized
+    assert "'allowed', false, 'reservation_id', null, 'reason', 'global_limit'" in normalized
+    assert "'allowed', true, 'reservation_id', new_reservation::text, 'reason', null" in normalized
+
+
+def test_service_role_repository_uses_exact_complete_reservation_rpc_contract():
     calls = []
     class Query:
         def __init__(self, name, args): self.name, self.args = name, args
         def execute(self):
-            calls.append((self.name, self.args)); return type("Result", (), {"data": {"allowed": True, "reservation_id": "reservation-1", "reason": None}})()
+            calls.append((self.name, self.args))
+            return type("Result", (), {"data": {"allowed": True, "reservation_id": RESERVATION_ID, "reason": None}})()
     class Client:
         def rpc(self, name, args): return Query(name, args)
     repo = SupabaseUsageRepository(Client())
     result = repo.reserve("user:1", TODAY, 5, 100)
-    assert result == ReserveResult("reservation-1", None)
+    assert result == ReserveResult(RESERVATION_ID, None)
     repo.commit(result.reservation_id, "user:1", TODAY, 3, 4)
     repo.rollback(result.reservation_id, "user:1", TODAY)
-    assert [name for name, _ in calls] == ["reserve_ai_usage", "commit_ai_usage", "rollback_ai_usage"]
-    assert calls[0][1]["p_global_limit"] == 100
-    assert calls[1][1]["p_reservation_id"] == "reservation-1"
+    assert calls == [
+        ("reserve_ai_usage", {"p_subject_key": "user:1", "p_usage_date": "2026-07-29", "p_user_limit": 5, "p_global_limit": 100}),
+        ("commit_ai_usage", {"p_reservation_id": RESERVATION_ID, "p_subject_key": "user:1", "p_usage_date": "2026-07-29", "p_input_tokens": 3, "p_output_tokens": 4}),
+        ("rollback_ai_usage", {"p_reservation_id": RESERVATION_ID, "p_subject_key": "user:1", "p_usage_date": "2026-07-29"}),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        ([{"allowed": False, "reservation_id": None, "reason": "user_limit"}], ReserveResult(None, "user_limit")),
+        ({"allowed": False, "reservation_id": None, "reason": "global_limit"}, ReserveResult(None, "global_limit")),
+    ],
+)
+def test_service_role_repository_normalizes_valid_limit_responses(data, expected):
+    class Client:
+        def rpc(self, _name, _args):
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data=data))
+
+    assert SupabaseUsageRepository(Client()).reserve("user:1", TODAY, 5, 100) == expected
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        RESERVATION_ID,
+        [],
+        [{"allowed": True, "reservation_id": RESERVATION_ID}],
+        {"allowed": False, "reservation_id": None, "reason": "unknown_limit"},
+        {"allowed": "true", "reservation_id": RESERVATION_ID, "reason": None},
+        {"allowed": True, "reservation_id": "not-a-uuid", "reason": None},
+        {"allowed": True, "reservation_id": RESERVATION_ID, "reason": None, "extra": "field"},
+    ],
+)
+def test_service_role_repository_fails_closed_on_malformed_or_unknown_responses(data):
+    class Client:
+        def rpc(self, _name, _args):
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data=data))
+
+    with pytest.raises(ProviderUnavailable) as error:
+        SupabaseUsageRepository(Client()).reserve("user:1", TODAY, 5, 100)
+
+    assert error.value.code == "AI_UNAVAILABLE"
+
+
+def test_service_role_repository_maps_rpc_exceptions_to_a_stable_upstream_error():
+    class Client:
+        def rpc(self, _name, _args):
+            return SimpleNamespace(execute=lambda: (_ for _ in ()).throw(RuntimeError("raw upstream body")))
+
+    with pytest.raises(ProviderUnavailable) as error:
+        SupabaseUsageRepository(Client()).reserve("user:1", TODAY, 5, 100)
+
+    assert error.value.code == "AI_UNAVAILABLE"
+    assert "raw upstream body" not in str(error.value)
+
+
+def test_production_usage_wiring_creates_the_repository_with_the_service_role_key(monkeypatch):
+    calls = []
+    client = object()
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-key")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "service-role-key")
+    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+    monkeypatch.setitem(sys.modules, "supabase", SimpleNamespace(create_client=lambda url, key: calls.append((url, key)) or client))
+    get_settings.cache_clear()
+
+    guard = get_usage_guard()
+
+    assert isinstance(guard.repository, SupabaseUsageRepository)
+    assert guard.repository._client is client
+    assert calls == [("https://project.supabase.co/", "service-role-key")]
+    get_settings.cache_clear()
 
 
 def test_atomic_reserve_results_do_not_cross_contaminate_failure_reasons():
