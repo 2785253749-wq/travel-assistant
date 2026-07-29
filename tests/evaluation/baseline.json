@@ -15,5 +15,5 @@
     "task_success_rate": 0.85,
     "fallback_success_rate": 1.0
   },
-  "known_failures": ["P015", "P019", "M005", "R001", "R006", "R014"]
+  "known_failures": ["P015", "P019", "M005", "R001", "R006", "R014", "E002"]
 }

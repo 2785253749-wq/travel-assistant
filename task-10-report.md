@@ -66,7 +66,58 @@ cases, and 26 fact items.
 - `R001`, `R006`, `R014`: deterministic safety classification returns the
   wrong refusal code or misses the required refusal.
 
-The baseline records exactly these six case IDs. Production code, thresholds,
-and expected answers were not changed to improve the evaluation. There are no
-known unfinished Task 10 round-2 items; the six failures above are deliberately
-retained product findings.
+The round-2 baseline recorded exactly these six case IDs. Production code,
+thresholds, and expected answers were not changed to improve the evaluation.
+There were no unfinished round-2 harness items; the six failures above were
+deliberately retained product findings.
+
+## Fix round 3: exception component observations
+
+E001-E010 remain ten cases and now cover exactly these raw-message scenarios:
+Weather timeout, Places empty result plus rewrite retry, `UsageGuard` user and
+global limits, kill switch, open circuit, ModelGateway 429 and upstream failure,
+database persistence failure, and Planner's twice-invalid repair path.
+
+The runner no longer runs every exception through `SafeTravelAgent` and then
+overwrites its result from adapter state. `observe_scenario(message)` dispatches
+only by the raw-message fixture and produces a `ScenarioObservation` from the
+target production component:
+
+- Weather and Places use their actual `ProviderResult` values. The Places case
+  records two requests and an empty result with `degraded=False` and no error;
+  it does not invent `PLACES_EMPTY_AFTER_RETRY`.
+- User/global/kill-switch cases call the real `UsageGuard`. E006 reaches the
+  `InMemoryUsageRepository.reserve` `global_limit` result and maps through the
+  production `AppError` code.
+- Circuit/rate/upstream cases call `ModelGateway` and retain its actual
+  `ProviderUnavailable` code.
+- Planner failure catches the real `PlanValidationError` after exactly two
+  generation attempts.
+- Database failure uses a real `TripService` over a failing message repository;
+  only the resulting `SafeTravelAgent` `ChatResult` becomes the observation.
+
+Tests poison the removed adapter side channels, prevent non-database exception
+cases from invoking the agent, and mutate expected action/error values. None of
+those changes can alter the component observation.
+
+Round-3 verification: focused evaluation tests pass 41/41. The complete suite
+passes 218 tests with one existing Starlette/httpx deprecation warning. The
+offline runner still exits 1 under unchanged gates and reports:
+
+| Metric | Result | Gate |
+|---|---:|---:|
+| Intent accuracy | 98.75% | 90% |
+| Slot micro-F1 | 99.13% | 90% |
+| Clarification recall | 96.67% | 95% |
+| Refusal precision / recall | 100% / 93.33% | 90% / 95% |
+| Schema validity | 92.86% | 98% |
+| Budget validity | 92.86% | 98% |
+| Citation coverage / validity | 92.86% / 100% | 95% / 95% |
+| Unsupported fact rate | 0% | <=2% |
+| Task success rate | 91.25% | 85% |
+| Fallback success rate | 100% | 100% |
+
+The final failure IDs are `P015`, `P019`, `M005`, `R001`, `R006`, `R014`, and
+`E002`. E002 is now a visible product finding: two real empty Places responses
+produce no stable production error code. The baseline records all seven IDs;
+there are no known unfinished Task 10 round-3 items.

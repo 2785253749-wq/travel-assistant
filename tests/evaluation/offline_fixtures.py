@@ -99,23 +99,14 @@ INTENT_BY_MESSAGE.update({
     "侬好，想去苏州白相": "smalltalk",
 })
 
-_ERROR_STATUS = {"成都到重庆两天两人3000": 400, "南京到苏州两天两人2400": 429, "武汉到长沙三天两人2800": 500}
+_ERROR_STATUS = {"成都到重庆两天两人3000": 500, "南京到苏州两天两人2400": 429}
 SCENARIO_BY_MESSAGE = {
     "上海到杭州两天两人3000": "weather_timeout", "北京到西安三天两人4000": "places_empty_retry",
-    "广州到厦门三天两人4000": "circuit_open", "成都到重庆两天两人3000": "model_400",
-    "南京到苏州两天两人2400": "model_429", "武汉到长沙三天两人2800": "model_500",
+    "广州到厦门三天两人4000": "circuit_open", "成都到重庆两天两人3000": "model_upstream_failure",
+    "南京到苏州两天两人2400": "model_rate_limited", "武汉到长沙三天两人2800": "global_limit",
     "深圳到桂林三天两人5000": "user_limit", "郑州到青岛三天两人4200": "kill_switch",
     "福州到黄山两天两人3600": "format_twice", "济南到大理三天两人5000": "database_failure",
 }
-ERROR_BY_SCENARIO = {
-    "weather_timeout": "WEATHER_TIMEOUT", "places_empty_retry": "PLACES_EMPTY_AFTER_RETRY",
-    "model_400": "AI_UNAVAILABLE", "model_429": "AI_RATE_LIMITED", "model_500": "AI_UNAVAILABLE",
-    "user_limit": "AI_DAILY_LIMIT_REACHED", "global_limit": "AI_GLOBAL_DAILY_LIMIT_REACHED",
-    "kill_switch": "AI_DISABLED", "circuit_open": "AI_CIRCUIT_OPEN",
-    "format_twice": "PLAN_VALIDATION_FAILED", "database_failure": "DATABASE_FAILURE",
-}
-
-
 class OfflineModel:
     """A JSON-mode compatible model double. No expected value is consulted."""
 

@@ -31,8 +31,15 @@ for fallback success. Applicability is declared in case data and never inferred
 from a case ID. An empty precision/citation denominator is recorded as a
 vacuous `1.0`, while its zero denominator remains visible in the report.
 
-The current baseline records `P015`, `P019`, `M005`, `R001`, `R006`, and `R014`
-as known product failures. They cover missing domestic allowlist entries, an
-invalid-traveler extraction that aborts too early, and safety/refusal mapping
-gaps. They are intentionally retained so a product fix must improve production
+Exception cases dispatch by raw-message scenario to the component under test
+and convert its actual return value or production-mapped exception into a
+`ScenarioObservation`. Provider/usage/model/planner observations are not run
+through the agent first. The database case alone uses `SafeTravelAgent`, backed
+by a real `TripService`, and observes only its `ChatResult`.
+
+The current baseline records `P015`, `P019`, `M005`, `R001`, `R006`, `R014`, and
+`E002` as known product failures. They cover missing domestic allowlist entries,
+an invalid-traveler extraction that aborts too early, safety/refusal mapping
+gaps, and a twice-empty Places result that has no stable production error code.
+They are intentionally retained so a product fix must improve production
 behavior rather than alter the evaluation answer or release thresholds.

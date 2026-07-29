@@ -1,8 +1,8 @@
 """Deterministic, offline regression evaluation for the public MVP.
 
-The evaluator deliberately drives the production ``SafeTravelAgent``.  Its
-model and provider seams are fixed fixtures so no run can make a network call
-or spend provider credits.
+Ordinary journeys drive ``SafeTravelAgent`` while exception cases exercise the
+named production component directly. Fixed seams prevent network or paid-model
+calls.
 """
 
 from __future__ import annotations
@@ -14,16 +14,19 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 import httpx
 
 from app.agent.graph import ChatResult, SafeTravelAgent, TrustedEvidence, extract_profile
-from app.agent.intent import Intent, IntentResult, classify_intent
-from app.agent.planning import Planner, validate_itinerary
+from app.agent.intent import IntentResult, classify_intent
+from app.agent.planning import PlanValidationError, Planner
 from app.core.errors import AppError
 from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircuitBreaker, ProviderUnavailable, UsageGuard
+from app.infrastructure.repositories import InMemoryTripRepository
+from app.trips.models import ConversationMessage, Trip
+from app.trips.service import TripService
 from app.schemas import Itinerary, TravelProfile
 from app.providers.free_weather import WeatherProvider
 from app.providers.places import PlacesProvider
@@ -32,7 +35,6 @@ from tests.evaluation.offline_fixtures import OfflineModel, SCENARIO_BY_MESSAGE,
 
 ACTION = Literal["ask", "refuse", "plan", "modify", "explain", "degrade"]
 FIXTURE_NOW = datetime(2026, 7, 28, tzinfo=timezone.utc)
-PLAN_ACTIONS = {"plan", "modify", "explain"}
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,34 @@ class Prediction:
 
 
 @dataclass(frozen=True)
+class ScenarioObservation:
+    component: str
+    intent: str
+    action: ACTION
+    fields: dict[str, Any]
+    error_code: str | None = None
+    schema_valid: bool = False
+    budget_valid: bool = False
+    citation_ids: list[str] = field(default_factory=list)
+    unsupported_facts: int = 0
+    fallback_safe: bool = False
+    attempts: int = 1
+
+    def to_prediction(self) -> Prediction:
+        return Prediction(
+            intent=self.intent,
+            action=self.action,
+            fields=self.fields,
+            error_code=self.error_code,
+            schema_valid=self.schema_valid,
+            budget_valid=self.budget_valid,
+            citation_ids=self.citation_ids,
+            unsupported_facts=self.unsupported_facts,
+            fallback_safe=self.fallback_safe,
+        )
+
+
+@dataclass(frozen=True)
 class EvaluationReport:
     total_cases: int
     intent_accuracy: float
@@ -93,20 +123,6 @@ class EvaluationReport:
         return asdict(self)
 
 
-class FixtureClassifier:
-    """A fixed JSON-mode model result; production routing remains in use."""
-
-    def __init__(self, intent: str, scenario: str | None) -> None:
-        self._intent = intent
-        self._scenario = scenario
-
-    def classify(self, message: str, has_trip: bool) -> IntentResult:
-        if self._scenario in {"model_400", "model_429", "model_500"}:
-            raise ProviderUnavailable(self._scenario.upper())
-        result = IntentResult(intent=self._intent, confidence=0.99)
-        return result.model_copy(update={"intent": route_intent(result, has_trip)})
-
-
 class OfflineClassifier:
     """Exercise Task 2's JSON model gateway and deterministic route."""
 
@@ -117,10 +133,6 @@ class OfflineClassifier:
         # Retain the fixture's request label for reporting if the real gateway
         # raises before a structured response exists.
         self.last_intent = OfflineModel.intent_for(message)
-        if SCENARIO_BY_MESSAGE.get(message) == "circuit_open":
-            breaker = ProviderCircuitBreaker(failure_threshold=1)
-            breaker.record_failure("AI_PROVIDER_UNAVAILABLE")
-            ModelGateway(lambda: OfflineModel(), breaker).invoke([])
         result = classify_intent(message, has_trip, model=OfflineModel())
         self.last_intent = result.intent
         return result
@@ -133,64 +145,14 @@ class OfflineExtractor:
         return extract_profile(message, profile, model_factory=model_factory)
 
 
-class FixtureUsageGuard:
-    """Adapter that drives Task 8's real reservation and limit behavior."""
-
-    def __init__(self, scenario: str | None) -> None:
-        self.error_code: str | None = None
-        repository = InMemoryUsageRepository()
-        limits = {"user_limit": (0, 10), "global_limit": (10, 0)}.get(scenario, (10, 10))
-        self._guard = UsageGuard(repository=repository, user_daily_limit=limits[0], global_daily_limit=limits[1], enabled=scenario != "kill_switch")
-
-    def allow(self, user_id: object) -> bool:
-        try:
-            self._guard.reserve("evaluation-subject")
-        except AppError as error:
-            self.error_code = error.code
-            return False
-        return True
-
-
-class FailingEvaluationRepository:
-    def append_message(self, **_: object) -> None:
-        raise RuntimeError("offline database failure")
-
-
-class FixtureExtractor:
-    def __init__(self, profiles: Iterable[dict[str, Any]]) -> None:
-        self._profiles = iter(profiles)
-
-    def extract(self, message: str, profile: TravelProfile) -> TravelProfile:
-        try:
-            return TravelProfile.model_validate(next(self._profiles))
-        except StopIteration:
-            return TravelProfile()
-
-
 class FixtureEvidenceProvider:
-    def __init__(self, source_ids: list[str], scenario: str | None) -> None:
+    def __init__(self, source_ids: list[str]) -> None:
         self._source_ids = source_ids
-        self._scenario = scenario
-        self.error_code: str | None = None
 
     def use_message(self, message: str) -> None:
         self._source_ids = source_ids_for(message)
 
     def fetch(self, profile: TravelProfile) -> list[TrustedEvidence]:
-        if self._scenario == "weather_timeout":
-            def timeout(_: httpx.Request) -> httpx.Response:
-                raise httpx.TimeoutException("fixture timeout")
-            result = WeatherProvider(client=httpx.Client(transport=httpx.MockTransport(timeout))).forecast(
-                profile.destination or "", date.fromisoformat(profile.start_date or "2026-10-01"), date.fromisoformat(profile.end_date or "2026-10-02"),
-            )
-            self.error_code = result.error_code
-            return []
-        if self._scenario == "places_empty_retry":
-            result = PlacesProvider(client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"features": []})))).search(profile.destination or "", "fixture scenic area")
-            self.error_code = "PLACES_EMPTY_AFTER_RETRY" if result.data == [] else result.error_code
-            return []
-        if self._scenario and self._scenario != "format_twice":
-            return []
         return [
             TrustedEvidence(
                 source_id,
@@ -207,11 +169,13 @@ class FixtureStructuredPlanner:
     def __init__(self, scenario: str | None) -> None:
         self._scenario = scenario
         self._planner = Planner(self._generate, now=lambda: FIXTURE_NOW)
+        self.attempts = 0
 
     def plan(self, profile: TravelProfile, provider_results: object) -> Itinerary:
         return self._planner.plan(profile, provider_results)
 
     def _generate(self, profile: TravelProfile, provider_results: object, repair_codes: list[str] | None) -> object:
+        self.attempts += 1
         if self._scenario == "format_twice":
             return {"invalid": True}
         return _fixture_itinerary(profile, provider_results)
@@ -267,24 +231,22 @@ def load_baseline(path: str | Path = "tests/evaluation/baseline.json") -> dict[s
 
 def run_case(case: EvaluationCase) -> Prediction:
     scenario = SCENARIO_BY_MESSAGE.get(case.messages[-1])
+    if scenario is not None:
+        return observe_scenario(case.messages[-1]).to_prediction()
     classifier = OfflineClassifier()
-    evidence_provider = FixtureEvidenceProvider([], scenario)
-    usage_guard = FixtureUsageGuard(scenario)
-    repository = FailingEvaluationRepository() if scenario == "database_failure" else None
+    evidence_provider = FixtureEvidenceProvider([])
     agent = SafeTravelAgent(
         classifier=classifier,
         extractor=OfflineExtractor(),
         planner=FixtureStructuredPlanner(scenario),
         evidence_provider=evidence_provider,
-        usage_guard=usage_guard,
-        repository=repository,
     )
-    trip = SimpleNamespace(profile=TravelProfile(), id=uuid4()) if scenario == "database_failure" else None
+    trip = None
     result: ChatResult | None = None
     try:
         for index, message in enumerate(case.messages):
             evidence_provider.use_message(message)
-            result = agent.run(message, trip=trip, user_id=uuid4() if scenario == "database_failure" else None)
+            result = agent.run(message, trip=trip)
             if index < len(case.messages) - 1 and result.profile:
                 profile = TravelProfile.model_validate(result.profile)
                 if trip is None:
@@ -297,17 +259,189 @@ def run_case(case: EvaluationCase) -> Prediction:
     fields = result.profile
     schema_valid, budget_valid, citation_ids = _structured_output(result)
     predicted_action = _action_for(result, classifier.last_intent, has_trip=trip is not None)
-    error_code = usage_guard.error_code or evidence_provider.error_code or result.error_code
     unsupported_facts = _unsupported_fact_count(result)
     return Prediction(
-        intent=classifier.last_intent, action=predicted_action, fields=fields, error_code=error_code,
+        intent=classifier.last_intent, action=predicted_action, fields=fields, error_code=result.error_code,
         schema_valid=schema_valid, budget_valid=budget_valid, citation_ids=citation_ids,
-        unsupported_facts=unsupported_facts, fallback_safe=predicted_action == "degrade" and bool(error_code),
+        unsupported_facts=unsupported_facts, fallback_safe=predicted_action == "degrade" and bool(result.error_code),
     )
 
 
-def _fallback_profile() -> dict[str, Any]:
-    return {"origin": "上海", "destination": "杭州", "start_date": "2026-10-01", "end_date": "2026-10-02", "travelers": 2, "budget_cny": 3000}
+def observe_scenario(message: str) -> ScenarioObservation:
+    """Run the raw message's target failure seam and return only its observation."""
+    scenario = SCENARIO_BY_MESSAGE.get(message)
+    if scenario == "weather_timeout":
+        return _observe_weather_timeout(message)
+    if scenario == "places_empty_retry":
+        return _observe_places_empty_retry(message)
+    if scenario in {"user_limit", "global_limit", "kill_switch"}:
+        return _observe_usage_guard(message, scenario)
+    if scenario in {"circuit_open", "model_rate_limited", "model_upstream_failure"}:
+        return _observe_model_gateway(message, scenario)
+    if scenario == "format_twice":
+        return _observe_planner(message)
+    if scenario == "database_failure":
+        return _observe_database_failure(message)
+    raise ValueError(f"raw message has no evaluation scenario: {message}")
+
+
+def _scenario_profile(message: str) -> TravelProfile:
+    return TravelProfile.model_validate(OfflineModel.profile_for(message))
+
+
+def _observation(
+    message: str,
+    component: str,
+    action: ACTION,
+    error_code: str | None,
+    *,
+    fields: dict[str, Any] | None = None,
+    fallback_safe: bool = False,
+    attempts: int = 1,
+) -> ScenarioObservation:
+    return ScenarioObservation(
+        component=component,
+        intent=OfflineModel.intent_for(message),
+        action=action,
+        fields=fields if fields is not None else _scenario_profile(message).model_dump(),
+        error_code=error_code,
+        fallback_safe=fallback_safe,
+        attempts=attempts,
+    )
+
+
+def _observe_weather_timeout(message: str) -> ScenarioObservation:
+    profile = _scenario_profile(message)
+
+    def timeout(_: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("fixture timeout")
+
+    result = WeatherProvider(client=httpx.Client(transport=httpx.MockTransport(timeout))).forecast(
+        profile.destination or "",
+        date.fromisoformat(profile.start_date or ""),
+        date.fromisoformat(profile.end_date or ""),
+    )
+    action: ACTION = "degrade" if result.degraded else "plan"
+    return _observation(
+        message,
+        "weather_provider",
+        action,
+        result.error_code,
+        fallback_safe=result.degraded,
+    )
+
+
+def _observe_places_empty_retry(message: str) -> ScenarioObservation:
+    attempts = 0
+
+    def empty(_: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(200, json={"features": []})
+
+    profile = _scenario_profile(message)
+    result = PlacesProvider(client=httpx.Client(transport=httpx.MockTransport(empty))).search(
+        profile.destination or "",
+        "fixture scenic area",
+    )
+    no_places = result.data == []
+    action: ACTION = "degrade" if result.degraded or no_places else "plan"
+    return _observation(
+        message,
+        "places_provider",
+        action,
+        result.error_code,
+        fallback_safe=result.degraded or no_places,
+        attempts=attempts,
+    )
+
+
+def _observe_usage_guard(message: str, scenario: str) -> ScenarioObservation:
+    repository = InMemoryUsageRepository()
+    user_limit, global_limit = {
+        "user_limit": (0, 10),
+        "global_limit": (10, 0),
+        "kill_switch": (10, 10),
+    }[scenario]
+    guard = UsageGuard(
+        repository=repository,
+        user_daily_limit=user_limit,
+        global_daily_limit=global_limit,
+        enabled=scenario != "kill_switch",
+        clock=lambda: FIXTURE_NOW,
+    )
+    try:
+        guard.reserve("evaluation-subject")
+    except AppError as error:
+        return _observation(message, "usage_guard", "ask", error.code)
+    raise AssertionError(f"usage scenario unexpectedly reserved: {scenario}")
+
+
+def _observe_model_gateway(message: str, scenario: str) -> ScenarioObservation:
+    breaker = ProviderCircuitBreaker(failure_threshold=1)
+    if scenario == "circuit_open":
+        breaker.record_failure("AI_PROVIDER_UNAVAILABLE")
+    gateway = ModelGateway(lambda: OfflineModel(), breaker)
+    try:
+        gateway.invoke([SimpleNamespace(content=message)])
+    except ProviderUnavailable as error:
+        return _observation(
+            message,
+            "model_gateway",
+            "degrade",
+            error.code,
+            fallback_safe=True,
+        )
+    raise AssertionError(f"model scenario unexpectedly succeeded: {scenario}")
+
+
+def _observe_planner(message: str) -> ScenarioObservation:
+    profile = _scenario_profile(message)
+    planner = FixtureStructuredPlanner("format_twice")
+    try:
+        planner.plan(profile, ())
+    except PlanValidationError as error:
+        return _observation(
+            message,
+            "planner",
+            "degrade",
+            error.code,
+            fallback_safe=True,
+            attempts=planner.attempts,
+        )
+    raise AssertionError("twice-invalid planner scenario unexpectedly succeeded")
+
+
+class _FailingMessageRepository(InMemoryTripRepository):
+    def append_message(self, message: ConversationMessage) -> None:
+        raise RuntimeError("offline database failure")
+
+
+def _observe_database_failure(message: str) -> ScenarioObservation:
+    user_id = uuid4()
+    profile = _scenario_profile(message)
+    repository = _FailingMessageRepository()
+    trip = repository.create(Trip(user_id=user_id, title="evaluation trip", profile=profile))
+    result = SafeTravelAgent(
+        classifier=OfflineClassifier(),
+        extractor=OfflineExtractor(),
+        evidence_provider=FixtureEvidenceProvider([]),
+        repository=TripService(repository),
+    ).run(message, trip=trip, user_id=user_id)
+    action = _action_for(result, OfflineModel.intent_for(message), has_trip=True)
+    schema_valid, budget_valid, citation_ids = _structured_output(result)
+    return ScenarioObservation(
+        component="safe_travel_agent",
+        intent=OfflineModel.intent_for(message),
+        action=action,
+        fields=result.profile,
+        error_code=result.error_code,
+        schema_valid=schema_valid,
+        budget_valid=budget_valid,
+        citation_ids=citation_ids,
+        unsupported_facts=_unsupported_fact_count(result),
+        fallback_safe=action == "degrade" and result.error_code is not None,
+    )
 
 
 def _structured_output(result: ChatResult) -> tuple[bool, bool, list[str]]:

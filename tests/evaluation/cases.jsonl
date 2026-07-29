@@ -73,7 +73,7 @@
 {"id":"E003","category":"exception","messages":["广州到厦门三天两人4000"],"expected_intent":"plan_trip","expected_fields":{},"expected_action":"degrade","allowed_sources":[],"expected_error":"AI_CIRCUIT_OPEN"}
 {"id":"E004","category":"exception","messages":["成都到重庆两天两人3000"],"expected_intent":"plan_trip","expected_fields":{},"expected_action":"degrade","allowed_sources":[],"expected_error":"AI_UNAVAILABLE"}
 {"id":"E005","category":"exception","messages":["南京到苏州两天两人2400"],"expected_intent":"plan_trip","expected_fields":{},"expected_action":"degrade","allowed_sources":[],"expected_error":"AI_RATE_LIMITED"}
-{"id":"E006","category":"exception","messages":["武汉到长沙三天两人2800"],"expected_intent":"plan_trip","expected_fields":{},"expected_action":"degrade","allowed_sources":[],"expected_error":"AI_UNAVAILABLE"}
+{"id":"E006","category":"exception","messages":["武汉到长沙三天两人2800"],"expected_intent":"plan_trip","expected_fields":{},"expected_action":"ask","allowed_sources":[],"expected_error":"AI_GLOBAL_DAILY_LIMIT_REACHED"}
 {"id":"E007","category":"exception","messages":["深圳到桂林三天两人5000"],"expected_intent":"plan_trip","expected_fields":{},"expected_action":"ask","allowed_sources":[],"expected_error":"AI_DAILY_LIMIT_REACHED"}
 {"id":"E008","category":"exception","messages":["郑州到青岛三天两人4200"],"expected_intent":"plan_trip","expected_fields":{},"expected_action":"ask","allowed_sources":[],"expected_error":"AI_DISABLED"}
 {"id":"E009","category":"exception","messages":["福州到黄山两天两人3600"],"expected_intent":"plan_trip","expected_fields":{"origin":"福州","destination":"黄山","start_date":"2026-10-01","end_date":"2026-10-02","travelers":2,"budget_cny":3600},"expected_action":"degrade","allowed_sources":["e009"],"expected_error":"PLAN_VALIDATION_FAILED","slot_applicable":false}

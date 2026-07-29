@@ -6,7 +6,7 @@ import pytest
 from app.schemas import TravelProfile
 from tests.evaluation import runner
 from tests.evaluation.runner import EvaluationCase, Prediction, load_baseline, load_cases, run_case, score
-from tests.evaluation.offline_fixtures import OfflineModel, model_factory
+from tests.evaluation.offline_fixtures import OfflineModel, SCENARIO_BY_MESSAGE, model_factory
 
 
 def test_metric_formulas_count_intents_slots_and_success() -> None:
@@ -145,7 +145,7 @@ def test_allowed_sources_changes_scoring_not_the_fixture_prediction() -> None:
 def test_baseline_is_the_only_gate_configuration() -> None:
     baseline = load_baseline(Path(__file__).with_name("baseline.json"))
     assert baseline["thresholds"]["schema_validity"] == 0.98
-    assert baseline["known_failures"] == ["P015", "P019", "M005", "R001", "R006", "R014"]
+    assert baseline["known_failures"] == ["P015", "P019", "M005", "R001", "R006", "R014", "E002"]
 
 
 def test_out_of_range_traveler_fixture_reaches_the_real_extraction_gate() -> None:
@@ -301,3 +301,165 @@ def test_safe_refusal_text_is_not_counted_as_an_unsupported_fact() -> None:
     )
 
     assert run_case(case).unsupported_facts == 0
+
+
+def test_exception_corpus_covers_each_required_real_component_scenario() -> None:
+    cases = [
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.category == "exception"
+    ]
+
+    assert len(cases) == 10
+    assert {SCENARIO_BY_MESSAGE[case.messages[-1]] for case in cases} == {
+        "weather_timeout",
+        "places_empty_retry",
+        "user_limit",
+        "global_limit",
+        "kill_switch",
+        "circuit_open",
+        "model_rate_limited",
+        "model_upstream_failure",
+        "database_failure",
+        "format_twice",
+    }
+
+
+def test_global_limit_case_reaches_real_in_memory_reservation_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+    case = next(
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.id == "E006"
+    )
+    failure_reasons: list[str | None] = []
+    real_reserve = runner.InMemoryUsageRepository.reserve
+
+    def recording_reserve(self: object, *args: object, **kwargs: object):
+        result = real_reserve(self, *args, **kwargs)
+        failure_reasons.append(result.failure_reason)
+        return result
+
+    monkeypatch.setattr(runner.InMemoryUsageRepository, "reserve", recording_reserve)
+
+    prediction = run_case(case)
+
+    assert SCENARIO_BY_MESSAGE[case.messages[-1]] == "global_limit"
+    assert failure_reasons == ["global_limit"]
+    assert prediction.action == "ask"
+    assert prediction.error_code == "AI_GLOBAL_DAILY_LIMIT_REACHED"
+
+
+@pytest.mark.parametrize(
+    ("case_id", "component", "action", "error_code"),
+    [
+        ("E001", "weather_provider", "degrade", "WEATHER_TIMEOUT"),
+        ("E002", "places_provider", "degrade", None),
+        ("E003", "model_gateway", "degrade", "AI_CIRCUIT_OPEN"),
+        ("E004", "model_gateway", "degrade", "AI_UNAVAILABLE"),
+        ("E005", "model_gateway", "degrade", "AI_RATE_LIMITED"),
+        ("E006", "usage_guard", "ask", "AI_GLOBAL_DAILY_LIMIT_REACHED"),
+        ("E007", "usage_guard", "ask", "AI_DAILY_LIMIT_REACHED"),
+        ("E008", "usage_guard", "ask", "AI_DISABLED"),
+        ("E009", "planner", "degrade", "PLAN_VALIDATION_FAILED"),
+        ("E010", "safe_travel_agent", "degrade", "AGENT_UNAVAILABLE"),
+    ],
+)
+def test_exception_prediction_is_the_target_components_actual_observation(
+    case_id: str, component: str, action: str, error_code: str | None,
+) -> None:
+    case = next(
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.id == case_id
+    )
+
+    assert hasattr(runner, "observe_scenario")
+    observation = runner.observe_scenario(case.messages[-1])
+
+    assert observation.component == component
+    assert observation.action == action
+    assert observation.error_code == error_code
+    assert run_case(case) == observation.to_prediction()
+
+
+def test_places_empty_retry_observes_two_real_attempts_without_inventing_an_error() -> None:
+    case = next(
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.id == "E002"
+    )
+
+    assert hasattr(runner, "observe_scenario")
+    observation = runner.observe_scenario(case.messages[-1])
+
+    assert observation.attempts == 2
+    assert observation.error_code is None
+    assert observation.action == "degrade"
+
+
+def test_planner_failure_observes_both_real_repair_attempts() -> None:
+    case = next(
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.id == "E009"
+    )
+
+    assert hasattr(runner, "observe_scenario")
+    observation = runner.observe_scenario(case.messages[-1])
+
+    assert observation.attempts == 2
+    assert observation.error_code == "PLAN_VALIDATION_FAILED"
+
+
+def test_non_database_exception_scenarios_do_not_run_the_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    cases = [
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.category == "exception" and SCENARIO_BY_MESSAGE[case.messages[-1]] != "database_failure"
+    ]
+
+    def unexpected_agent_run(*_: object, **__: object):
+        raise AssertionError("component scenario must not run SafeTravelAgent first")
+
+    monkeypatch.setattr(runner.SafeTravelAgent, "run", unexpected_agent_run)
+
+    assert len([run_case(case) for case in cases]) == 9
+
+
+def test_agent_chat_result_cannot_be_overwritten_by_fixture_side_channels(monkeypatch: pytest.MonkeyPatch) -> None:
+    case = next(
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.id == "E010"
+    )
+
+    class PoisonUsageGuard:
+        error_code = "SIDE_CHANNEL_USAGE"
+
+        def __init__(self, _: object) -> None: pass
+        def allow(self, _: object) -> bool: return True
+
+    class PoisonEvidenceProvider:
+        error_code = "SIDE_CHANNEL_PROVIDER"
+
+        def __init__(self, *_: object) -> None: pass
+        def use_message(self, _: str) -> None: pass
+        def fetch(self, _: TravelProfile) -> list[object]: return []
+
+    monkeypatch.setattr(runner, "FixtureUsageGuard", PoisonUsageGuard, raising=False)
+    monkeypatch.setattr(runner, "FixtureEvidenceProvider", PoisonEvidenceProvider)
+
+    prediction = run_case(case)
+
+    assert prediction.error_code == "AGENT_UNAVAILABLE"
+
+
+def test_exception_expected_action_and_error_never_change_observation() -> None:
+    case = next(
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.id == "E001"
+    )
+    changed = replace(case, expected_action="plan", expected_error="INVENTED_EXPECTATION")
+
+    assert run_case(changed) == run_case(case)
