@@ -24,18 +24,18 @@ def profile_factory(**overrides: object) -> TravelProfile:
 def itinerary_factory(**overrides: object) -> Itinerary:
     day_one = ItineraryDay(
         date=date(2026, 8, 1),
-        morning=Activity(title="Walk", start_time="09:00", end_time="11:00"),
-        afternoon=Activity(title="Museum", start_time="13:00", end_time="16:00"),
-        evening=Activity(title="Dinner", start_time="18:00", end_time="20:00"),
+        morning=Activity(title="Day 1 morning", start_time="09:00", end_time="11:00"),
+        afternoon=Activity(title="Day 1 afternoon", start_time="13:00", end_time="16:00"),
+        evening=Activity(title="Day 1 evening", start_time="18:00", end_time="20:00"),
     )
     day_two = ItineraryDay(
         date=date(2026, 8, 2),
-        morning=Activity(title="Park", start_time="09:00", end_time="11:00"),
-        afternoon=Activity(title="Market", start_time="13:00", end_time="15:00"),
-        evening=Activity(title="Return", start_time="17:00", end_time="19:00"),
+        morning=Activity(title="Day 2 morning", start_time="09:00", end_time="11:00"),
+        afternoon=Activity(title="Day 2 afternoon", start_time="13:00", end_time="15:00"),
+        evening=Activity(title="Day 2 evening", start_time="17:00", end_time="19:00"),
     )
     values = {
-        "title": "Hangzhou weekend",
+        "title": "Hangzhou | 2-day itinerary",
         "start_date": date(2026, 8, 1),
         "end_date": date(2026, 8, 2),
         "days": [day_one, day_two],
@@ -93,8 +93,11 @@ def test_itinerary_rejects_noncontinuous_dates_and_overlapping_activities() -> N
 
 
 def test_unverified_price_is_rejected() -> None:
-    with pytest.raises(ValidationError):
-        itinerary_factory(notes=["Hotel live price is CNY 399 per night."])
+    itinerary = itinerary_factory().model_copy(update={"notes": ["Hotel live price is CNY 399 per night."]})
+
+    assert {issue.code for issue in validate_itinerary(itinerary, profile_factory(), [])} == {
+        "NON_CANONICAL_DISPLAY_TEXT"
+    }
 
 
 def test_citations_must_reference_trusted_evidence_and_disclose_freshness() -> None:
@@ -116,9 +119,9 @@ def test_citations_must_reference_trusted_evidence_and_disclose_freshness() -> N
     itinerary = itinerary_factory(days=[
         ItineraryDay(
             date=date(2026, 8, 1),
-            morning=Activity(title="West Lake", start_time="09:00", end_time="11:00", citations=[citation]),
-            afternoon=Activity(title="Museum", start_time="13:00", end_time="16:00"),
-            evening=Activity(title="Dinner", start_time="18:00", end_time="20:00"),
+            morning=Activity(title="Day 1 morning", start_time="09:00", end_time="11:00", citations=[citation]),
+            afternoon=Activity(title="Day 1 afternoon", start_time="13:00", end_time="16:00"),
+            evening=Activity(title="Day 1 evening", start_time="18:00", end_time="20:00"),
         ),
         itinerary_factory().days[1],
     ])
@@ -187,12 +190,11 @@ def test_activity_facts_cannot_authorize_another_activity_or_title() -> None:
     now = datetime(2026, 7, 2, tzinfo=timezone.utc)
     hotel = TrustedEvidence("hotel-1", "Hotel estimate range is CNY 300–500.", "https://provider.example/hotel", "trusted_provider", now)
     restaurant = TrustedEvidence("food-1", "Restaurant opens at 10:00.", "https://provider.example/food", "trusted_provider", now)
-    with pytest.raises(ValidationError):
-        Activity(title="Restaurant opens at 10:00.", start_time="13:00", end_time="15:00")
     candidate = itinerary_factory(days=[
         ItineraryDay(date=date(2026, 8, 1), morning=Activity(title="Hotel planning", start_time="09:00", end_time="11:00", facts=[FactClaim(text=hotel.fact, evidence_id="hotel-1")]), afternoon=Activity(title="Restaurant", start_time="13:00", end_time="15:00"), evening=Activity(title="Dinner", start_time="18:00", end_time="20:00")), itinerary_factory().days[1],
     ])
     planned = Planner(lambda *_: candidate.model_dump(mode="json"), now=lambda: now).plan(profile_factory(), [hotel, restaurant])
+    assert planned.days[0].afternoon.title == "Day 1 afternoon"
     assert planned.days[0].afternoon.citations == []
 
 
@@ -222,15 +224,18 @@ def test_estimate_range_must_reference_one_unique_assumption() -> None:
 
 
 @pytest.mark.parametrize("field, value", [("title", "Hotel price is CNY 399."), ("notes", ["Attraction opens at 09:00."])])
-def test_top_level_variable_facts_are_rejected_even_when_activity_has_evidence(field: str, value: object) -> None:
+def test_top_level_noncanonical_text_is_rejected_even_when_activity_has_evidence(field: str, value: object) -> None:
     now = datetime(2026, 7, 2, tzinfo=timezone.utc)
     evidence = TrustedEvidence("place-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)
     values = itinerary_factory(days=[
-        ItineraryDay(date=date(2026, 8, 1), morning=Activity(title="Walk", start_time="09:00", end_time="11:00", facts=[FactClaim(text=evidence.fact, evidence_id="place-1")]), afternoon=itinerary_factory().days[0].afternoon, evening=itinerary_factory().days[0].evening), itinerary_factory().days[1],
+        ItineraryDay(date=date(2026, 8, 1), morning=Activity(title="Day 1 morning", start_time="09:00", end_time="11:00", facts=[FactClaim(text=evidence.fact, evidence_id="place-1")]), afternoon=itinerary_factory().days[0].afternoon, evening=itinerary_factory().days[0].evening), itinerary_factory().days[1],
     ]).model_dump(mode="json")
     values[field] = value
-    with pytest.raises(ValidationError):
-        Itinerary.model_validate(values)
+    itinerary = Itinerary.model_validate(values)
+
+    assert {issue.code for issue in validate_itinerary(itinerary, profile_factory(), [evidence], now=lambda: now)} == {
+        "NON_CANONICAL_DISPLAY_TEXT"
+    }
 
 
 def test_duplicate_facts_and_direct_forged_citations_are_not_accepted() -> None:
@@ -249,3 +254,65 @@ def test_duplicate_facts_and_direct_forged_citations_are_not_accepted() -> None:
     values["assumptions"].append(values["assumptions"][0])
     with pytest.raises(ValidationError):
         Itinerary.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "display_text",
+    [
+        "Hotel cost is CNY 399",
+        "All rooms are sold out",
+        "酒店费用是人民币399元",
+        "所有房间均已售罄",
+    ],
+)
+def test_direct_validation_rejects_model_copy_display_text_injection(display_text: str) -> None:
+    injected = itinerary_factory().model_copy(update={"title": display_text})
+
+    assert {issue.code for issue in validate_itinerary(injected, profile_factory(), [])} == {
+        "NON_CANONICAL_DISPLAY_TEXT"
+    }
+
+
+@pytest.mark.parametrize(
+    "display_text",
+    [
+        "Hotel cost is CNY 399",
+        "All rooms are sold out",
+        "酒店费用是人民币399元",
+        "所有房间均已售罄",
+    ],
+)
+def test_direct_validation_rejects_model_construct_display_text_injection(display_text: str) -> None:
+    itinerary = itinerary_factory().model_copy(deep=True)
+    original = itinerary.days[0].morning
+    injected_activity = Activity.model_construct(
+        title=original.title,
+        start_time=original.start_time,
+        end_time=original.end_time,
+        notes=[display_text],
+        facts=original.facts,
+        citations=original.citations,
+    )
+    itinerary.days[0] = itinerary.days[0].model_copy(update={"morning": injected_activity})
+
+    assert {issue.code for issue in validate_itinerary(itinerary, profile_factory(), [])} == {
+        "NON_CANONICAL_DISPLAY_TEXT"
+    }
+
+
+def test_planner_replaces_all_model_authored_display_text_with_canonical_templates() -> None:
+    candidate = itinerary_factory().model_dump(mode="json")
+    candidate["title"] = "Hotel cost is CNY 399"
+    candidate["notes"] = ["All rooms are sold out"]
+    candidate["days"][0]["morning"]["title"] = "酒店费用是人民币399元"
+    candidate["days"][0]["morning"]["notes"] = ["所有房间均已售罄"]
+
+    planned = Planner(lambda *_: candidate).plan(profile_factory(), [])
+
+    assert planned.title == "Hangzhou | 2-day itinerary"
+    assert planned.notes == []
+    assert planned.days[0].morning.title == "Day 1 morning"
+    assert planned.days[0].morning.notes == []
+    assert planned.days[0].afternoon.title == "Day 1 afternoon"
+    assert planned.days[1].evening.title == "Day 2 evening"
+    assert validate_itinerary(planned, profile_factory(), []) == []

@@ -51,3 +51,15 @@
 
 - RED: top-level price/opening text was accepted, and duplicate facts emitted two citations.
 - Full: `T:\.venv\Scripts\python.exe -m pytest -q` → `104 passed, 1 warning in 1.56s` (existing Starlette/httpx deprecation warning).
+
+## Fix round 4/5 — canonical server-owned display text
+
+- Replaced the title/notes keyword blacklist with one structural contract. Planner now discards every model-authored itinerary/activity title and note, then rebuilds them from the confirmed destination, trip length, day number, and slot; notes are always the server-owned empty template.
+- Direct `validate_itinerary` calls require exact equality with those same canonical templates. This remains effective when callers bypass Pydantic construction validation with `model_copy` or `model_construct`; noncanonical text returns `NON_CANONICAL_DISPLAY_TEXT`.
+- Removed the obsolete title/notes schema validators, regex, and dead scan helper. Variable provider facts remain confined to activity `facts` and the existing trusted-evidence/canonical-citation gate.
+
+### Round-4 verification
+
+- RED: the new English and Chinese injection cases produced `9 failed, 15 passed`; the failures covered `Hotel cost is CNY 399`, `All rooms are sold out`, Chinese variants, both direct-construction bypasses, and Planner preservation of malicious display text.
+- GREEN focused: `T:\.venv\Scripts\python.exe -m pytest tests\unit\test_planning.py -q` → `24 passed in 1.20s`.
+- Full: `T:\.venv\Scripts\python.exe -m pytest -q` → `113 passed, 1 warning in 1.56s` (existing Starlette/httpx deprecation warning).

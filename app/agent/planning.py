@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -17,11 +16,7 @@ from app.schemas import Itinerary, SourceCitation, TravelProfile
 
 
 _TRUSTED_SOURCE_TYPES = {"official", "government", "trusted_provider"}
-_VARIABLE_FACT = re.compile(
-    r"(?:live\s+(?:price|availability|inventory)|real[ -]?time|per\s+night|"
-    r"价格|票价|库存|余票|营业时间|开放时间|实时)",
-    re.IGNORECASE,
-)
+_ACTIVITY_SLOTS = ("morning", "afternoon", "evening")
 
 
 @dataclass(frozen=True)
@@ -55,6 +50,13 @@ def validate_itinerary(
         issues.append(PlanIssue("PROFILE_DATES_INVALID", "profile", "Profile dates are required."))
     elif itinerary.start_date != profile_start or itinerary.end_date != profile_end:
         issues.append(PlanIssue("PROFILE_DATE_MISMATCH", "days", "Itinerary dates must match the profile."))
+
+    if not _has_canonical_display_text(itinerary, profile):
+        issues.append(PlanIssue(
+            "NON_CANONICAL_DISPLAY_TEXT",
+            "itinerary",
+            "Display text must match server-generated templates.",
+        ))
 
     if itinerary.budget.traveler_count != profile.travelers:
         issues.append(PlanIssue("TRAVELER_BASIS_MISMATCH", "budget.traveler_count", "Budget traveler count must match the profile."))
@@ -105,6 +107,7 @@ class Planner:
         registry, source_issues = _trusted_registry(_iter_sources(provider_results), now)
         if source_issues:
             return None, source_issues
+        _normalize_display_text(itinerary, profile)
         normalized, claim_issues = _normalize_claims(itinerary, registry)
         if claim_issues:
             return None, claim_issues
@@ -175,12 +178,44 @@ def _citation_matches(citation: SourceCitation, registry: Mapping[str, TrustedEv
     )
 
 
-def _contains_variable_fact(itinerary: Itinerary) -> bool:
-    text = [*itinerary.notes]
-    for day in itinerary.days:
-        for activity in (day.morning, day.afternoon, day.evening):
-            text.extend((activity.title, *activity.notes))
-    return any(_VARIABLE_FACT.search(item) for item in text)
+def _canonical_itinerary_title(profile: TravelProfile) -> str | None:
+    profile_start, profile_end = _profile_dates(profile)
+    if profile_start is None or profile_end is None or profile_end < profile_start:
+        return None
+    destination = (profile.destination or "Destination").strip() or "Destination"
+    day_count = (profile_end - profile_start).days + 1
+    return f"{destination} | {day_count}-day itinerary"
+
+
+def _canonical_activity_title(day_number: int, slot: str) -> str:
+    return f"Day {day_number} {slot}"
+
+
+def _normalize_display_text(itinerary: Itinerary, profile: TravelProfile) -> None:
+    title = _canonical_itinerary_title(profile)
+    if title is not None:
+        itinerary.title = title
+    itinerary.notes = []
+    for day_number, day in enumerate(itinerary.days, start=1):
+        for slot in _ACTIVITY_SLOTS:
+            activity = getattr(day, slot)
+            activity.title = _canonical_activity_title(day_number, slot)
+            activity.notes = []
+
+
+def _has_canonical_display_text(itinerary: Itinerary, profile: TravelProfile) -> bool:
+    expected_title = _canonical_itinerary_title(profile)
+    if expected_title is None or itinerary.title != expected_title or itinerary.notes != []:
+        return False
+    try:
+        return all(
+            activity.title == _canonical_activity_title(day_number, slot) and activity.notes == []
+            for day_number, day in enumerate(itinerary.days, start=1)
+            for slot in _ACTIVITY_SLOTS
+            for activity in (getattr(day, slot),)
+        )
+    except (AttributeError, TypeError):
+        return False
 
 
 def _all_claims(itinerary: Itinerary) -> list[tuple[object, object]]:
