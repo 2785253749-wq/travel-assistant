@@ -1,7 +1,12 @@
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
+from app.schemas import TravelProfile
+from tests.evaluation import runner
 from tests.evaluation.runner import EvaluationCase, Prediction, load_baseline, load_cases, run_case, score
-from tests.evaluation.offline_fixtures import OfflineModel
+from tests.evaluation.offline_fixtures import OfflineModel, model_factory
 
 
 def test_metric_formulas_count_intents_slots_and_success() -> None:
@@ -54,6 +59,27 @@ def test_versioned_corpus_has_the_required_fixed_strata() -> None:
     assert [case.category for case in cases].count("refusal") == 15
     assert [case.category for case in cases].count("natural_language") == 15
     assert [case.category for case in cases].count("exception") == 10
+
+
+def test_natural_language_cases_have_independent_extractable_slot_oracles() -> None:
+    cases = [
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.category == "natural_language"
+    ]
+
+    assert sum(bool(case.expected_fields) for case in cases) >= 12
+    for case in cases:
+        if not case.expected_fields:
+            continue
+        profile = TravelProfile()
+        for message in case.messages:
+            profile = runner.extract_profile(message, profile, model_factory=model_factory)
+        actual = profile.model_dump(exclude_none=True)
+        assert {
+            key: actual.get(key)
+            for key in case.expected_fields
+        } == case.expected_fields
 
 
 def test_corpus_schema_forbids_runner_fixture_fields() -> None:
@@ -119,7 +145,7 @@ def test_allowed_sources_changes_scoring_not_the_fixture_prediction() -> None:
 def test_baseline_is_the_only_gate_configuration() -> None:
     baseline = load_baseline(Path(__file__).with_name("baseline.json"))
     assert baseline["thresholds"]["schema_validity"] == 0.98
-    assert baseline["known_failures"] == ["P015", "P019"]
+    assert baseline["known_failures"] == ["P015", "P019", "M005", "R001", "R006", "R014"]
 
 
 def test_out_of_range_traveler_fixture_reaches_the_real_extraction_gate() -> None:
@@ -130,3 +156,148 @@ def test_out_of_range_traveler_fixture_reaches_the_real_extraction_gate() -> Non
     # traveler_count issue for zero; seven reaches validate_profile's safe ask.
     assert run_case(cases["M005"]).error_code == "AGENT_UNAVAILABLE"
     assert run_case(cases["M006"]).action == "ask"
+
+
+def test_multiturn_modifications_extract_each_raw_message_in_thread_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    cases = {case.id: case for case in load_cases(Path(__file__).with_name("cases.jsonl"))}
+    observed: list[tuple[str, dict[str, object]]] = []
+    real_extract_profile = runner.extract_profile
+
+    def recording_extract(message: str, profile: TravelProfile, *, model_factory: object) -> TravelProfile:
+        observed.append((message, profile.model_dump()))
+        return real_extract_profile(message, profile, model_factory=model_factory)
+
+    monkeypatch.setattr(runner, "extract_profile", recording_extract)
+    prediction = run_case(cases["M018"])
+
+    assert len(cases["M018"].messages) >= 2
+    assert [message for message, _ in observed] == cases["M018"].messages
+    assert observed[0][1] == TravelProfile().model_dump()
+    assert observed[1][1]["budget_cny"] == 9000
+    assert prediction.fields == {
+        "origin": "广州",
+        "destination": "厦门",
+        "start_date": "2026-10-03",
+        "end_date": "2026-10-07",
+        "travelers": 4,
+        "budget_cny": 5000,
+        "preferences": ["亲子"],
+        "constraints": [],
+    }
+
+
+def test_all_multiturn_modifications_finish_from_message_fixtures_not_case_answers() -> None:
+    cases = [
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.id in {"M016", "M017", "M018", "M019", "M020"}
+    ]
+
+    assert all(len(case.messages) >= 2 for case in cases)
+    for case in cases:
+        prediction = run_case(case)
+        assert prediction.action == "modify"
+        assert {
+            key: prediction.fields.get(key)
+            for key in case.expected_fields
+        } == case.expected_fields
+
+
+def test_multiturn_sources_are_selected_from_each_raw_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    case = next(
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.id == "M016"
+    )
+    observed: list[str] = []
+    real_source_ids_for = runner.source_ids_for
+
+    def recording_source_ids_for(message: str) -> list[str]:
+        observed.append(message)
+        return real_source_ids_for(message)
+
+    monkeypatch.setattr(runner, "source_ids_for", recording_source_ids_for)
+    run_case(case)
+
+    assert observed == case.messages
+
+
+def test_multiturn_prediction_does_not_depend_on_case_has_trip_hint() -> None:
+    case = next(
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.id == "M016"
+    )
+
+    assert run_case(replace(case, has_trip=False)) == run_case(case)
+
+
+def test_non_slot_case_is_excluded_by_explicit_applicability() -> None:
+    case = EvaluationCase(
+        "non-slot", "unit", ["x"], "plan_trip", {"origin": "福州"}, "degrade", [],
+        expected_error="PLAN_VALIDATION_FAILED", slot_applicable=False,
+    )
+    prediction = Prediction(
+        "plan_trip", "degrade", {"origin": "杭州"},
+        error_code="PLAN_VALIDATION_FAILED", fallback_safe=True,
+    )
+
+    report = score([prediction], [case])
+
+    assert report.slot_micro_f1 == 1.0
+    assert report.denominators["slot_cases"] == 0
+    assert "non-slot" not in report.failures
+
+
+@pytest.mark.parametrize(
+    ("case", "prediction", "reason"),
+    [
+        (
+            EvaluationCase("slot", "unit", ["x"], "plan_trip", {"origin": "上海"}, "plan", []),
+            Prediction("plan_trip", "plan", {"origin": "北京"}),
+            "slot: expected fields mismatch",
+        ),
+        (
+            EvaluationCase("schema", "unit", ["x"], "plan_trip", {}, "plan", [], expect_schema=True),
+            Prediction("plan_trip", "plan", {}, schema_valid=False, budget_valid=True),
+            "schema: invalid",
+        ),
+        (
+            EvaluationCase("budget", "unit", ["x"], "plan_trip", {}, "plan", [], expect_schema=True),
+            Prediction("plan_trip", "plan", {}, schema_valid=True, budget_valid=False),
+            "budget: invalid",
+        ),
+        (
+            EvaluationCase("coverage", "unit", ["x"], "plan_trip", {}, "plan", ["official"], expect_schema=True),
+            Prediction("plan_trip", "plan", {}, schema_valid=True, budget_valid=True),
+            "citation_coverage: missing allowed source",
+        ),
+        (
+            EvaluationCase("validity", "unit", ["x"], "plan_trip", {}, "plan", []),
+            Prediction("plan_trip", "plan", {}, citation_ids=["invented"]),
+            "citation_validity: unexpected source",
+        ),
+        (
+            EvaluationCase("unsupported", "unit", ["x"], "plan_trip", {}, "plan", []),
+            Prediction("plan_trip", "plan", {}, unsupported_facts=1),
+            "unsupported_fact: uncited claim",
+        ),
+    ],
+)
+def test_task_success_anti_cheat_reasons_cover_each_quality_gate(
+    case: EvaluationCase, prediction: Prediction, reason: str,
+) -> None:
+    report = score([prediction], [case])
+
+    assert report.task_success_rate == 0.0
+    assert reason in report.failures[case.id]
+
+
+def test_safe_refusal_text_is_not_counted_as_an_unsupported_fact() -> None:
+    case = next(
+        case
+        for case in load_cases(Path(__file__).with_name("cases.jsonl"))
+        if case.id == "R002"
+    )
+
+    assert run_case(case).unsupported_facts == 0

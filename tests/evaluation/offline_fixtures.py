@@ -40,13 +40,46 @@ _PLANS: tuple[tuple[str, dict[str, Any]], ...] = (
 PROFILE_BY_MESSAGE = {message: profile for message, profile in _PLANS}
 SOURCE_IDS_BY_MESSAGE = {message: [f"p{index:03d}"] for index, (message, _) in enumerate(_PLANS, start=1)}
 PROFILE_BY_MESSAGE.update({
+    "从上海出发玩三天": {"origin":"上海"},
+    "去杭州玩，日期还没定": {"destination":"杭州"},
+    "北京到西安，10月5日回来、10月8日出发": {"origin":"北京","destination":"西安","start_date":"2026-10-08","end_date":"2026-10-05"},
     "上海去苏州，0个人，预算2000": {"origin":"上海","destination":"苏州","travelers":0,"budget_cny":2000},
     "上海去苏州，7个人，预算2000": {"origin":"上海","destination":"苏州","travelers":7,"budget_cny":2000},
-    "把第二天改成西湖": {"origin":"上海","destination":"杭州","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":3000},
-    "行程改成两个人": {"origin":"北京","destination":"西安","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":4000},
-    "把预算改为5000": {"origin":"广州","destination":"厦门","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":5000},
-    "不要早起，改晚一点": {"origin":"成都","destination":"重庆","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":3000},
-    "把酒店偏好换成地铁附近": {"origin":"昆明","destination":"大理","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":3600},
+    "广州到厦门两天两人，预算没想好": {"origin":"广州","destination":"厦门","travelers":2},
+    "明天从成都去重庆，回来日期不确定": {"origin":"成都","destination":"重庆","start_date":"2026-07-29"},
+    "杭州两天，两人": {"destination":"杭州","travelers":2},
+    "上海出发；去杭州；10月1到3日；两个人": {"origin":"上海","destination":"杭州","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2},
+    "出发地上海，目的地也上海，住几天再说": {"origin":"上海","destination":"上海"},
+    "预算1000到3000之间，去北京": {"destination":"北京"},
+    "从武汉去长沙，日期2026/10/1-2026/10/3": {"origin":"武汉","destination":"长沙","start_date":"2026-10-01","end_date":"2026-10-03"},
+    "两人从南京去苏州，想吃什么都行": {"origin":"南京","destination":"苏州","travelers":2},
+    "把第二天改成西湖": {"preferences":["第二天西湖"]},
+    "行程改成两个人": {"travelers":2},
+    "把预算改为5000": {"budget_cny":5000},
+    "不要早起，改晚一点": {"preferences":["晚一点出发"]},
+    "把酒店偏好换成地铁附近": {"preferences":["地铁附近酒店"]},
+    "魔都到苏州，周末两日两人": {"origin":"上海","destination":"苏州","start_date":"2026-08-01","end_date":"2026-08-02","travelers":2},
+    "下周末去那儿，预算三千": {"start_date":"2026-08-08","end_date":"2026-08-09","budget_cny":3000},
+    "上次那个杭州行程，第二天换西湖": {"preferences":["第二天西湖"]},
+    "Shanghai to Hangzhou, two days, two people": {"origin":"上海","destination":"杭州","travelers":2},
+    "俺也去成都吃火锅，啥时候合适": {"destination":"成都","preferences":["火锅"]},
+    "去西安玩儿，预算四千，日期待定": {"destination":"西安","budget_cny":4000},
+    "帮俺整一个青岛海边路线": {"destination":"青岛","preferences":["海边"]},
+    "the second day不要太赶": {"constraints":["第二天不要太赶"]},
+    "明儿从北京走，后天回，俩人": {"origin":"北京","start_date":"2026-07-29","end_date":"2026-07-30","travelers":2},
+    "杭州西湖附近，two pax，budget 3k": {"destination":"杭州","travelers":2,"budget_cny":3000,"preferences":["西湖附近"]},
+    "把day 2改成museum": {"preferences":["第二天博物馆"]},
+    "北平到西安，来回三天，预算伍仟": {"origin":"北京","destination":"西安","budget_cny":5000},
+    "上海到杭州两天两人3000": {"origin":"上海","destination":"杭州","start_date":"2026-10-01","end_date":"2026-10-02","travelers":2,"budget_cny":3000},
+    "北京到西安三天两人4000": {"origin":"北京","destination":"西安","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":4000},
+    "广州到厦门三天两人4000": {"origin":"广州","destination":"厦门","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":4000},
+    "成都到重庆两天两人3000": {"origin":"成都","destination":"重庆","start_date":"2026-10-01","end_date":"2026-10-02","travelers":2,"budget_cny":3000},
+    "南京到苏州两天两人2400": {"origin":"南京","destination":"苏州","start_date":"2026-10-01","end_date":"2026-10-02","travelers":2,"budget_cny":2400},
+    "武汉到长沙三天两人2800": {"origin":"武汉","destination":"长沙","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":2800},
+    "深圳到桂林三天两人5000": {"origin":"深圳","destination":"桂林","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":5000},
+    "郑州到青岛三天两人4200": {"origin":"郑州","destination":"青岛","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":4200},
+    "福州到黄山两天两人3600": {"origin":"福州","destination":"黄山","start_date":"2026-10-01","end_date":"2026-10-02","travelers":2,"budget_cny":3600},
+    "济南到大理三天两人5000": {"origin":"济南","destination":"大理","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":5000},
 })
 SOURCE_IDS_BY_MESSAGE.update({
     "把第二天改成西湖": ["m016"], "行程改成两个人": ["m017"], "把预算改为5000": ["m018"],
@@ -112,8 +145,6 @@ class OfflineModel:
     def profile_for(message: str) -> dict[str, Any]:
         if message in PROFILE_BY_MESSAGE:
             return PROFILE_BY_MESSAGE[message]
-        if message in SCENARIO_BY_MESSAGE:
-            return {"origin":"上海","destination":"杭州","start_date":"2026-10-01","end_date":"2026-10-02","travelers":2,"budget_cny":3000}
         return {}
 
 

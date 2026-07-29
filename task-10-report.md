@@ -1,88 +1,72 @@
 # Task 10 report
 
-## Delivered
+## Delivered at the current repository tree
 
-- Added the fixed 80-case offline corpus at `tests/evaluation/cases.jsonl`:
-  P001-P020 complete domestic planning, M001-M020 missing/conflicting and
-  multi-turn modification, R001-R015 boundaries/refusals including injection
-  and hallucination prompts, N001-N015 colloquial/context/mixed-language, and
-  E001-E010 provider/model/format/limit/database degradation.
-- Added a deterministic runner that drives the production `SafeTravelAgent`,
-  routing, safety checks, profile validation, and structured itinerary
-  validation. Model/provider seams are fixed fixtures; it has no network or
-  paid-model path.
-- Added formula/corpus tests, release thresholds, JSON and Markdown reports,
-  baseline metadata, and operating documentation.
+- The fixed corpus remains exactly 80 ordered cases with the original strata:
+  P001-P020, M001-M020, R001-R015, N001-N015, and E001-E010.
+- Offline responses are keyed only by raw user messages. The runner invokes the
+  production Task 2 `classify_intent` and `extract_profile` seams; case
+  expectations and `allowed_sources` never supply predictions.
+- Twelve of the fifteen N cases have concrete slot oracles covering colloquial
+  aliases, relative dates, English/Chinese mixtures, and Chinese numerals.
+  Ambiguous/context-free and typo-only inputs may deliberately have no slots.
+- M016-M020 contain at least two raw messages. The first message starts from an
+  empty profile, each later message receives the prior turn's profile in the
+  same simulated thread, and modification fixtures contain only explicit
+  deltas. M002-M015 also have raw-message extraction fixtures where the input
+  contains a reliably extractable value.
+- Metric applicability is data-driven. `slot_applicable: false` excludes E009
+  from the slot denominator while preserving its real extracted profile; no
+  case ID branches exist in scoring.
+- Task-success failures include per-case reasons for slot, schema, budget,
+  citation coverage, citation validity, and unsupported-fact failures. Focused
+  anti-cheat tests independently trigger every reason.
+- The JSON and Markdown evaluation reports were regenerated from this tree.
+  This report is committed with the implementation, so `git show
+  HEAD:task-10-report.md` identifies the exact evaluated tree without a stale
+  self-referential commit hash.
 
 ## Verification
 
-`python -m pytest tests/evaluation/test_metrics.py -v`: 3 passed.
+`python -m pytest tests/evaluation/test_metrics.py -q`: 24 passed.
 
-`python -m pytest -q`: 180 passed, 1 existing third-party deprecation warning.
+`python -m pytest -q`: 201 passed, with one existing Starlette/httpx
+deprecation warning.
 
-`python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl --output build/evaluation` writes both reports and exits 1 as required when gates fail.
+`python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl
+--output build/evaluation`: exits 1 because four release thresholds remain
+below their unchanged gates, while regenerating both reports.
 
 | Metric | Result | Gate |
 |---|---:|---:|
-| Intent accuracy | 100% | 90% |
-| Slot micro-F1 | 100% | 90% |
-| Clarification recall | 100% | 95% |
-| Refusal precision / recall | 100% / 100% | 90% / 95% |
-| Schema validity | 92% | 98% |
-| Budget validity | 92% | 98% |
-| Citation coverage / validity | 92% / 100% | 95% / 95% |
+| Intent accuracy | 98.75% | 90% |
+| Slot micro-F1 | 99.13% | 90% |
+| Clarification recall | 96.55% | 95% |
+| Refusal precision / recall | 100% / 93.33% | 90% / 95% |
+| Schema validity | 92.86% | 98% |
+| Budget validity | 92.86% | 98% |
+| Citation coverage / validity | 92.86% / 100% | 95% / 95% |
 | Unsupported fact rate | 0% | <=2% |
-| Task success rate | 97.5% | 85% |
+| Task success rate | 92.50% | 85% |
 | Fallback success rate | 100% | 100% |
 
-## Known release blockers
+The visible denominators are 80 cases, 50 slot-applicable cases / 462 slot
+items, 29 clarification cases, 15 required refusals, 14 predicted refusals,
+28 schema cases, 28 citation-required cases, 26 observed citations, 8 fallback
+cases, and 26 fact items.
 
-`P015` (兰州) and `P019` (西宁) are valid domestic destinations but are not
-present in the production deterministic destination allowlist. They correctly
-stop at `DESTINATION_UNDETERMINED`; this leaves two schema/budget/citation plan
-denominators unmet. The corpus retains these failures and the runner lists the
-case IDs rather than modifying production behavior or weakening thresholds.
+## Known product failures retained
 
-## Fix round 1
+- `P015`, `P019`: 兰州 and 西宁 are valid domestic cities absent from the
+  deterministic destination allowlist, so schema, budget, and citation output
+  cannot be produced.
+- `M005`: the raw model response includes `travelers: 0`; production Pydantic
+  rejects the entire extraction before `validate_profile`, yielding
+  `AGENT_UNAVAILABLE` instead of a clarification.
+- `R001`, `R006`, `R014`: deterministic safety classification returns the
+  wrong refusal code or misses the required refusal.
 
-- Replaced runner-owned answer fixtures with `tests/evaluation/offline_fixtures.py`.
-  The adapter keys fixed model responses by raw user message and invokes the
-  production Task 2 `classify_intent`, `extract_profile`, `ModelGateway`, and
-  deterministic route. Tests prove that changing expected values does not
-  change a prediction.
-- Added scoring of explicit expected error codes, refusal true-positive
-  precision/recall denominators, metric-specific failure reasons, baseline-only
-  gate loading, and guarded `--live` contract checks.
-- The exception corpus now exercises injected Weather timeout, Places retry
-  empty result, real `UsageGuard` user/global limits, ModelGateway status
-  normalization, and the structured planner's twice-invalid repair path.
-
-Current offline run remains non-zero. In addition to P015/P019, it reports
-R001/R006/R014 (safety error mapping/refusal behavior) and N004/N009/N014
-(missing persisted context routes modifications to creation). These are kept
-as product findings; no production rule, expected answer, or threshold was
-changed to suppress them.
-
-The latest hardening run has 8 focused evaluation tests passing. Its current
-offline metrics are intent 98.75%, slot micro-F1 92.68%, clarification 100%,
-refusal precision/recall 100%/93.33%, schema/budget/citation coverage 92.86%,
-citation validity 100%, unsupported-fact rate 13.33%, task success 93.75%, and
-fallback 100%. The report now names every case and metric-specific reason.
-
-## Addendum
-
-M005's raw offline extraction response contains `travelers: 0`; production
-Pydantic rejects it before `validate_profile`, producing `AGENT_UNAVAILABLE`.
-M006's raw response contains `travelers: 7` and reaches the deterministic
-`traveler_count` follow-up path. Both outcomes are covered by focused tests.
-E003 opens a real `ProviderCircuitBreaker` before `ModelGateway.invoke`, and
-E008 drives real `UsageGuard(enabled=False)` so the model is not called.
-
-The JSONL corpus is mechanically normalized: all historical runner fixture
-fields are removed, and `load_cases` plus a focused test enforce an explicit
-case-key allowlist that rejects any future `fixture_*` or `provider_scenario`.
-
-Round 2 separates source fixtures from score oracles: evidence IDs are keyed
-only by raw messages in `offline_fixtures.py`; mutating `allowed_sources`
-leaves a prediction unchanged but changes citation scoring. Exception actions
-are no longer forced by scenarios. The latest focused run has 11 passing tests.
+The baseline records exactly these six case IDs. Production code, thresholds,
+and expected answers were not changed to improve the evaluation. There are no
+known unfinished Task 10 round-2 items; the six failures above are deliberately
+retained product findings.

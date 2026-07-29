@@ -50,6 +50,7 @@ class EvaluationCase:
     has_trip: bool = False
     provider_scenario: str | None = None
     expect_schema: bool = False
+    slot_applicable: bool = True
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "EvaluationCase":
@@ -172,6 +173,9 @@ class FixtureEvidenceProvider:
         self._scenario = scenario
         self.error_code: str | None = None
 
+    def use_message(self, message: str) -> None:
+        self._source_ids = source_ids_for(message)
+
     def fetch(self, profile: TravelProfile) -> list[TrustedEvidence]:
         if self._scenario == "weather_timeout":
             def timeout(_: httpx.Request) -> httpx.Response:
@@ -235,7 +239,7 @@ def _fixture_itinerary(profile: TravelProfile, provider_results: object) -> dict
 
 
 def load_cases(path: str | Path) -> list[EvaluationCase]:
-    allowed_keys = {"id", "category", "messages", "expected_intent", "expected_fields", "expected_action", "allowed_sources", "expected_error", "has_trip", "expect_schema"}
+    allowed_keys = {"id", "category", "messages", "expected_intent", "expected_fields", "expected_action", "allowed_sources", "expected_error", "has_trip", "expect_schema", "slot_applicable"}
     raw_cases = [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
     for raw_case in raw_cases:
         unknown = set(raw_case) - allowed_keys
@@ -264,7 +268,7 @@ def load_baseline(path: str | Path = "tests/evaluation/baseline.json") -> dict[s
 def run_case(case: EvaluationCase) -> Prediction:
     scenario = SCENARIO_BY_MESSAGE.get(case.messages[-1])
     classifier = OfflineClassifier()
-    evidence_provider = FixtureEvidenceProvider(source_ids_for(case.messages[-1]), scenario)
+    evidence_provider = FixtureEvidenceProvider([], scenario)
     usage_guard = FixtureUsageGuard(scenario)
     repository = FailingEvaluationRepository() if scenario == "database_failure" else None
     agent = SafeTravelAgent(
@@ -275,18 +279,24 @@ def run_case(case: EvaluationCase) -> Prediction:
         usage_guard=usage_guard,
         repository=repository,
     )
-    seed = OfflineModel.profile_for(case.messages[0])
-    trip = SimpleNamespace(profile=TravelProfile.model_validate(seed), id=uuid4()) if (case.has_trip or scenario == "database_failure") and seed else None
+    trip = SimpleNamespace(profile=TravelProfile(), id=uuid4()) if scenario == "database_failure" else None
     result: ChatResult | None = None
     try:
-        for message in case.messages:
+        for index, message in enumerate(case.messages):
+            evidence_provider.use_message(message)
             result = agent.run(message, trip=trip, user_id=uuid4() if scenario == "database_failure" else None)
+            if index < len(case.messages) - 1 and result.profile:
+                profile = TravelProfile.model_validate(result.profile)
+                if trip is None:
+                    trip = SimpleNamespace(profile=profile, id=uuid4())
+                else:
+                    trip.profile = profile
     except ProviderUnavailable as error:
         return Prediction(intent=classifier.last_intent, action="degrade", fields={}, error_code=error.code, fallback_safe=True)
     assert result is not None
     fields = result.profile
     schema_valid, budget_valid, citation_ids = _structured_output(result)
-    predicted_action = _action_for(case, result, classifier.last_intent)
+    predicted_action = _action_for(result, classifier.last_intent, has_trip=trip is not None)
     error_code = usage_guard.error_code or evidence_provider.error_code or result.error_code
     unsupported_facts = _unsupported_fact_count(result)
     return Prediction(
@@ -324,6 +334,8 @@ def _unsupported_fact_count(result: ChatResult) -> int:
     Safe fallbacks have neither a structured fact nor a factual-text marker and
     therefore remain zero, rather than being treated as hallucinations.
     """
+    if result.error_code in {"UNVERIFIABLE_REALTIME_REQUEST", "OUT_OF_SCOPE", "HIGH_STAKES_ADVICE"}:
+        return 0
     try:
         itinerary = Itinerary.model_validate_json(result.reply)
     except Exception:
@@ -337,16 +349,16 @@ def _unsupported_fact_count(result: ChatResult) -> int:
     return unsupported
 
 
-def _action_for(case: EvaluationCase, result: ChatResult, intent: str) -> str:
+def _action_for(result: ChatResult, intent: str, *, has_trip: bool) -> str:
     if result.error_code in {"UNVERIFIABLE_REALTIME_REQUEST", "OUT_OF_SCOPE", "HIGH_STAKES_ADVICE"}:
         return "refuse"
     if result.error_code in {"UNVERIFIED_FACTS", "PLAN_VALIDATION_FAILED", "AGENT_UNAVAILABLE", "DESTINATION_UNDETERMINED"}:
         return "degrade" if result.error_code in {"UNVERIFIED_FACTS", "PLAN_VALIDATION_FAILED", "AGENT_UNAVAILABLE"} else "ask"
     if result.stage == "collecting":
         return "ask"
-    if intent == "modify_trip" and case.has_trip:
+    if intent == "modify_trip" and has_trip:
         return "modify"
-    if intent == "explain_trip" and case.has_trip:
+    if intent == "explain_trip" and has_trip:
         return "explain"
     return "plan"
 
@@ -357,10 +369,14 @@ def score(predictions: list[Prediction], cases: list[EvaluationCase]) -> Evaluat
     total = len(cases)
     intent_correct = sum(pred.intent == case.expected_intent for pred, case in zip(predictions, cases))
     tp = fp = fn = 0
+    slot_cases = 0
     for prediction, case in zip(predictions, cases):
+        if not case.slot_applicable:
+            continue
         expected = case.expected_fields
         if not expected:
             continue
+        slot_cases += 1
         actual = {key: value for key, value in prediction.fields.items() if value not in (None, "", [])}
         for key, value in actual.items():
             if key in expected and expected[key] == value:
@@ -386,8 +402,20 @@ def score(predictions: list[Prediction], cases: list[EvaluationCase]) -> Evaluat
             reasons.append(f"intent: expected {case.expected_intent}, got {prediction.intent}")
         if case.expected_error is not None and case.expected_error != prediction.error_code:
             reasons.append(f"error_code: expected {case.expected_error}, got {prediction.error_code}")
+        expected_slots = case.expected_fields
+        actual_slots = {key: value for key, value in prediction.fields.items() if value not in (None, "", [])}
+        if case.slot_applicable and any(actual_slots.get(key) != value for key, value in expected_slots.items()):
+            reasons.append("slot: expected fields mismatch")
         if case.expect_schema and not prediction.schema_valid:
             reasons.append("schema: invalid")
+        if case.expect_schema and not prediction.budget_valid:
+            reasons.append("budget: invalid")
+        if case.allowed_sources and case.expect_schema and not set(case.allowed_sources).issubset(prediction.citation_ids):
+            reasons.append("citation_coverage: missing allowed source")
+        if any(citation not in case.allowed_sources for citation in prediction.citation_ids):
+            reasons.append("citation_validity: unexpected source")
+        if prediction.unsupported_facts:
+            reasons.append("unsupported_fact: uncited claim")
         if case.expected_action == "degrade" and not prediction.fallback_safe:
             reasons.append("fallback: unsafe")
         task_successes.append(not reasons)
@@ -409,7 +437,7 @@ def score(predictions: list[Prediction], cases: list[EvaluationCase]) -> Evaluat
     return EvaluationReport(
         total, metrics[0], slot_f1, metrics[2], metrics[4], metrics[3], metrics[5], metrics[6], metrics[7], metrics[8],
         _ratio(sum(pred.unsupported_facts for pred in predictions), fact_items, empty=0.0), metrics[10], metrics[9], sum(metrics) / len(metrics),
-        {"cases": total, "slots": 2 * tp + fp + fn, "clarification_cases": len(ask_cases), "required_refusals": len(refusal_cases), "predicted_refusals": len(predicted_refusals), "refusal_true_positives": sum(pred.action == "refuse" and case.expected_action == "refuse" for pred, case in zip(predictions, cases)), "schema_cases": len(schema_cases), "citation_required_cases": len(citation_required), "observed_citations": len(actual_citations), "fallback_cases": len(fallback_cases), "fact_items": fact_items}, failures,
+        {"cases": total, "slot_cases": slot_cases, "slots": 2 * tp + fp + fn, "clarification_cases": len(ask_cases), "required_refusals": len(refusal_cases), "predicted_refusals": len(predicted_refusals), "refusal_true_positives": sum(pred.action == "refuse" and case.expected_action == "refuse" for pred, case in zip(predictions, cases)), "schema_cases": len(schema_cases), "citation_required_cases": len(citation_required), "observed_citations": len(actual_citations), "fallback_cases": len(fallback_cases), "fact_items": fact_items}, failures,
     )
 
 
