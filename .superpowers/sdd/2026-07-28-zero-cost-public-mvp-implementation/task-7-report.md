@@ -75,3 +75,20 @@
 - RED: `T:\.venv\Scripts\python.exe -m pytest tests\unit\test_planning.py -q` → `11 failed, 30 passed`; the failures covered pre-validation display rejection plus direct unknown-ID, non-exact-text, and missing-citation injections.
 - GREEN focused: `T:\.venv\Scripts\python.exe -m pytest tests\unit\test_planning.py -q` → `41 passed in 1.27s`.
 - Full: `T:\.venv\Scripts\python.exe -m pytest -q` → `130 passed, 1 warning in 1.57s` (existing Starlette/httpx deprecation warning).
+
+## Authorized post-circuit-breaker refactor — raw production model seam
+
+- `ModelStructuredPlanner` no longer binds the production chat model to `Itinerary` through `with_structured_output`, or performs any itinerary Pydantic validation before `Planner`. It invokes the model for raw JSON content and supplies the itinerary JSON Schema only as prompt data.
+- The production path is now `SafeTravelAgent → ModelStructuredPlanner raw content → Planner`: raw mappings reach display canonicalization before Pydantic, budget, evidence, and cross-model validation. Missing, empty, oversized, and non-string itinerary/activity display fields are rebuilt from server-owned templates on the first candidate without consuming the repair attempt.
+- Malformed JSON, non-mapping responses, and non-display structural errors remain `SCHEMA_INVALID`. `Planner` permits exactly one semantic repair request and the agent returns `PLAN_VALIDATION_FAILED`, never `AGENT_UNAVAILABLE` or partial model text, when the second candidate is still invalid.
+- Added production-seam integration coverage with a minimal fake chat model that exposes only raw `invoke`. The tests exercise the real agent, production model adapter, and planner together; they do not bypass the failing seam by injecting `Planner` directly.
+
+### Authorized-refactor verification
+
+- RED: `T:\.venv\Scripts\python.exe -m pytest W:\tests\integration\test_structured_planner_production_seam.py -q` → `5 failed in 1.63s`; valid malicious display payloads returned `collecting`, and malformed/non-mapping/non-display-invalid candidates returned `AGENT_UNAVAILABLE` instead of the bounded planner result.
+- GREEN focused: `T:\.venv\Scripts\python.exe -m pytest W:\tests\unit\test_agent_routes.py W:\tests\unit\test_planning.py W:\tests\integration\test_structured_planner_production_seam.py -q` → `64 passed in 1.25s`.
+- Full: `T:\.venv\Scripts\python.exe -m pytest W:\ -q` → `135 passed, 1 warning in 1.58s`.
+
+### Authorized-refactor concern
+
+- The unchanged Starlette/httpx TestClient deprecation warning remains. The chat client still has transport-level retries configured separately; semantic itinerary repair remains bounded to exactly one second planner candidate.

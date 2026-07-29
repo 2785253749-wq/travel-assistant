@@ -208,9 +208,13 @@ class ModelStructuredPlanner:
     def _generate(profile: TravelProfile, provider_results: object, repair_codes: list[str] | None) -> object:
         from app.schemas import Itinerary
 
-        response = model().with_structured_output(Itinerary, method="json_mode").invoke([
-            SystemMessage(content="Generate only a structured itinerary. Claims require evidence_id; never supply source metadata."),
+        response = model().invoke([
+            SystemMessage(content=(
+                "Generate only one raw JSON object matching the supplied JSON Schema. "
+                "Claims require evidence_id; never supply source metadata."
+            )),
             HumanMessage(content=json.dumps({
+                "json_schema": Itinerary.model_json_schema(),
                 "profile": profile.model_dump(mode="json"),
                 "repair_codes": repair_codes,
                 "allowed_evidence": [
@@ -219,7 +223,7 @@ class ModelStructuredPlanner:
                 ],
             }, ensure_ascii=False)),
         ])
-        return response.model_dump(mode="json") if hasattr(response, "model_dump") else response
+        return response.content if hasattr(response, "content") else response
 
 
 class SafeTravelAgent:
