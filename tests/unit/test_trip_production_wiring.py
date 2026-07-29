@@ -23,7 +23,7 @@ def test_production_service_uses_verified_bearer_for_jwt_scoped_repository(monke
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-test-key")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "unused-by-trips")
-    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", "x" * 32)
+    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")
     get_settings.cache_clear()
     from app.trips import service as service_module
 
@@ -50,7 +50,7 @@ def test_same_verified_token_does_not_reuse_jwt_scoped_client(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-test-key")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "unused-by-trips")
-    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", "x" * 32)
+    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")
     get_settings.cache_clear()
     from app.trips import service as service_module
 

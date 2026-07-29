@@ -40,3 +40,10 @@
 ### Focused verification
 
 - `tests/unit/test_intent.py tests/unit/test_usage.py`: `16 passed in 1.16s`.
+
+### Round 2 completion
+
+- Added `tests/unit/test_usage.py::test_service_role_repository_uses_reservation_rpc_contract`, which asserts the exact `reserve_ai_usage`, `commit_ai_usage`, and `rollback_ai_usage` RPC names plus reservation ID and global-limit parameters.
+- `tests/conftest.py` supplies an explicit test-only DeepSeek key to the offline fake model seam. Production wiring fixtures now use a real compliant base64url 32-byte session secret; this does not relax production validation.
+- Fresh focused command: `python -m pytest tests/unit/test_usage.py tests/unit/test_intent.py -q` → `17 passed in 1.27s`.
+- Fresh full command: `python -m pytest -q` → `147 passed, 1 warning in 1.78s` (existing Starlette/httpx deprecation warning).
