@@ -68,3 +68,12 @@ offline metrics are intent 98.75%, slot micro-F1 92.68%, clarification 100%,
 refusal precision/recall 100%/93.33%, schema/budget/citation coverage 92.86%,
 citation validity 100%, unsupported-fact rate 13.33%, task success 93.75%, and
 fallback 100%. The report now names every case and metric-specific reason.
+
+## Addendum
+
+M005's raw offline extraction response contains `travelers: 0`; production
+Pydantic rejects it before `validate_profile`, producing `AGENT_UNAVAILABLE`.
+M006's raw response contains `travelers: 7` and reaches the deterministic
+`traveler_count` follow-up path. Both outcomes are covered by focused tests.
+E003 opens a real `ProviderCircuitBreaker` before `ModelGateway.invoke`, and
+E008 drives real `UsageGuard(enabled=False)` so the model is not called.

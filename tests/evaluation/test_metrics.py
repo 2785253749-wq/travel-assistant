@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from tests.evaluation.runner import EvaluationCase, Prediction, load_baseline, load_cases, run_case, score
+from tests.evaluation.offline_fixtures import OfflineModel
 
 
 def test_metric_formulas_count_intents_slots_and_success() -> None:
@@ -101,3 +102,13 @@ def test_baseline_is_the_only_gate_configuration() -> None:
     baseline = load_baseline(Path(__file__).with_name("baseline.json"))
     assert baseline["thresholds"]["schema_validity"] == 0.98
     assert baseline["known_failures"] == ["P015", "P019"]
+
+
+def test_out_of_range_traveler_fixture_reaches_the_real_extraction_gate() -> None:
+    cases = {case.id: case for case in load_cases(Path(__file__).with_name("cases.jsonl"))}
+    assert OfflineModel.profile_for(cases["M005"].messages[0])["travelers"] == 0
+    assert OfflineModel.profile_for(cases["M006"].messages[0])["travelers"] == 7
+    # TravelProfile currently rejects these before validate_profile can emit its
+    # traveler_count issue for zero; seven reaches validate_profile's safe ask.
+    assert run_case(cases["M005"]).error_code == "AGENT_UNAVAILABLE"
+    assert run_case(cases["M006"]).action == "ask"

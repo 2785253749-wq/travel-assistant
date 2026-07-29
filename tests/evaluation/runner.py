@@ -23,7 +23,7 @@ from app.agent.graph import ChatResult, SafeTravelAgent, TrustedEvidence, extrac
 from app.agent.intent import Intent, IntentResult, classify_intent
 from app.agent.planning import Planner, validate_itinerary
 from app.core.errors import AppError
-from app.core.usage import InMemoryUsageRepository, ProviderCircuitBreaker, ProviderUnavailable, UsageGuard
+from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircuitBreaker, ProviderUnavailable, UsageGuard
 from app.schemas import Itinerary, TravelProfile
 from app.providers.free_weather import WeatherProvider
 from app.providers.places import PlacesProvider
@@ -116,6 +116,10 @@ class OfflineClassifier:
         # Retain the fixture's request label for reporting if the real gateway
         # raises before a structured response exists.
         self.last_intent = OfflineModel.intent_for(message)
+        if SCENARIO_BY_MESSAGE.get(message) == "circuit_open":
+            breaker = ProviderCircuitBreaker(failure_threshold=1)
+            breaker.record_failure("AI_PROVIDER_UNAVAILABLE")
+            ModelGateway(lambda: OfflineModel(), breaker).invoke([])
         result = classify_intent(message, has_trip, model=OfflineModel())
         self.last_intent = result.intent
         return result
@@ -135,7 +139,7 @@ class FixtureUsageGuard:
         self.error_code: str | None = None
         repository = InMemoryUsageRepository()
         limits = {"user_limit": (0, 10), "global_limit": (10, 0)}.get(scenario, (10, 10))
-        self._guard = UsageGuard(repository=repository, user_daily_limit=limits[0], global_daily_limit=limits[1], enabled=True)
+        self._guard = UsageGuard(repository=repository, user_daily_limit=limits[0], global_daily_limit=limits[1], enabled=scenario != "kill_switch")
 
     def allow(self, user_id: object) -> bool:
         try:

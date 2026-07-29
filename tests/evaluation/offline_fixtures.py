@@ -39,6 +39,8 @@ _PLANS: tuple[tuple[str, dict[str, Any]], ...] = (
 
 PROFILE_BY_MESSAGE = {message: profile for message, profile in _PLANS}
 PROFILE_BY_MESSAGE.update({
+    "上海去苏州，0个人，预算2000": {"origin":"上海","destination":"苏州","travelers":0,"budget_cny":2000},
+    "上海去苏州，7个人，预算2000": {"origin":"上海","destination":"苏州","travelers":7,"budget_cny":2000},
     "把第二天改成西湖": {"origin":"上海","destination":"杭州","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":3000},
     "行程改成两个人": {"origin":"北京","destination":"西安","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":4000},
     "把预算改为5000": {"origin":"广州","destination":"厦门","start_date":"2026-10-01","end_date":"2026-10-03","travelers":2,"budget_cny":5000},
@@ -56,15 +58,16 @@ INTENT_BY_MESSAGE.update({
 _ERROR_STATUS = {"成都到重庆两天两人3000": 400, "南京到苏州两天两人2400": 429, "武汉到长沙三天两人2800": 500}
 SCENARIO_BY_MESSAGE = {
     "上海到杭州两天两人3000": "weather_timeout", "北京到西安三天两人4000": "places_empty_retry",
-    "广州到厦门三天两人4000": "places_empty_retry", "成都到重庆两天两人3000": "model_400",
+    "广州到厦门三天两人4000": "circuit_open", "成都到重庆两天两人3000": "model_400",
     "南京到苏州两天两人2400": "model_429", "武汉到长沙三天两人2800": "model_500",
-    "深圳到桂林三天两人5000": "user_limit", "郑州到青岛三天两人4200": "global_limit",
+    "深圳到桂林三天两人5000": "user_limit", "郑州到青岛三天两人4200": "kill_switch",
     "福州到黄山两天两人3600": "format_twice", "济南到大理三天两人5000": "database_failure",
 }
 ERROR_BY_SCENARIO = {
     "weather_timeout": "WEATHER_TIMEOUT", "places_empty_retry": "PLACES_EMPTY_AFTER_RETRY",
     "model_400": "AI_UNAVAILABLE", "model_429": "AI_RATE_LIMITED", "model_500": "AI_UNAVAILABLE",
     "user_limit": "AI_DAILY_LIMIT_REACHED", "global_limit": "AI_GLOBAL_DAILY_LIMIT_REACHED",
+    "kill_switch": "AI_DISABLED", "circuit_open": "AI_CIRCUIT_OPEN",
     "format_twice": "PLAN_VALIDATION_FAILED", "database_failure": "DATABASE_FAILURE",
 }
 
