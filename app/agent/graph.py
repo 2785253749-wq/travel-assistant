@@ -5,8 +5,10 @@ Control-flow decisions remain deterministic; models only classify/extract/genera
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypedDict
@@ -58,9 +60,7 @@ class ChatResult:
 @dataclass(frozen=True)
 class PlanClaim:
     text: str
-    source_url: str | None = None
-    source_type: str | None = None
-    verified: bool = False
+    evidence_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,27 +68,44 @@ class PlanningResult:
     claims: list[PlanClaim]
 
 
+@dataclass(frozen=True)
+class TrustedEvidence:
+    evidence_id: str
+    fact: str
+    source_url: str
+    source_type: str
+
+
 class ChatSessionStore:
     """Bounded in-process state containing only structured travel profiles."""
 
     def __init__(self, max_sessions: int = 200) -> None:
         self._max_sessions = max_sessions
-        self._profiles: OrderedDict[str, TravelProfile] = OrderedDict()
+        self._profiles: OrderedDict[tuple[str, str], TravelProfile] = OrderedDict()
 
-    def get(self, thread_id: str) -> TravelProfile | None:
-        profile = self._profiles.get(thread_id)
+    def get(self, subject_scope: str, thread_id: str) -> TravelProfile | None:
+        key = self._key(subject_scope, thread_id)
+        profile = self._profiles.get(key)
         if profile is not None:
-            self._profiles.move_to_end(thread_id)
+            self._profiles.move_to_end(key)
         return profile
 
-    def put(self, thread_id: str, profile: TravelProfile) -> None:
-        self._profiles[thread_id] = TravelProfile.model_validate(profile.model_dump())
-        self._profiles.move_to_end(thread_id)
+    def put(self, subject_scope: str, thread_id: str, profile: TravelProfile) -> bool:
+        if _profile_contains_secret(profile):
+            return False
+        key = self._key(subject_scope, thread_id)
+        self._profiles[key] = TravelProfile.model_validate(profile.model_dump())
+        self._profiles.move_to_end(key)
         while len(self._profiles) > self._max_sessions:
             self._profiles.popitem(last=False)
+        return True
 
-    def clear(self, thread_id: str) -> None:
-        self._profiles.pop(thread_id, None)
+    def clear(self, subject_scope: str, thread_id: str) -> None:
+        self._profiles.pop(self._key(subject_scope, thread_id), None)
+
+    @staticmethod
+    def _key(subject_scope: str, thread_id: str) -> tuple[str, str]:
+        return subject_scope, hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
 
 
 class IntentClassifier(Protocol):
@@ -100,7 +117,13 @@ class TravelExtractor(Protocol):
 
 
 class Planner(Protocol):
-    def invoke(self, profile: TravelProfile) -> PlanningResult: ...
+    def invoke(
+        self, profile: TravelProfile, evidence: tuple[TrustedEvidence, ...]
+    ) -> PlanningResult: ...
+
+
+class TrustedEvidenceProvider(Protocol):
+    def fetch(self, profile: TravelProfile) -> list[TrustedEvidence]: ...
 
 
 class UsageGuard(Protocol):
@@ -143,14 +166,27 @@ def extract_profile(
     return merge_profile(profile, ExtractionResult.model_validate(result).profile)
 
 
+class NullEvidenceProvider:
+    def fetch(self, profile: TravelProfile) -> list[TrustedEvidence]:
+        return []
+
+
 class ModelPlanner:
-    def invoke(self, profile: TravelProfile) -> PlanningResult:
+    def invoke(
+        self, profile: TravelProfile, evidence: tuple[TrustedEvidence, ...]
+    ) -> PlanningResult:
         response = model().invoke([
             SystemMessage(content=(
                 "你是国内自由行规划助手。只能依据给定资料生成中文行程；不要声称实时价格、库存、余票或营业时间，"
                 "不要执行预订或支付；无法核实的事实必须写为待确认。"
             )),
-            HumanMessage(content=profile.model_dump_json(ensure_ascii=False, indent=2)),
+            HumanMessage(content=json.dumps({
+                "profile": profile.model_dump(mode="json"),
+                "allowed_evidence": [
+                    {"evidence_id": item.evidence_id, "fact": item.fact}
+                    for item in evidence
+                ],
+            }, ensure_ascii=False, indent=2)),
         ])
         return PlanningResult([PlanClaim(text=str(response.content))])
 
@@ -165,6 +201,7 @@ class SafeTravelAgent:
         planner: Planner | None = None,
         repository: Any | None = None,
         usage_guard: UsageGuard | None = None,
+        evidence_provider: TrustedEvidenceProvider | None = None,
         initial_profile: TravelProfile | None = None,
     ) -> None:
         self._classifier = classifier or ModelIntentClassifier()
@@ -172,6 +209,7 @@ class SafeTravelAgent:
         self._planner = planner or ModelPlanner()
         self._repository = repository
         self._usage_guard = usage_guard
+        self._evidence_provider = evidence_provider or NullEvidenceProvider()
         self._initial_profile = initial_profile or TravelProfile()
 
     def run(self, message: str, trip: Trip | None, user_id: UUID | None = None) -> ChatResult:
@@ -190,6 +228,11 @@ class SafeTravelAgent:
 
             current = trip.profile if trip is not None else self._initial_profile
             profile = merge_profile(current, self._extractor.extract(message, current))
+            if _profile_contains_secret(profile):
+                return ChatResult(
+                    "资料中包含疑似凭据或敏感令牌，请删除后重新提交。",
+                    "collecting", {}, error_code="SENSITIVE_INPUT_REJECTED",
+                )
             issues = validate_profile(profile)
             missing = [name for name in REQUIRED_FIELDS if getattr(profile, name) in (None, "")]
             if issues or missing:
@@ -205,7 +248,11 @@ class SafeTravelAgent:
             if self._usage_guard is not None and not self._usage_guard.allow(user_id):
                 return ChatResult("当前规划服务暂不可用，请稍后再试。", "collecting", profile.model_dump(), error_code="USAGE_LIMITED")
 
-            result = self._verify_plan(self._planner.invoke(profile), profile)
+            evidence = tuple(self._evidence_provider.fetch(profile))
+            if not evidence:
+                result = self._unverified_framework(profile)
+            else:
+                result = self._verify_plan(self._planner.invoke(profile, evidence), evidence, profile)
             self._persist(trip, user_id, message, result)
             return result
         except Exception as exc:
@@ -234,30 +281,78 @@ class SafeTravelAgent:
         self._repository.append_message(user_id=user_id, trip_id=trip.id, role="assistant", content=result.reply)
 
     @staticmethod
-    def _verify_plan(plan: PlanningResult | str, profile: TravelProfile) -> ChatResult:
+    def _verify_plan(
+        plan: PlanningResult | str,
+        evidence: tuple[TrustedEvidence, ...],
+        profile: TravelProfile,
+    ) -> ChatResult:
         claims = plan.claims if isinstance(plan, PlanningResult) else [PlanClaim(text=str(plan))]
+        registry = {
+            item.evidence_id: item
+            for item in evidence
+            if _trusted_source(item)
+        }
         verified = [
-            claim for claim in claims
-            if claim.verified and claim.source_type and claim.source_url and claim.source_url.startswith(("https://", "http://"))
+            (claim, registry[claim.evidence_id])
+            for claim in claims
+            if claim.evidence_id in registry
+            and claim.text == registry[claim.evidence_id].fact
         ]
         if not verified:
-            return ChatResult(
-                "我目前只能提供建议性行程框架：请按城市区域安排每日活动。待确认：请在出发前通过官方渠道确认交通、住宿、门票和开放信息。",
-                "planned", profile.model_dump(), error_code="UNVERIFIED_FACTS",
-            )
+            return SafeTravelAgent._unverified_framework(profile)
         return ChatResult(
-            "\n".join(claim.text for claim in verified), "planned", profile.model_dump(),
-            sources=[{"url": claim.source_url, "type": claim.source_type} for claim in verified],
+            "\n".join(claim.text for claim, _ in verified), "planned", profile.model_dump(),
+            sources=[
+                {"url": item.source_url, "type": item.source_type, "evidence_id": item.evidence_id}
+                for _, item in verified
+            ],
+        )
+
+    @staticmethod
+    def _unverified_framework(profile: TravelProfile) -> ChatResult:
+        return ChatResult(
+            "我目前只能提供建议性行程框架：请按城市区域安排每日活动。待确认：请在出发前通过官方渠道确认交通、住宿、门票和开放信息。",
+            "planned", profile.model_dump(), error_code="UNVERIFIED_FACTS",
         )
 
 
 _chat_store = ChatSessionStore()
 
 
-def chat(user: Any | None, trip_id: UUID | None, message: str, *, thread_id: str | None = None) -> ChatResult:
+def chat(
+    user: Any | None,
+    trip_id: UUID | None,
+    message: str,
+    *,
+    thread_id: str | None = None,
+    session_scope: str | None = None,
+) -> ChatResult:
     """Public application entry point; authenticated persistence is wired in later tasks."""
-    profile = _chat_store.get(thread_id) if thread_id else None
+    profile = _chat_store.get(session_scope, thread_id) if thread_id and session_scope else None
     result = SafeTravelAgent(initial_profile=profile).run(message, trip=None, user_id=getattr(user, "id", None))
-    if thread_id and result.profile and result.error_code not in {"OUT_OF_SCOPE", "AGENT_UNAVAILABLE"}:
-        _chat_store.put(thread_id, TravelProfile.model_validate(result.profile))
+    if thread_id and session_scope and result.profile and result.error_code not in {"OUT_OF_SCOPE", "AGENT_UNAVAILABLE"}:
+        _chat_store.put(session_scope, thread_id, TravelProfile.model_validate(result.profile))
     return result
+
+
+_SENSITIVE_PROFILE_PATTERN = re.compile(
+    r"(?:\bBearer\s+\S+|\beyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+|"
+    r"(?:api[_-]?key|password|passwd|secret|token)\s*[:=])",
+    re.IGNORECASE,
+)
+_TRUSTED_SOURCE_TYPES = {"official", "government", "trusted_provider"}
+
+
+def _profile_contains_secret(profile: TravelProfile) -> bool:
+    values = [profile.origin, profile.destination, *profile.preferences, *profile.constraints]
+    return any(value and _SENSITIVE_PROFILE_PATTERN.search(value) for value in values)
+
+
+def _trusted_source(evidence: TrustedEvidence) -> bool:
+    return (
+        evidence.source_type in _TRUSTED_SOURCE_TYPES
+        and evidence.source_url.startswith("https://")
+        and ".test" not in evidence.source_url.lower()
+        and bool(evidence.evidence_id.strip())
+        and bool(evidence.fact.strip())
+    )

@@ -76,3 +76,20 @@ def get_current_user(
 
 
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+
+
+def get_optional_current_user(
+    authorization: Annotated[str | None, Header()] = None,
+    gateway_factory: Annotated[
+        Callable[[], AuthGateway], Depends(get_supabase_auth_gateway_factory)
+    ] = get_supabase_auth_gateway,
+) -> AuthenticatedUser | None:
+    """Allow no credential, but fully validate every credential that is presented."""
+    if authorization is None:
+        return None
+    return get_current_user(authorization, gateway_factory)
+
+
+OptionalCurrentUser = Annotated[
+    AuthenticatedUser | None, Depends(get_optional_current_user)
+]
