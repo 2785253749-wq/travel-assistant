@@ -41,3 +41,13 @@
 - RED: new activity-fact cases failed because `Activity.facts` was not part of the strict schema, and missing/duplicate estimate assumption IDs were accepted.
 - GREEN focused: `tests\unit\test_planning.py` → `12 passed in 1.18s`.
 - Full: `T:\.venv\Scripts\python.exe -m pytest -q` → `101 passed, 1 warning in 1.55s` (existing Starlette/httpx deprecation warning).
+
+## Fix round 3/5 — top-level fact boundary and direct citation defense
+
+- Itinerary-level title and notes now reject the same variable-fact vocabulary as activity title/notes. A fact is valid only in the owning activity's `facts` list, never through a global claim switch.
+- Canonical citation creation now deduplicates `(evidence_id, canonical fact)` within each activity. Direct `validate_itinerary` calls also require the citation's fact, source, fetch timestamp, and generated freshness text to equal the registry result, preventing callers from bypassing planner normalization.
+
+### Round-3 verification
+
+- RED: top-level price/opening text was accepted, and duplicate facts emitted two citations.
+- Full: `T:\.venv\Scripts\python.exe -m pytest -q` → `104 passed, 1 warning in 1.56s` (existing Starlette/httpx deprecation warning).

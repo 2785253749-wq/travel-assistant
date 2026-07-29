@@ -68,8 +68,6 @@ def validate_itinerary(
     if invalid_citations:
         issues.append(PlanIssue("UNTRUSTED_EVIDENCE", "citations", "Citations must reference trusted provider evidence."))
 
-    if _contains_variable_fact(itinerary) and not _all_claims(itinerary):
-        issues.append(PlanIssue("UNSOURCED_FACT", "notes", "Variable facts require trusted evidence."))
     return issues
 
 
@@ -172,8 +170,8 @@ def _citation_matches(citation: SourceCitation, registry: Mapping[str, TrustedEv
         and citation.source_url == evidence.source_url
         and citation.source_type == evidence.source_type
         and citation.fact == evidence.fact
-        and citation.fetched_at.tzinfo is not None
-        and citation.freshness.strip()
+        and citation.fetched_at == evidence.fetched_at
+        and citation.freshness == f"Fetched {evidence.fetched_at.isoformat()}; reference only."
     )
 
 
@@ -208,6 +206,8 @@ def _normalize_claims(itinerary: Itinerary, registry: Mapping[str, TrustedEviden
             activity.citations = []
     for activity, claim in _all_claims(itinerary):
         evidence = registry[claim.evidence_id]
+        if any(citation.evidence_id == evidence.evidence_id and citation.fact == evidence.fact for citation in activity.citations):
+            continue
         activity.citations.append(SourceCitation(
             evidence_id=evidence.evidence_id, source_url=evidence.source_url, source_type=evidence.source_type,
             fetched_at=evidence.fetched_at, freshness=f"Fetched {evidence.fetched_at.isoformat()}; reference only.", fact=evidence.fact,

@@ -193,4 +193,7 @@ class Itinerary(StrictSchema):
             raise ValueError("assumption ids must be unique")
         if self.budget.estimate.assumption_id not in assumption_ids:
             raise ValueError("estimate assumption_id must reference an itinerary assumption")
+        variable_terms = ("price", "availability", "open", "可订", "价格", "营业", "库存", "余票", "实时")
+        if any(term in value.lower() for value in (self.title, *self.notes) for term in variable_terms):
+            raise ValueError("top-level itinerary text cannot state variable facts")
         return self

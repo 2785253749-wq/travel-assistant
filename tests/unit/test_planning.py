@@ -93,11 +93,8 @@ def test_itinerary_rejects_noncontinuous_dates_and_overlapping_activities() -> N
 
 
 def test_unverified_price_is_rejected() -> None:
-    itinerary = itinerary_factory(notes=["Hotel live price is CNY 399 per night."])
-
-    issues = validate_itinerary(itinerary, profile_factory(), sources=[])
-
-    assert {issue.code for issue in issues} == {"UNSOURCED_FACT"}
+    with pytest.raises(ValidationError):
+        itinerary_factory(notes=["Hotel live price is CNY 399 per night."])
 
 
 def test_citations_must_reference_trusted_evidence_and_disclose_freshness() -> None:
@@ -113,7 +110,7 @@ def test_citations_must_reference_trusted_evidence_and_disclose_freshness() -> N
         source_url="https://photon.komoot.io/api/",
         source_type="trusted_provider",
         fetched_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
-        freshness="reference only; verify before departure",
+        freshness="Fetched 2026-07-01T00:00:00+00:00; reference only.",
         fact="West Lake is in Hangzhou.",
     )
     itinerary = itinerary_factory(days=[
@@ -222,6 +219,32 @@ def test_estimate_range_must_reference_one_unique_assumption() -> None:
     values["budget"]["estimate"]["assumption_id"] = "missing"
     with pytest.raises(ValidationError):
         Itinerary.model_validate(values)
+
+
+@pytest.mark.parametrize("field, value", [("title", "Hotel price is CNY 399."), ("notes", ["Attraction opens at 09:00."])])
+def test_top_level_variable_facts_are_rejected_even_when_activity_has_evidence(field: str, value: object) -> None:
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    evidence = TrustedEvidence("place-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)
+    values = itinerary_factory(days=[
+        ItineraryDay(date=date(2026, 8, 1), morning=Activity(title="Walk", start_time="09:00", end_time="11:00", facts=[FactClaim(text=evidence.fact, evidence_id="place-1")]), afternoon=itinerary_factory().days[0].afternoon, evening=itinerary_factory().days[0].evening), itinerary_factory().days[1],
+    ]).model_dump(mode="json")
+    values[field] = value
+    with pytest.raises(ValidationError):
+        Itinerary.model_validate(values)
+
+
+def test_duplicate_facts_and_direct_forged_citations_are_not_accepted() -> None:
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    evidence = TrustedEvidence("place-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)
+    fact = FactClaim(text=evidence.fact, evidence_id="place-1")
+    candidate = itinerary_factory(days=[
+        ItineraryDay(date=date(2026, 8, 1), morning=Activity(title="Walk", start_time="09:00", end_time="11:00", facts=[fact, fact]), afternoon=itinerary_factory().days[0].afternoon, evening=itinerary_factory().days[0].evening), itinerary_factory().days[1],
+    ])
+    planned = Planner(lambda *_: candidate.model_dump(mode="json"), now=lambda: now).plan(profile_factory(), [evidence])
+    assert len(planned.days[0].morning.citations) == 1
+    forged = planned.model_copy(deep=True)
+    forged.days[0].morning.citations[0] = forged.days[0].morning.citations[0].model_copy(update={"freshness": "forged"})
+    assert {issue.code for issue in validate_itinerary(forged, profile_factory(), [evidence], now=lambda: now)} == {"UNTRUSTED_EVIDENCE"}
     values = itinerary_factory().model_dump(mode="json")
     values["assumptions"].append(values["assumptions"][0])
     with pytest.raises(ValidationError):
