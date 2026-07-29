@@ -56,6 +56,11 @@ def test_versioned_corpus_has_the_required_fixed_strata() -> None:
     assert [case.category for case in cases].count("exception") == 10
 
 
+def test_corpus_schema_forbids_runner_fixture_fields() -> None:
+    raw_lines = Path(__file__).with_name("cases.jsonl").read_text(encoding="utf-8").splitlines()
+    assert not any("fixture_" in line or "provider_scenario" in line for line in raw_lines)
+
+
 def test_refusal_precision_penalizes_a_false_positive() -> None:
     cases = [
         EvaluationCase("refuse", "unit", ["x"], "unsupported", {}, "refuse", []),

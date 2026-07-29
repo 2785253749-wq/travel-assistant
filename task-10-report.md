@@ -77,3 +77,7 @@ M006's raw response contains `travelers: 7` and reaches the deterministic
 `traveler_count` follow-up path. Both outcomes are covered by focused tests.
 E003 opens a real `ProviderCircuitBreaker` before `ModelGateway.invoke`, and
 E008 drives real `UsageGuard(enabled=False)` so the model is not called.
+
+The JSONL corpus is mechanically normalized: all historical runner fixture
+fields are removed, and `load_cases` plus a focused test enforce an explicit
+case-key allowlist that rejects any future `fixture_*` or `provider_scenario`.

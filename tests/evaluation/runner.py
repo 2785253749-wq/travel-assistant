@@ -235,7 +235,13 @@ def _fixture_itinerary(profile: TravelProfile, provider_results: object) -> dict
 
 
 def load_cases(path: str | Path) -> list[EvaluationCase]:
-    cases = [EvaluationCase.from_dict(json.loads(line)) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+    allowed_keys = {"id", "category", "messages", "expected_intent", "expected_fields", "expected_action", "allowed_sources", "expected_error", "has_trip", "expect_schema"}
+    raw_cases = [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+    for raw_case in raw_cases:
+        unknown = set(raw_case) - allowed_keys
+        if unknown or any(key.startswith("fixture_") for key in raw_case) or "provider_scenario" in raw_case:
+            raise ValueError(f"evaluation case contains forbidden fixture fields: {sorted(unknown)}")
+    cases = [EvaluationCase.from_dict(value) for value in raw_cases]
     expected_ids = [f"P{i:03d}" for i in range(1, 21)] + [f"M{i:03d}" for i in range(1, 21)] + [f"R{i:03d}" for i in range(1, 16)] + [f"N{i:03d}" for i in range(1, 16)] + [f"E{i:03d}" for i in range(1, 11)]
     if len(cases) != 80 or [case.id for case in cases] != expected_ids:
         raise ValueError("cases.jsonl must contain exactly ordered P001-P020, M001-M020, R001-R015, N001-N015, E001-E010")
