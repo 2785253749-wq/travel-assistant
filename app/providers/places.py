@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import re
+from time import monotonic
+from typing import Callable
 
 import httpx
 
@@ -10,6 +12,7 @@ from app.agent.graph import TrustedEvidence
 from app.providers.base import (
     ProviderResult,
     HTTP_TIMEOUT,
+    OperationDeadline,
     UpstreamHttpError,
     UpstreamPayloadError,
     request_json,
@@ -28,16 +31,22 @@ class Place:
 
 
 class PlacesProvider:
-    def __init__(self, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        client: httpx.Client | None = None,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
         self._client = client or httpx.Client(timeout=HTTP_TIMEOUT)
+        self._clock = clock
 
     def search(self, city: str, query: str) -> ProviderResult[list[Place]]:
         fetched_at = utc_now()
+        deadline = OperationDeadline.start(self._clock)
         try:
-            places = self._search(query)
+            places = self._search(query, deadline)
             if not places:
                 rewritten = f"{city.strip()} {_normalized_alias(query)}".strip()
-                places = self._search(rewritten)
+                places = self._search(rewritten, deadline)
         except httpx.TimeoutException:
             return ProviderResult([], PLACES_SOURCE, fetched_at, True, "PLACES_TIMEOUT")
         except httpx.RequestError:
@@ -50,20 +59,30 @@ class PlacesProvider:
         evidence = tuple(_place_evidence(place) for place in places)
         return ProviderResult(places, PLACES_SOURCE, fetched_at, evidence=evidence)
 
-    def _search(self, query: str) -> list[Place]:
-        payload = request_json(self._client, PLACES_SOURCE, {"q": query, "limit": "10"})
-        if payload is None:
-            return []
+    def _search(self, query: str, deadline: OperationDeadline) -> list[Place]:
+        payload = request_json(
+            self._client,
+            PLACES_SOURCE,
+            {"q": query, "limit": "10"},
+            deadline,
+        )
         features = payload.get("features")
         if not isinstance(features, list):
-            return []
+            raise UpstreamPayloadError
         results: list[Place] = []
         for feature in features:
-            properties = feature.get("properties", feature) if isinstance(feature, dict) else {}
-            name = properties.get("name") if isinstance(properties, dict) else None
-            city = properties.get("city") if isinstance(properties, dict) else None
-            if isinstance(name, str) and name.strip():
-                results.append(Place(name.strip(), city.strip() if isinstance(city, str) else None))
+            if not isinstance(feature, dict):
+                raise UpstreamPayloadError
+            properties = feature.get("properties", feature)
+            if not isinstance(properties, dict):
+                raise UpstreamPayloadError
+            name = properties.get("name")
+            city = properties.get("city")
+            if not isinstance(name, str) or not name.strip():
+                raise UpstreamPayloadError
+            if city is not None and not isinstance(city, str):
+                raise UpstreamPayloadError
+            results.append(Place(name.strip(), city.strip() if city else None))
         return results
 
 

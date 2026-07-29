@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urlparse, urlunparse
 
 from app.schemas import TravelProfile
 
@@ -44,6 +44,23 @@ class BookingLinkBuilder:
 
 def _search_url(base_url: str, parameters: dict[str, str]) -> str:
     parsed = urlparse(base_url)
-    if parsed.scheme != "https" or parsed.hostname not in _ALLOWED_BOOKING_HOSTS:
+    try:
+        explicit_port = parsed.port is not None
+    except ValueError:
+        explicit_port = True
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in _ALLOWED_BOOKING_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or explicit_port
+    ):
         raise ValueError("Booking search host is not allowlisted")
-    return f"{base_url}?{urlencode(parameters, encoding='utf-8', safe='')}"
+    return urlunparse((
+        "https",
+        parsed.hostname,
+        parsed.path or "/",
+        "",
+        urlencode(parameters, encoding="utf-8", safe=""),
+        "",
+    ))

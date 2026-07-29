@@ -20,5 +20,36 @@ class RecordingTransport(httpx.BaseTransport):
         return next_response
 
 
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class DurationTransport(httpx.BaseTransport):
+    """Simulate request durations while honoring the supplied HTTPX budget."""
+
+    def __init__(self, clock: FakeClock, events: list[tuple[float, httpx.Response]]) -> None:
+        self._clock = clock
+        self._events = iter(events)
+        self.requests: list[httpx.Request] = []
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        duration, response = next(self._events)
+        timeout = request.extensions["timeout"]
+        request_budget = max(value for value in timeout.values() if value is not None)
+        if duration > request_budget:
+            self._clock.advance(request_budget)
+            raise httpx.ReadTimeout("operation budget exhausted", request=request)
+        self._clock.advance(duration)
+        return response
+
+
 def json_response(payload: dict, status_code: int = 200) -> httpx.Response:
     return httpx.Response(status_code, content=json.dumps(payload).encode("utf-8"))

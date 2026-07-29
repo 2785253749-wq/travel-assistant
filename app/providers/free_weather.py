@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from hashlib import sha256
+from time import monotonic
+from typing import Callable
 
 import httpx
 
@@ -10,6 +12,7 @@ from app.agent.graph import TrustedEvidence
 from app.providers.base import (
     ProviderResult,
     HTTP_TIMEOUT,
+    OperationDeadline,
     UpstreamHttpError,
     UpstreamPayloadError,
     request_json,
@@ -33,16 +36,23 @@ class WeatherSummary:
 class WeatherProvider:
     """Free Open-Meteo adapter; location resolution remains intentionally separate."""
 
-    def __init__(self, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        client: httpx.Client | None = None,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
         self._client = client or httpx.Client(timeout=HTTP_TIMEOUT)
+        self._clock = clock
 
     def forecast(self, destination: str, start: date, end: date) -> ProviderResult[WeatherSummary]:
         fetched_at = utc_now()
+        deadline = OperationDeadline.start(self._clock)
         try:
             coordinates = request_json(
                 self._client,
                 GEOCODING_SOURCE,
                 {"name": destination.strip(), "count": "1", "language": "zh", "format": "json"},
+                deadline,
             )
             results = coordinates.get("results")
             candidate = results[0] if isinstance(results, list) and results else None
@@ -61,6 +71,7 @@ class WeatherProvider:
                     "start_date": start.isoformat(),
                     "end_date": end.isoformat(),
                 },
+                deadline,
             )
         except httpx.TimeoutException:
             return ProviderResult(None, WEATHER_SOURCE, fetched_at, True, "WEATHER_TIMEOUT")

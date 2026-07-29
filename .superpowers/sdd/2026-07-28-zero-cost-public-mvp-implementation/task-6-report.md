@@ -19,3 +19,26 @@
 
 - Provider output is deliberately advisory and needs normal freshness/display handling when Task 7 consumes it.
 - Booking URLs are fixed, allowlisted search endpoints only; they do not expose a facility for user- or model-supplied base URLs.
+
+---
+
+## Fix round 1/5 — payload validity, URL authority, and total deadline
+
+### Changes
+
+- Places now distinguishes an authoritative empty `features: []` response from a malformed payload. A missing/non-list `features` field or malformed feature/property entry maps to degraded `PLACES_INVALID_RESPONSE` without query rewriting.
+- Booking search URL validation rejects userinfo and every explicit port, including `:443`, in addition to requiring exact allowlisted HTTPS hostnames. The returned URL is rebuilt only from the validated scheme, hostname, path, and encoded search parameters.
+- Weather and places operations now share one injected monotonic six-second deadline across all requests and retries. Each blocking HTTPX call has a wall-clock guard and receives only the remaining phase budget; deadline exhaustion maps to the existing stable provider timeout code.
+- Deadline coverage uses a fake clock and deterministic duration-aware HTTPX transport. It performs no sleep and no real network request.
+
+### TDD and verification
+
+- Places RED: malformed schema and entry fixtures were treated as empty results and triggered a second request. GREEN maps them directly to `PLACES_INVALID_RESPONSE`.
+- Booking RED: the userinfo, `:444`, and `:443` inputs all passed the old hostname-only check. GREEN rejects all three.
+- Deadline RED: `PlacesProvider` had no injectable clock or operation budget. GREEN proves a 4-second first attempt leaves only 2 seconds for retry and returns `PLACES_TIMEOUT` at exactly 6 simulated seconds.
+- Final focused: `13 passed in 1.15s`.
+- Final full suite: `87 passed, 1 warning in 1.53s`. The warning is the existing Starlette/httpx TestClient deprecation warning.
+
+### Concerns
+
+- A wall-clock timeout may abandon a Python worker thread because threads cannot be force-killed. That worker remains bounded by the same remaining HTTPX phase timeout and is not reused; the provider returns the stable timeout result at the operation deadline.
