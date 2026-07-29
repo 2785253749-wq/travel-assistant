@@ -16,7 +16,7 @@
 ## Verification
 
 - `node --check app/static/app.js` — passed.
-- `node --test tests/frontend/app.test.js` — **10 passed**.
+- `node --test tests/frontend/app.test.js` — **13 passed**.
 - `git diff --check` — passed.
 - `python -m pytest -v` (via the project virtual environment) — **177 passed**.
 
@@ -43,3 +43,14 @@ Browser authentication expects deployment bootstrap configuration in `window.TRA
 2. First behavior GREEN: 7 tests passed after the focused implementation.
 3. Follow-up RED: 2 tests failed for uncleared private draft/title fields and failure to surface a canonical citation timestamp.
 4. Follow-up GREEN: the expanded behavior suite passes 10 tests.
+
+## Round 2 fixes
+
+- Signed-out cleanup now removes every private form value, including email, password, message draft, rename value and share URL; it also empties the trip title/content, profile fields, history and chat nodes before hiding their private regions. The corresponding browser state and IDs are reset together.
+- A first private API `401` refreshes once and retries exactly once with the refreshed token. A second `401`, a refresh error result, or a thrown refresh exception now awaits SDK sign-out when available, clears local state, and surfaces a stable authentication error. Non-`401` responses never trigger refresh or sign-out.
+- Citation metadata is displayed only when the citation has the canonical Task 7 shape and passes the exact trusted HTTPS URL gate. Invalid citations now render only “来源不可验证；更新时间未知。”; attacker-supplied timestamps, freshness strings, facts, source types and URLs are not copied into the DOM.
+
+### Round 2 TDD evidence
+
+1. RED: 4 of 13 executable behavior tests failed for residual signed-out chat/private values, a second `401` retaining login, a thrown refresh exception retaining login, and an invalid allowed-host citation exposing a link and forged metadata.
+2. GREEN: all 13 behavior tests pass after the focused changes; focused Python tests pass 6/6 and the full Python suite passes 177/177.

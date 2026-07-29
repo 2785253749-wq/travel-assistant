@@ -86,9 +86,20 @@
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
     const payload = await response.json().catch(() => ({}));
-    if (response.status === 401 && allowRefresh && state.session) {
-      const refreshed = await refreshBrowserSession();
-      if (refreshed) return requestJson(path, options, false);
+    if (response.status === 401) {
+      if (allowRefresh && state.session) {
+        const refreshed = await refreshBrowserSession();
+        if (refreshed) return requestJson(path, options, false);
+      } else if (state.session) {
+        await signOutAndClearSession();
+      }
+      const detail = payload && payload.detail;
+      const authCode = detail && ["AUTH_REQUIRED", "AUTH_INVALID", "AUTH_UNAVAILABLE"].includes(detail.code)
+        ? detail.code : "AUTH_INVALID";
+      const authError = new Error(authCode);
+      authError.code = authCode;
+      authError.status = 401;
+      throw authError;
     }
     if (!response.ok) {
       const detail = payload && payload.detail;
@@ -144,9 +155,7 @@
         if (day && day[slot] && Array.isArray(day[slot].citations)) citations.push(...day[slot].citations);
       }
     }
-    return citations.filter((citation) => citation && citation.evidence_id && citation.fact && citation.fetched_at
-      && citation.freshness && ["official", "government", "trusted_provider"].includes(citation.source_type)
-      && allowedExternalUrl(citation.source_url || citation.source));
+    return citations.filter(isCanonicalCitation);
   }
 
   function renderProfile(profile) {
@@ -205,6 +214,17 @@
     }
   }
 
+  function isCanonicalCitation(citation) {
+    if (!citation || typeof citation !== "object") return false;
+    const fetchedAt = citation.fetched_at;
+    return typeof citation.evidence_id === "string" && citation.evidence_id.trim()
+      && typeof citation.fact === "string" && citation.fact.trim()
+      && typeof fetchedAt === "string" && fetchedAt.trim() && !Number.isNaN(Date.parse(fetchedAt))
+      && citation.freshness === `Fetched ${fetchedAt}; reference only.`
+      && ["official", "government", "trusted_provider"].includes(citation.source_type)
+      && Boolean(allowedExternalUrl(citation.source_url || citation.source));
+  }
+
   function renderStructuredItinerary(itinerary) {
     const container = document.createElement("div");
     const title = itinerary && itinerary.title ? itinerary.title : "行程建议";
@@ -253,15 +273,15 @@
     const list = document.createElement("ul");
     for (const citation of citations) {
       const item = document.createElement("li");
-      const link = safeExternalLink(citation && (citation.source_url || citation.source), citation && citation.source_type);
-      if (link) {
-        item.append(link);
-      } else {
-        appendTextBlock(item, "span", `不可点击来源：${citation && (citation.source_url || citation.source) || "未知"}`);
+      if (!isCanonicalCitation(citation)) {
+        item.textContent = "来源不可验证；更新时间未知。";
+        list.append(item);
+        continue;
       }
-      if (citation && citation.fact) appendTextBlock(item, "p", `事实：${citation.fact}`);
-      appendTextBlock(item, "p", citation && citation.fetched_at ? `获取时间：${citation.fetched_at}` : "更新时间未知");
-      appendTextBlock(item, "p", citation && citation.freshness ? `新鲜度：${citation.freshness}` : "数据可能降级");
+      item.append(safeExternalLink(citation.source_url || citation.source, citation.source_type));
+      appendTextBlock(item, "p", `事实：${citation.fact}`);
+      appendTextBlock(item, "p", `获取时间：${citation.fetched_at}`);
+      appendTextBlock(item, "p", `新鲜度：${citation.freshness}`);
       list.append(item);
     }
     section.append(list);
@@ -390,13 +410,14 @@
   function clearSession() {
     state.session = null;
     state.user = null;
-    clearConversationState();
+    clearConversationState({ showWelcome: false });
     state.profile = null;
     state.pendingResult = null;
     state.currentTrip = null;
     state.renameTripId = null;
     state.shareTripId = null;
     elements.password.value = "";
+    elements.email.value = "";
     elements.authFormPanel.hidden = false;
     elements.account.hidden = true;
     elements.history.hidden = true;
@@ -409,13 +430,14 @@
     addMessage("你好！我可以帮你规划国内 2 至 7 天的自由行。", "assistant");
   }
 
-  function clearConversationState() {
+  function clearConversationState(options = {}) {
     state.profile = null;
     state.pendingResult = null;
     state.currentTrip = null;
     state.threadId = makeThreadId();
     clearChildren(elements.profileFields);
     clearChildren(elements.tripContent);
+    elements.tripTitle.textContent = "";
     elements.profileCard.hidden = true;
     elements.tripView.hidden = true;
     elements.tripActions.hidden = true;
@@ -428,7 +450,8 @@
     elements.accountEmail.textContent = "";
     if (elements.shareDialog.open) elements.shareDialog.close();
     if (elements.renameDialog.open) elements.renameDialog.close();
-    resetMessages();
+    clearChildren(elements.messages);
+    if (options.showWelcome !== false) resetMessages();
   }
 
   function applySession(session, options = {}) {
@@ -447,17 +470,33 @@
     if (!state.authClient) return false;
     if (!refreshPromise) {
       refreshPromise = (async () => {
-        const { data, error } = await state.authClient.auth.refreshSession();
-        if (error || !data || !data.session) {
-          try { await state.authClient.auth.signOut(); } catch (_) { /* Local privacy cleanup still runs below. */ }
-          clearSession();
+        try {
+          const { data, error } = await state.authClient.auth.refreshSession();
+          if (error || !data || !data.session) {
+            await signOutAndClearSession();
+            return false;
+          }
+          applySession(data.session);
+          return true;
+        } catch (_) {
+          await signOutAndClearSession();
           return false;
         }
-        applySession(data.session);
-        return true;
       })().finally(() => { refreshPromise = null; });
     }
     return refreshPromise;
+  }
+
+  async function signOutAndClearSession() {
+    try {
+      if (state.authClient && state.authClient.auth && typeof state.authClient.auth.signOut === "function") {
+        await state.authClient.auth.signOut();
+      }
+    } catch (_) {
+      // Local privacy cleanup is mandatory even if the SDK cannot reach auth.
+    } finally {
+      clearSession();
+    }
   }
 
   function requireAuthentication() {

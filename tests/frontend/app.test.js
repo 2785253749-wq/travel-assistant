@@ -46,11 +46,17 @@ test("logout clears every private value and private DOM region", async () => {
   await settle();
   harness.elements.get("profile-fields").append(Object.assign(new FakeElement("dd"), { textContent: "private profile" }));
   harness.elements.get("trip-content").append(Object.assign(new FakeElement("p"), { textContent: "private trip" }));
+  harness.elements.get("trip-history-list").append(Object.assign(new FakeElement("li"), { textContent: "private history" }));
+  harness.elements.get("chat-messages").append(Object.assign(new FakeElement("p"), { textContent: "private chat" }));
   harness.elements.get("trip-view").hidden = false;
   harness.elements.get("profile-confirmation").hidden = false;
+  harness.elements.get("email").value = "owner@example.test";
+  harness.elements.get("password").value = "private password";
   harness.elements.get("share-link").value = "https://travel.example/#share=secret";
+  harness.elements.get("share-expiry").textContent = "private expiry";
   harness.elements.get("rename-input").value = "private title";
   harness.elements.get("message-input").value = "private draft";
+  harness.elements.get("trip-title").textContent = "private trip title";
   harness.elements.get("share-dialog").showModal();
   harness.elements.get("rename-dialog").showModal();
 
@@ -60,10 +66,16 @@ test("logout clears every private value and private DOM region", async () => {
   assert.equal(auth.signOutCalls, 1);
   assert.equal(harness.elements.get("trip-content").textContent, "");
   assert.equal(harness.elements.get("profile-fields").textContent, "");
+  assert.equal(harness.elements.get("trip-history-list").textContent, "");
+  assert.equal(harness.elements.get("chat-messages").textContent, "");
+  assert.equal(harness.elements.get("trip-title").textContent, "");
   assert.equal(harness.elements.get("trip-view").hidden, true);
   assert.equal(harness.elements.get("profile-confirmation").hidden, true);
   assert.equal(harness.elements.get("trip-history").hidden, true);
   assert.equal(harness.elements.get("share-link").value, "");
+  assert.equal(harness.elements.get("share-expiry").textContent, "");
+  assert.equal(harness.elements.get("email").value, "");
+  assert.equal(harness.elements.get("password").value, "");
   assert.equal(harness.elements.get("rename-input").value, "");
   assert.equal(harness.elements.get("message-input").value, "");
   assert.equal(harness.elements.get("account-email").textContent, "");
@@ -90,14 +102,18 @@ test("a private API 401 refreshes once and retries with the new Authorization to
   assert.equal(harness.elements.get("account-summary").hidden, false);
 });
 
-test("only refresh failure clears the restored authenticated session", async () => {
+test("a retry that is still 401 signs out and clears the restored session", async () => {
   const successfulAuth = new FakeSupabaseAuth({ initialSession: SESSION, refreshedSession: REFRESHED });
-  const stillSignedIn = createHarness({ auth: successfulAuth, fetch: async () => jsonResponse(401, { detail: { code: "AUTH_INVALID" } }) });
+  const signedOutAfterRetry = createHarness({ auth: successfulAuth, fetch: async () => jsonResponse(401, { detail: { code: "AUTH_INVALID" } }) });
   await settle();
   assert.equal(successfulAuth.refreshCalls, 1);
-  assert.equal(successfulAuth.signOutCalls, 0);
-  assert.equal(stillSignedIn.elements.get("account-summary").hidden, false);
+  assert.equal(successfulAuth.signOutCalls, 1);
+  assert.equal(signedOutAfterRetry.fetchCalls.filter((call) => call.url === "/api/trips").length, 2);
+  assert.equal(signedOutAfterRetry.elements.get("account-summary").hidden, true);
+  assert.match(signedOutAfterRetry.elements.get("status-message").textContent, /登录已过期/);
+});
 
+test("refresh failure signs out and clears the restored session", async () => {
   const failedAuth = new FakeSupabaseAuth({ initialSession: SESSION, refreshedSession: null });
   const signedOut = createHarness({ auth: failedAuth, fetch: async () => jsonResponse(401, { detail: { code: "AUTH_INVALID" } }) });
   await settle();
@@ -105,6 +121,26 @@ test("only refresh failure clears the restored authenticated session", async () 
   assert.equal(failedAuth.signOutCalls, 1);
   assert.equal(signedOut.elements.get("account-summary").hidden, true);
   assert.equal(signedOut.elements.get("auth-form").hidden, false);
+});
+
+test("refresh exception signs out and clears the restored session", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  auth.refreshSession = async () => { auth.refreshCalls += 1; throw new Error("sdk refresh exploded"); };
+  const harness = createHarness({ auth, fetch: async () => jsonResponse(401, { detail: { code: "AUTH_INVALID" } }) });
+  await settle();
+  assert.equal(auth.refreshCalls, 1);
+  assert.equal(auth.signOutCalls, 1);
+  assert.equal(harness.elements.get("account-summary").hidden, true);
+  assert.match(harness.elements.get("status-message").textContent, /登录已过期/);
+});
+
+test("non-401 API failures never refresh or sign out", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION, refreshedSession: REFRESHED });
+  const harness = createHarness({ auth, fetch: async () => jsonResponse(503, { detail: { code: "CHAT_UNAVAILABLE" } }) });
+  await settle();
+  assert.equal(auth.refreshCalls, 0);
+  assert.equal(auth.signOutCalls, 0);
+  assert.equal(harness.elements.get("account-summary").hidden, false);
 });
 
 test("Supabase auth state changes replace the token used by later private calls", async () => {
@@ -163,7 +199,7 @@ test("Task 7 activity citations render canonical freshness and reject malicious 
   });
   itinerary.days[1].morning.citations.push({
     evidence_id: "booking-1", source_url: "https://www.12306.cn/index/index.html",
-    source_type: "official", fetched_at: "2026-09-30T08:30:00Z", freshness: "reference only", fact: "铁路搜索入口",
+    source_type: "official", fetched_at: "2026-09-30T08:30:00Z", freshness: "Fetched 2026-09-30T08:30:00Z; reference only.", fact: "铁路搜索入口",
   });
   itinerary.days[1].afternoon.citations.push({
     evidence_id: "evil-3", source_url: "https://api.open-meteo.com:444/path",
@@ -171,7 +207,11 @@ test("Task 7 activity citations render canonical freshness and reject malicious 
   });
   itinerary.days[1].evening.citations.push({
     evidence_id: "evil-4", source_url: "https://unknown.example/path",
-    source_type: "official", fetched_at: "2099-01-01T00:00:00Z", freshness: "fresh", fact: "unknown",
+    source_type: "official", fetched_at: "2099-01-01T00:00:00Z", freshness: "FORGED-FRESHNESS-MARKER", fact: "unknown",
+  });
+  itinerary.days[1].evening.citations.push({
+    evidence_id: "evil-5", source_url: "https://api.open-meteo.com/v1/forecast",
+    source_type: "forged", fetched_at: "2098-01-01T00:00:00Z", freshness: "FORGED-ALLOWED-HOST-MARKER", fact: "forged shape",
   });
   const harness = createHarness({ hash: "#share=opaque", fetch: async (call) => {
     assert.equal(call.url, "/api/shared/opaque");
@@ -188,7 +228,8 @@ test("Task 7 activity citations render canonical freshness and reject malicious 
   assert.match(harness.elements.get("trip-content").textContent, /成都 2026-10-01 的最高气温为 24°C/);
   assert.match(harness.elements.get("trip-content").textContent, /2026-09-30T08:30:00\+00:00/);
   assert.match(harness.elements.get("trip-content").textContent, /reference only/);
-  assert.match(harness.elements.get("trip-content").textContent, /api\.open-meteo\.com\.evil\.example/);
+  assert.match(harness.elements.get("trip-content").textContent, /来源不可验证|更新时间未知/);
+  assert.doesNotMatch(harness.elements.get("trip-content").textContent, /2099|2098|FORGED-FRESHNESS-MARKER|FORGED-ALLOWED-HOST-MARKER/);
   assert.equal(nodes.some((node) => node.tagName === "IMG"), false);
   assert.equal(links.some((link) => link.href.includes("evil.example") || link.href.includes("user@") || link.href.includes(":444") || link.href.includes("unknown.example")), false);
 });
