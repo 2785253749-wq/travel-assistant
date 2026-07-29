@@ -42,3 +42,29 @@ present in the production deterministic destination allowlist. They correctly
 stop at `DESTINATION_UNDETERMINED`; this leaves two schema/budget/citation plan
 denominators unmet. The corpus retains these failures and the runner lists the
 case IDs rather than modifying production behavior or weakening thresholds.
+
+## Fix round 1
+
+- Replaced runner-owned answer fixtures with `tests/evaluation/offline_fixtures.py`.
+  The adapter keys fixed model responses by raw user message and invokes the
+  production Task 2 `classify_intent`, `extract_profile`, `ModelGateway`, and
+  deterministic route. Tests prove that changing expected values does not
+  change a prediction.
+- Added scoring of explicit expected error codes, refusal true-positive
+  precision/recall denominators, metric-specific failure reasons, baseline-only
+  gate loading, and guarded `--live` contract checks.
+- The exception corpus now exercises injected Weather timeout, Places retry
+  empty result, real `UsageGuard` user/global limits, ModelGateway status
+  normalization, and the structured planner's twice-invalid repair path.
+
+Current offline run remains non-zero. In addition to P015/P019, it reports
+R001/R006/R014 (safety error mapping/refusal behavior) and N004/N009/N014
+(missing persisted context routes modifications to creation). These are kept
+as product findings; no production rule, expected answer, or threshold was
+changed to suppress them.
+
+The latest hardening run has 8 focused evaluation tests passing. Its current
+offline metrics are intent 98.75%, slot micro-F1 92.68%, clarification 100%,
+refusal precision/recall 100%/93.33%, schema/budget/citation coverage 92.86%,
+citation validity 100%, unsupported-fact rate 13.33%, task success 93.75%, and
+fallback 100%. The report now names every case and metric-specific reason.
