@@ -5,6 +5,7 @@ from langchain_deepseek import ChatDeepSeek
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
+from app.core.usage import ModelGateway, get_model_gateway
 
 Intent = Literal[
     "plan_trip", "modify_trip", "explain_trip", "smalltalk", "unsupported"
@@ -35,17 +36,11 @@ def route_intent(result: IntentResult, has_trip: bool) -> Intent:
     return result.intent
 
 
-def classify_intent(message: str, has_trip: bool, model: Any | None = None) -> IntentResult:
-    client = model or intent_model()
-    structured_client = client.with_structured_output(IntentResult, method="json_mode")
-    result = IntentResult.model_validate(
-        structured_client.invoke(
-            [
-                SystemMessage(content=_INTENT_PROMPT),
-                HumanMessage(content=message),
-            ]
-        )
-    )
+def classify_intent(message: str, has_trip: bool, model: Any | None = None, gateway: ModelGateway | None = None) -> IntentResult:
+    controlled = gateway or (ModelGateway(lambda: model) if model is not None else get_model_gateway(intent_model))
+    result = IntentResult.model_validate(controlled.invoke([
+        SystemMessage(content=_INTENT_PROMPT), HumanMessage(content=message),
+    ], structured=IntentResult))
     return result.model_copy(update={"intent": route_intent(result, has_trip)})
 
 

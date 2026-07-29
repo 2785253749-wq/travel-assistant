@@ -1,5 +1,6 @@
 from functools import lru_cache
 from typing import Literal
+import base64
 
 from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,13 +34,25 @@ class Settings(BaseSettings):
                 )
                 if self._is_missing(value)
             ]
-            if self._is_missing(self.anon_session_signing_secret) or len(self.anon_session_signing_secret.get_secret_value()) < 32:
+            if not self._valid_session_secret():
                 missing.append("ANON_SESSION_SIGNING_SECRET")
             if missing:
                 raise ValueError(
                     "Production requires Supabase configuration: " + ", ".join(missing)
                 )
         return self
+
+    def _valid_session_secret(self) -> bool:
+        if self.anon_session_signing_secret is None:
+            return False
+        value = self.anon_session_signing_secret.get_secret_value().strip()
+        if len(value) < 43 or len(set(value)) < 8 or value.lower().startswith(("replace", "your", "example")):
+            return False
+        try:
+            decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        except Exception:
+            return False
+        return len(decoded) >= 32
 
     @staticmethod
     def _is_missing(value: AnyHttpUrl | SecretStr | None) -> bool:

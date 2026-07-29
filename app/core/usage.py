@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from threading import Lock, RLock
+from threading import RLock
 from typing import Any, Callable, Protocol
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -160,10 +160,11 @@ class InMemoryUsageRepository:
     """Atomic reference implementation used without any network dependency."""
 
     def __init__(self) -> None:
-        self._lock = Lock()
+        self._lock = RLock()
         self._users: dict[tuple[str, date], UsageCount] = {}
         self._global: dict[date, UsageCount] = {}
         self._reservations: dict[str, tuple[str, date, datetime, str]] = {}
+        self.last_failure: str | None = None
 
     def get_daily(self, user_key: str, day: date) -> UsageCount:
         with self._lock:
@@ -182,17 +183,28 @@ class InMemoryUsageRepository:
 
     def reserve(self, user_key: str, day: date, user_limit: int, global_limit: int) -> str | None:
         with self._lock:
+            self._cleanup_expired(day, datetime.now(UTC))
             user = self._users.get((user_key, day), UsageCount())
             global_count = self._global.get(day, UsageCount())
             if user.reserved_count >= user_limit:
+                self.last_failure = "user_limit"
                 return None
             if global_count.reserved_count >= global_limit:
+                self.last_failure = "global_limit"
                 return None
             self._users[(user_key, day)] = UsageCount(user.request_count, user.pending + 1, user.input_tokens, user.output_tokens)
             self._global[day] = UsageCount(global_count.request_count, global_count.pending + 1, global_count.input_tokens, global_count.output_tokens)
             reservation_id = str(uuid4())
+            self.last_failure = None
             self._reservations[reservation_id] = (user_key, day, datetime.now(UTC) + timedelta(minutes=5), "reserved")
             return reservation_id
+
+    def _cleanup_expired(self, day: date, now: datetime) -> None:
+        for reservation_id, (subject, reserved_day, expires_at, status) in tuple(self._reservations.items()):
+            if reserved_day == day and status == "reserved" and expires_at <= now:
+                self._users[(subject, day)] = self._rollback_count(self._users.get((subject, day), UsageCount()))
+                self._global[day] = self._rollback_count(self._global.get(day, UsageCount()))
+                self._reservations[reservation_id] = (subject, reserved_day, expires_at, "expired")
 
     def commit(self, reservation_id: str, user_key: str, day: date, input_tokens: int, output_tokens: int) -> None:
         with self._lock:
@@ -303,18 +315,10 @@ class UsageGuard:
         if not self._provider_configured:
             raise ProviderUnavailable()
         day = self._clock().astimezone(UTC).date()
-        user = self.repository.get_daily(user_key, day)
-        if user.reserved_count >= self._user_daily_limit:
-            raise AppError("AI_DAILY_LIMIT_REACHED", "AI daily limit reached")
-        global_count = self.repository.get_global_daily(day)
-        if global_count.reserved_count >= self._global_daily_limit:
-            raise AppError("AI_GLOBAL_DAILY_LIMIT_REACHED", "AI global daily limit reached")
         reservation_id = self.repository.reserve(user_key, day, self._user_daily_limit, self._global_daily_limit)
         if not reservation_id:
-            # A concurrent transaction won the race. Re-read only stable counts.
-            if self.repository.get_daily(user_key, day).reserved_count >= self._user_daily_limit:
-                raise AppError("AI_DAILY_LIMIT_REACHED", "AI daily limit reached")
-            raise AppError("AI_GLOBAL_DAILY_LIMIT_REACHED", "AI global daily limit reached")
+            code = "AI_DAILY_LIMIT_REACHED" if getattr(self.repository, "last_failure", None) == "user_limit" else "AI_GLOBAL_DAILY_LIMIT_REACHED"
+            raise AppError(code, "AI daily limit reached" if code == "AI_DAILY_LIMIT_REACHED" else "AI global daily limit reached")
         return UsageReservation(self.repository, reservation_id, user_key, day)
 
 
@@ -323,9 +327,7 @@ _repository = InMemoryUsageRepository()
 
 def get_usage_guard() -> UsageGuard:
     settings = get_settings()
-    configured = settings.app_env != "production" or (
-        settings.deepseek_api_key is not None and bool(settings.deepseek_api_key.get_secret_value().strip())
-    )
+    configured = settings.deepseek_api_key is not None and bool(settings.deepseek_api_key.get_secret_value().strip())
     repository: UsageRepository = _repository if settings.app_env != "production" else SupabaseUsageRepository.from_settings()
     return UsageGuard(
         repository=repository,

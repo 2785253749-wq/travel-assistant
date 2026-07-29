@@ -30,3 +30,13 @@
 - RED: the new model gateway test failed to import `ModelGateway` before the invocation boundary existed.
 - Focused green: `17 passed, 1 warning in 1.44s` for chat and usage tests.
 - Full: `146 passed, 1 warning in 1.80s`.
+
+## Review fix round 2
+
+- Intent classification now calls the same guarded `ModelGateway` as extraction and planning, so intent-only and smalltalk model calls are counted and blocked by an open circuit.
+- Removed guard-side stale usage reads before atomic reservation. The local repository cleans expired reservations inside its reservation lock and preserves the atomic failure reason.
+- Production session secrets now require base64url-decoded high entropy (at least 32 bytes), rejecting whitespace, placeholders, repetition, and low-diversity values. Provider configuration now reflects the actual DeepSeek key in every environment.
+
+### Focused verification
+
+- `tests/unit/test_intent.py tests/unit/test_usage.py`: `16 passed in 1.16s`.
