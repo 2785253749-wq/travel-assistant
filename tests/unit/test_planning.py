@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.agent.graph import TrustedEvidence
 from app.agent.planning import PlanValidationError, Planner, validate_itinerary
+from app.providers.base import ProviderResult
 from app.schemas import Activity, BudgetBreakdown, EstimateRange, FactClaim, Itinerary, ItineraryDay, PlanningAssumption, SourceCitation, TravelProfile
 
 
@@ -119,7 +120,10 @@ def test_citations_must_reference_trusted_evidence_and_disclose_freshness() -> N
     itinerary = itinerary_factory(days=[
         ItineraryDay(
             date=date(2026, 8, 1),
-            morning=Activity(title="Day 1 morning", start_time="09:00", end_time="11:00", citations=[citation]),
+            morning=Activity(
+                title="Day 1 morning", start_time="09:00", end_time="11:00",
+                facts=[FactClaim(text=evidence.fact, evidence_id=evidence.evidence_id)], citations=[citation],
+            ),
             afternoon=Activity(title="Day 1 afternoon", start_time="13:00", end_time="16:00"),
             evening=Activity(title="Day 1 evening", start_time="18:00", end_time="20:00"),
         ),
@@ -228,7 +232,7 @@ def test_top_level_noncanonical_text_is_rejected_even_when_activity_has_evidence
     now = datetime(2026, 7, 2, tzinfo=timezone.utc)
     evidence = TrustedEvidence("place-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)
     values = itinerary_factory(days=[
-        ItineraryDay(date=date(2026, 8, 1), morning=Activity(title="Day 1 morning", start_time="09:00", end_time="11:00", facts=[FactClaim(text=evidence.fact, evidence_id="place-1")]), afternoon=itinerary_factory().days[0].afternoon, evening=itinerary_factory().days[0].evening), itinerary_factory().days[1],
+        ItineraryDay(date=date(2026, 8, 1), morning=Activity(title="Day 1 morning", start_time="09:00", end_time="11:00", facts=[FactClaim(text=evidence.fact, evidence_id="place-1")], citations=[_canonical_citation(evidence)]), afternoon=itinerary_factory().days[0].afternoon, evening=itinerary_factory().days[0].evening), itinerary_factory().days[1],
     ]).model_dump(mode="json")
     values[field] = value
     itinerary = Itinerary.model_validate(values)
@@ -316,3 +320,148 @@ def test_planner_replaces_all_model_authored_display_text_with_canonical_templat
     assert planned.days[0].afternoon.title == "Day 1 afternoon"
     assert planned.days[1].evening.title == "Day 2 evening"
     assert validate_itinerary(planned, profile_factory(), []) == []
+
+
+@pytest.mark.parametrize(
+    "target, field, value",
+    [
+        ("itinerary", "title", ""),
+        ("itinerary", "title", "x" * 10_000),
+        ("itinerary", "notes", 7),
+        ("itinerary", "notes", {"claim": "sold out"}),
+        ("activity", "title", 7),
+        ("activity", "notes", {"claim": "sold out"}),
+    ],
+)
+def test_planner_canonicalizes_malformed_display_fields_before_schema_validation(
+    target: str, field: str, value: object,
+) -> None:
+    candidate = itinerary_factory().model_dump(mode="json")
+    display_owner = candidate if target == "itinerary" else candidate["days"][0]["morning"]
+    display_owner[field] = value
+    calls: list[list[str] | None] = []
+
+    def generate(_profile: TravelProfile, _providers: object, repair_codes: list[str] | None) -> dict:
+        calls.append(repair_codes)
+        return candidate
+
+    planned = Planner(generate).plan(profile_factory(), [])
+
+    assert calls == [None]
+    assert planned.title == "Hangzhou | 2-day itinerary"
+    assert planned.notes == []
+    assert planned.days[0].morning.title == "Day 1 morning"
+    assert planned.days[0].morning.notes == []
+
+
+@pytest.mark.parametrize("target, field", [("itinerary", "title"), ("itinerary", "notes"), ("activity", "title"), ("activity", "notes")])
+def test_planner_rebuilds_missing_display_fields_without_spending_repair(
+    target: str, field: str,
+) -> None:
+    candidate = itinerary_factory().model_dump(mode="json")
+    display_owner = candidate if target == "itinerary" else candidate["days"][0]["morning"]
+    del display_owner[field]
+    calls: list[list[str] | None] = []
+
+    def generate(_profile: TravelProfile, _providers: object, repair_codes: list[str] | None) -> dict:
+        calls.append(repair_codes)
+        return candidate
+
+    planned = Planner(generate).plan(profile_factory(), [])
+
+    assert calls == [None]
+    assert planned.model_dump(mode="json")["title"] == "Hangzhou | 2-day itinerary"
+    assert planned.model_dump(mode="json")["days"][0]["morning"]["title"] == "Day 1 morning"
+
+
+@pytest.mark.parametrize("malformed", [[], {"days": {}}, {"days": [{"morning": []}]}])
+def test_planner_keeps_nonmapping_days_and_activity_structure_fail_closed(malformed: object) -> None:
+    calls: list[list[str] | None] = []
+
+    def generate(_profile: TravelProfile, _providers: object, repair_codes: list[str] | None) -> object:
+        calls.append(repair_codes)
+        return malformed
+
+    with pytest.raises(PlanValidationError) as exc_info:
+        Planner(generate).plan(profile_factory(), [])
+
+    assert {issue.code for issue in exc_info.value.issues} == {"SCHEMA_INVALID"}
+    assert calls == [None, ["SCHEMA_INVALID"]]
+
+
+def _canonical_citation(evidence: TrustedEvidence) -> SourceCitation:
+    assert evidence.fetched_at is not None
+    return SourceCitation(
+        evidence_id=evidence.evidence_id,
+        source_url=evidence.source_url,
+        source_type=evidence.source_type,
+        fetched_at=evidence.fetched_at,
+        freshness=f"Fetched {evidence.fetched_at.isoformat()}; reference only.",
+        fact=evidence.fact,
+    )
+
+
+def test_direct_validation_rejects_model_copy_unknown_fact_id() -> None:
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    evidence = TrustedEvidence("place-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)
+    itinerary = itinerary_factory().model_copy(deep=True)
+    activity = itinerary.days[0].morning
+    itinerary.days[0].morning = activity.model_copy(update={
+        "facts": [FactClaim.model_construct(text=evidence.fact, evidence_id="unknown")],
+        "citations": [_canonical_citation(evidence)],
+    })
+
+    assert "CLAIM_EVIDENCE_MISMATCH" in {
+        issue.code for issue in validate_itinerary(itinerary, profile_factory(), [evidence], now=lambda: now)
+    }
+
+
+def test_direct_validation_rejects_model_construct_wrong_fact_text() -> None:
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    evidence = TrustedEvidence("place-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)
+    itinerary = itinerary_factory().model_copy(deep=True)
+    original = itinerary.days[0].morning
+    itinerary.days[0].morning = Activity.model_construct(
+        title=original.title,
+        start_time=original.start_time,
+        end_time=original.end_time,
+        notes=original.notes,
+        facts=[FactClaim.model_construct(text=f"{evidence.fact} ", evidence_id=evidence.evidence_id)],
+        citations=[_canonical_citation(evidence)],
+    )
+
+    assert "CLAIM_EVIDENCE_MISMATCH" in {
+        issue.code for issue in validate_itinerary(itinerary, profile_factory(), [evidence], now=lambda: now)
+    }
+
+
+def test_direct_validation_requires_each_fact_to_have_its_canonical_activity_citation() -> None:
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    evidence = TrustedEvidence("place-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)
+    itinerary = itinerary_factory().model_copy(deep=True)
+    activity = itinerary.days[0].morning
+    itinerary.days[0].morning = activity.model_copy(update={
+        "facts": [FactClaim(text=evidence.fact, evidence_id=evidence.evidence_id)],
+        "citations": [],
+    })
+
+    assert "UNTRUSTED_EVIDENCE" in {
+        issue.code for issue in validate_itinerary(itinerary, profile_factory(), [evidence], now=lambda: now)
+    }
+
+
+def test_direct_validation_applies_provider_timestamp_ttl_to_activity_facts() -> None:
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    stale_at = datetime(2026, 6, 20, tzinfo=timezone.utc)
+    evidence = TrustedEvidence("place-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)
+    source = ProviderResult(data=None, source=evidence.source_url, fetched_at=stale_at, evidence=(evidence,))
+    itinerary = itinerary_factory().model_copy(deep=True)
+    activity = itinerary.days[0].morning
+    itinerary.days[0].morning = activity.model_copy(update={
+        "facts": [FactClaim(text=evidence.fact, evidence_id=evidence.evidence_id)],
+        "citations": [_canonical_citation(evidence)],
+    })
+
+    assert "STALE_EVIDENCE" in {
+        issue.code for issue in validate_itinerary(itinerary, profile_factory(), [source], now=lambda: now)
+    }

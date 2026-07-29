@@ -65,6 +65,7 @@ def validate_itinerary(
 
     registry, source_issues = _trusted_registry(sources, now or _utc_now)
     issues.extend(source_issues)
+    issues.extend(_direct_claim_issues(itinerary, registry))
     citations = _all_citations(itinerary)
     invalid_citations = [citation for citation in citations if not _citation_matches(citation, registry)]
     if invalid_citations:
@@ -101,7 +102,7 @@ class Planner:
             payload = json.loads(candidate) if isinstance(candidate, str) else candidate
             if not isinstance(payload, Mapping):
                 raise ValueError("itinerary response must be a JSON object")
-            itinerary = Itinerary.model_validate(payload)
+            itinerary = Itinerary.model_validate(_canonicalize_display_payload(payload, profile))
         except (ValidationError, ValueError, TypeError, json.JSONDecodeError):
             return None, [PlanIssue("SCHEMA_INVALID", "itinerary", "The itinerary must match the public JSON schema.")]
         registry, source_issues = _trusted_registry(_iter_sources(provider_results), now)
@@ -178,6 +179,38 @@ def _citation_matches(citation: SourceCitation, registry: Mapping[str, TrustedEv
     )
 
 
+def _direct_claim_issues(itinerary: Itinerary, registry: Mapping[str, TrustedEvidence]) -> list[PlanIssue]:
+    claim_mismatch = False
+    citation_mismatch = False
+    for day in itinerary.days:
+        for activity in (day.morning, day.afternoon, day.evening):
+            for claim in activity.facts:
+                evidence = registry.get(claim.evidence_id)
+                if evidence is None or claim.text != evidence.fact:
+                    claim_mismatch = True
+                    continue
+                if not any(
+                    citation.evidence_id == claim.evidence_id and _citation_matches(citation, registry)
+                    for citation in activity.citations
+                ):
+                    citation_mismatch = True
+
+    issues: list[PlanIssue] = []
+    if claim_mismatch:
+        issues.append(PlanIssue(
+            "CLAIM_EVIDENCE_MISMATCH",
+            "facts",
+            "Each activity fact must exactly match current trusted evidence.",
+        ))
+    if citation_mismatch:
+        issues.append(PlanIssue(
+            "UNTRUSTED_EVIDENCE",
+            "citations",
+            "Each activity fact requires its canonical citation.",
+        ))
+    return issues
+
+
 def _canonical_itinerary_title(profile: TravelProfile) -> str | None:
     profile_start, profile_end = _profile_dates(profile)
     if profile_start is None or profile_end is None or profile_end < profile_start:
@@ -189,6 +222,34 @@ def _canonical_itinerary_title(profile: TravelProfile) -> str | None:
 
 def _canonical_activity_title(day_number: int, slot: str) -> str:
     return f"Day {day_number} {slot}"
+
+
+def _canonicalize_display_payload(payload: Mapping[object, object], profile: TravelProfile) -> dict[object, object]:
+    """Replace only untrusted display fields before public-schema validation."""
+    title = _canonical_itinerary_title(profile)
+    raw_days = payload.get("days")
+    if title is None or not isinstance(raw_days, list):
+        raise ValueError("itinerary days must be a JSON array")
+
+    canonical = dict(payload)
+    canonical["title"] = title
+    canonical["notes"] = []
+    days: list[dict[object, object]] = []
+    for day_number, raw_day in enumerate(raw_days, start=1):
+        if not isinstance(raw_day, Mapping):
+            raise ValueError("each itinerary day must be a JSON object")
+        day = dict(raw_day)
+        for slot in _ACTIVITY_SLOTS:
+            raw_activity = raw_day.get(slot)
+            if not isinstance(raw_activity, Mapping):
+                raise ValueError("each itinerary activity must be a JSON object")
+            activity = dict(raw_activity)
+            activity["title"] = _canonical_activity_title(day_number, slot)
+            activity["notes"] = []
+            day[slot] = activity
+        days.append(day)
+    canonical["days"] = days
+    return canonical
 
 
 def _normalize_display_text(itinerary: Itinerary, profile: TravelProfile) -> None:
@@ -226,14 +287,10 @@ def _all_claims(itinerary: Itinerary) -> list[tuple[object, object]]:
     return claims
 
 
-def _normalize(text: str) -> str:
-    return " ".join(text.casefold().split())
-
-
 def _normalize_claims(itinerary: Itinerary, registry: Mapping[str, TrustedEvidence]) -> tuple[Itinerary, list[PlanIssue]]:
     for activity, claim in _all_claims(itinerary):
         evidence = registry.get(claim.evidence_id)
-        if evidence is None or _normalize(claim.text) != _normalize(evidence.fact):
+        if evidence is None or claim.text != evidence.fact:
             return itinerary, [PlanIssue("CLAIM_EVIDENCE_MISMATCH", "claims", "Each claim must exactly match its trusted evidence.")]
     # User/model supplied citation metadata never survives normalization.
     for day in itinerary.days:

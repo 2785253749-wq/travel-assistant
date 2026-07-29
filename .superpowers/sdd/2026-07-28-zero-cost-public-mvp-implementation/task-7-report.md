@@ -63,3 +63,15 @@
 - RED: the new English and Chinese injection cases produced `9 failed, 15 passed`; the failures covered `Hotel cost is CNY 399`, `All rooms are sold out`, Chinese variants, both direct-construction bypasses, and Planner preservation of malicious display text.
 - GREEN focused: `T:\.venv\Scripts\python.exe -m pytest tests\unit\test_planning.py -q` → `24 passed in 1.20s`.
 - Full: `T:\.venv\Scripts\python.exe -m pytest -q` → `113 passed, 1 warning in 1.56s` (existing Starlette/httpx deprecation warning).
+
+## Fix round 5/5 — pre-schema display canonicalization and direct fact binding
+
+- Planner now canonicalizes only itinerary/activity `title` and `notes` on a copied raw JSON mapping before Pydantic validation. Missing, empty, oversized, numeric, or object-valued display fields are discarded without consuming the repair attempt; non-mapping candidates and malformed day/activity structure remain `SCHEMA_INVALID`, while dates, budgets, facts, assumptions, and all other schema fields remain untouched.
+- Direct `validate_itinerary` now binds every activity fact to a current registry entry by exact evidence ID and exact canonical text, then requires the matching canonical citation in that same activity. Provider timestamps and TTL still determine registry membership, so model-copy/model-construct injection cannot bypass freshness, fact, or citation checks.
+- Planner fact normalization now uses the same exact-text rule before rebuilding server-owned canonical citations; whitespace or case variants no longer inherit evidence authority.
+
+### Round-5 verification
+
+- RED: `T:\.venv\Scripts\python.exe -m pytest tests\unit\test_planning.py -q` → `11 failed, 30 passed`; the failures covered pre-validation display rejection plus direct unknown-ID, non-exact-text, and missing-citation injections.
+- GREEN focused: `T:\.venv\Scripts\python.exe -m pytest tests\unit\test_planning.py -q` → `41 passed in 1.27s`.
+- Full: `T:\.venv\Scripts\python.exe -m pytest -q` → `130 passed, 1 warning in 1.57s` (existing Starlette/httpx deprecation warning).
