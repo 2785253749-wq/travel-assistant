@@ -302,6 +302,30 @@ def test_exemption_in_one_clause_does_not_suppress_a_separate_refusal(
     assert result.error_code == expected_code
 
 
+@pytest.mark.parametrize("separator", ["：", ":", "\n", "\r\n"])
+def test_lookup_opt_out_does_not_cross_colon_or_newline_clause_boundaries(
+    separator: str,
+):
+    result = make_agent().run(
+        f"机票价格不用查{separator}明天酒店价格多少",
+        trip=None,
+    )
+
+    assert result.error_code == "UNVERIFIABLE_REALTIME_REQUEST"
+
+
+@pytest.mark.parametrize("separator", ["，", "；", ";"])
+def test_practical_measure_does_not_exempt_guarantee_in_earlier_clause(
+    separator: str,
+):
+    result = make_agent().run(
+        f"确保旅途安全{separator}也落实安全措施",
+        trip=None,
+    )
+
+    assert result.error_code == "HIGH_STAKES_ADVICE"
+
+
 def test_concise_timed_ticket_price_request_is_refused():
     result = make_agent().run("明天票价是多少", trip=None)
 

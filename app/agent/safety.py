@@ -25,13 +25,13 @@ _DIRECT_ENSURE_SAFETY = re.compile(
     r"确保(?:我(?:的)?|旅途|出行|行程|游客|人身|全程|大家|所有人).{0,4}(?:人身)?安全(?!装备)"
 )
 _PRACTICAL_SAFETY_MEASURE = re.compile(
-    r"确保.{0,16}(?:安全(?:装备|措施|检查|提示|预案)|防护措施)"
+    r"确保[^，,。；;！？!?:：\r\n]{0,16}(?:安全(?:装备|措施|检查|提示|预案)|防护措施)"
 )
 _DYNAMIC_LOOKUP_OPT_OUT = re.compile(
     r"(?:(?:价格|票价|房价|库存|余票|空房|可订).{0,8}(?:不用|不必|无需|别).{0,2}(?:查|查询|看|核实)"
     r"|(?:不用|不必|无需|别).{0,2}(?:查|查询|看|核实).{0,8}(?:价格|票价|房价|库存|余票|空房|可订))"
 )
-_REQUEST_CLAUSE_SEPARATOR = re.compile(r"[，,。；;！？!?]+")
+_REQUEST_CLAUSE_SEPARATOR = re.compile(r"[，,。；;！？!?:：\r\n]+")
 
 
 @dataclass(frozen=True)
