@@ -1,0 +1,42 @@
+name: ci
+
+'on': [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run unit and integration tests
+        run: python -m pytest -q
+        env:
+          APP_ENV: test
+          DEEPSEEK_API_KEY: test-only-key
+      - name: Run the 80-case offline evaluation gate
+        run: >-
+          python -m tests.evaluation.runner
+          --cases tests/evaluation/cases.jsonl
+          --output build/evaluation
+        env:
+          APP_ENV: test
+          DEEPSEEK_API_KEY: test-only-key
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-evaluation-report
+          path: build/evaluation/
+          if-no-files-found: ignore
+      - name: Verify public repository safety
+        if: always()
+        shell: pwsh
+        run: ./scripts/verify_public_repo.ps1
