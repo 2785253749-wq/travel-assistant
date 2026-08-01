@@ -328,6 +328,14 @@ def test_opt_out_only_applies_to_its_own_clause():
     )
 
 
+@pytest.mark.parametrize(
+    "message",
+    ["明天机票：价格不用查，只帮我安排行程", "明天机票\n价格不用查，只帮我安排行程"],
+)
+def test_trailing_opt_out_exempts_its_adjacent_realtime_window(message: str):
+    assert assess_message(message).code is None
+
+
 @pytest.mark.parametrize("separator", ["，", "；", ";"])
 def test_practical_measure_does_not_exempt_guarantee_in_earlier_clause(
     separator: str,

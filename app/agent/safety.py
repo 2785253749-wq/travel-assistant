@@ -79,9 +79,9 @@ def _requests_realtime_dynamic_data(message: str) -> bool:
     """Require time, travel subject, and dynamic demand in adjacent clauses."""
     clauses = _REQUEST_CLAUSE_SEPARATOR.split(message)
     for index, clause in enumerate(clauses):
-        if _DYNAMIC_LOOKUP_OPT_OUT.search(clause):
-            continue
         window = " ".join(clauses[index : index + 2])
+        if _DYNAMIC_LOOKUP_OPT_OUT.search(window):
+            continue
         if (
             any(marker in window for marker in _REALTIME_MARKERS)
             and any(subject in window for subject in _DYNAMIC_TRAVEL_SUBJECTS)
