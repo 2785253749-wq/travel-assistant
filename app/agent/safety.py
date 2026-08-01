@@ -37,6 +37,10 @@ _DYNAMIC_LOOKUP_OPT_OUT = re.compile(
     r"(?:(?:价格|票价|房价|库存|余票|空房|可订).{0,8}(?:不用|不必|无需|别).{0,2}(?:查|查询|看|核实)"
     r"|(?:不用|不必|无需|别).{0,2}(?:查|查询|看|核实).{0,8}(?:价格|票价|房价|库存|余票|空房|可订))"
 )
+_DYNAMIC_LOOKUP_TARGET = re.compile(r"(?:票价|房价|价格|库存|余票|空房|可订)")
+_DYNAMIC_LOOKUP_NEGATION = re.compile(
+    r"(?:不用|不必|无需|别).{0,2}(?:查询|核实|查|看)"
+)
 _REQUEST_CLAUSE_SEPARATOR = re.compile(r"[，,。；;！？!?:：\r\n]+")
 
 
@@ -109,11 +113,49 @@ def _requests_realtime_dynamic_data(message: str) -> bool:
 
 def _opt_out_applies_to_window(opt_out_clauses: list[str], request_clauses: list[str]) -> bool:
     """Require explicit coverage of every request category for an opt-out."""
-    opt_out_categories = _dynamic_subject_categories(opt_out_clauses)
+    opt_out_categories = _opt_out_subject_categories(opt_out_clauses)
     request_categories = _dynamic_subject_categories(request_clauses)
     if opt_out_categories:
         return bool(request_categories) and request_categories <= opt_out_categories
-    return len(request_categories) == 1
+    return len(request_categories) <= 1
+
+
+def _opt_out_subject_categories(clauses: list[str]) -> set[str]:
+    """Map only subjects attached to a dynamic lookup's negated target."""
+    categories: set[str] = set()
+    for clause in clauses:
+        targets = list(_DYNAMIC_LOOKUP_TARGET.finditer(clause))
+        for negation in _DYNAMIC_LOOKUP_NEGATION.finditer(clause):
+            candidates = [
+                (negation.start() - target.end(), target)
+                for target in targets
+                if 0 <= negation.start() - target.end() <= 8
+            ]
+            candidates.extend(
+                (target.start() - negation.end(), target)
+                for target in targets
+                if 0 <= target.start() - negation.end() <= 8
+            )
+            if not candidates:
+                continue
+            _, target = min(candidates, key=lambda candidate: candidate[0])
+            categories.update(
+                category
+                for category, terms in _DYNAMIC_SUBJECT_CATEGORIES.items()
+                if any(_subject_attaches_to_target(clause, term, target) for term in terms)
+            )
+    return categories
+
+
+def _subject_attaches_to_target(clause: str, term: str, target: re.Match[str]) -> bool:
+    for subject in re.finditer(re.escape(term), clause):
+        if subject.start() < target.end() and target.start() < subject.end():
+            return True
+        if subject.end() <= target.start():
+            gap = clause[subject.end() : target.start()].strip()
+            if gap in ("", "的"):
+                return True
+    return False
 
 
 def _dynamic_subject_categories(clauses: list[str]) -> set[str]:

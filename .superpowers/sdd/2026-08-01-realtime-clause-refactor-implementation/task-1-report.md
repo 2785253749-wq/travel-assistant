@@ -216,6 +216,96 @@ baseline, thresholds, runner, Task 11 assets, and the historical Task 10
 report remain unchanged. The unrelated work log remains untracked and was not
 modified.
 
+## Reviewer round 4: generic opt-outs and negation-scoped categories
+
+### Findings and root cause
+
+Review found two gaps in the round-3 category comparison:
+
+- `明天票价是多少：票价不用查` was refused because both request and opt-out use
+  generic `票价`, which deliberately maps to no canonical transport category,
+  while the fallback required exactly one request category.
+- `明天酒店和机票价格多少：机票价格不用查酒店价格照样查` was allowed because
+  opt-out category extraction scanned the entire second clause. It therefore
+  treated the positive `酒店价格照样查` subject as though the preceding
+  `不用查` relation governed it.
+
+The category comparison itself remains necessary for mixed-object requests;
+the defect was using whole-clause nouns as the opt-out's semantic scope.
+
+### RED
+
+Added two real-boundary regressions with literal expectations and no mocks:
+
+- `test_generic_price_opt_out_exempts_categoryless_price_request` requires the
+  category-less generic price opt-out to return `None`.
+- `test_opt_out_categories_only_include_subjects_governed_by_negation`
+  requires the still-positive hotel query to return
+  `UNVERIFIABLE_REALTIME_REQUEST`.
+
+Command:
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "generic_price_opt_out or opt_out_categories_only" -q
+```
+
+Result: exit `1`; `2 failed, 59 deselected in 1.75s`. The generic case returned
+`UNVERIFIABLE_REALTIME_REQUEST`, and the mixed same-clause case returned
+`None`, so both tests failed for the reported production behavior.
+
+### GREEN
+
+Opt-out categories are now derived per explicit negation/query relation. For
+each `不用`/`不必`/`无需`/`别 … 查` relation, the parser chooses only the nearest
+dynamic target within the existing eight-character relation bound, then maps
+canonical subjects that overlap or directly qualify that target. A later
+positive subject in the clause therefore cannot become opt-out coverage.
+
+A category-less generic opt-out now covers a request with zero or one
+canonical category. It still cannot exempt a mixed request with two or more
+categories. No clause separator, refusal term, evaluation threshold, or
+public interface changed.
+
+Focused command (identical selector):
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "generic_price_opt_out or opt_out_categories_only" -q
+```
+
+Result: exit `0`; `2 passed, 59 deselected in 1.25s`.
+
+Relevant controls:
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "generic_price_opt_out or opt_out_categories_only or cover_every_requested_dynamic_category or flight_synonym_opt_out or unrelated_trailing_opt_out or trailing_opt_out or adjacent_clauses or opt_out_only or lookup_opt_out or exemption_in_one_clause or unverifiable_realtime_and_guaranteed_safety_requests or practical_safety_measures_and_explicit_price_lookup_opt_out or safety_precautions_and_ordinary_flight_planning or direct_safety_guarantees or concise_timed_ticket_price_request" -q
+```
+
+Result: exit `0`; `32 passed, 29 deselected in 1.25s`. This preserves mixed
+object refusal, flight/航班 synonym opt-outs, R001/R006/R014, separate dynamic
+query refusal, and leading/trailing opt-outs.
+
+### Full verification
+
+- `python -m pytest tests/unit/test_agent_routes.py -q` → exit `0`;
+  `61 passed in 1.25s`.
+- `python -m pytest -q` → exit `0`; `268 passed, 1 warning in 1.99s`.
+  The warning is the existing Starlette/httpx deprecation warning.
+- `python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl
+  --output build/evaluation` → exit `0`; 80 cases, every positive metric
+  `1.0`, `unsupported_fact_rate: 0.0`, `failures: {}`,
+  `failed_thresholds: []`, and `known_failures: []`.
+
+The runner's `agent_failed` output remains E010's expected database-failure
+fallback observation, not an evaluation failure.
+
+### Scope confirmation
+
+This review-fix round changed only `app/agent/safety.py`,
+`tests/unit/test_agent_routes.py`, and this evidence report. Evaluation cases,
+baseline, thresholds, runner, Task 11 assets, and the historical Task 10
+report remain unchanged. The unrelated work log remains untracked and was not
+modified.
+
 ## Reviewer round 3: canonical dynamic-subject categories
 
 ### Finding and root cause

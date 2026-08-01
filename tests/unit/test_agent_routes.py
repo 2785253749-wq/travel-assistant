@@ -365,6 +365,16 @@ def test_flight_synonym_opt_out_exempts_the_same_dynamic_request(message: str):
     assert assess_message(message).code is None
 
 
+def test_generic_price_opt_out_exempts_categoryless_price_request():
+    assert assess_message("明天票价是多少：票价不用查").code is None
+
+
+def test_opt_out_categories_only_include_subjects_governed_by_negation():
+    message = "明天酒店和机票价格多少：机票价格不用查酒店价格照样查"
+
+    assert assess_message(message).code == "UNVERIFIABLE_REALTIME_REQUEST"
+
+
 @pytest.mark.parametrize("separator", ["，", "；", ";"])
 def test_practical_measure_does_not_exempt_guarantee_in_earlier_clause(
     separator: str,
