@@ -216,6 +216,95 @@ baseline, thresholds, runner, Task 11 assets, and the historical Task 10
 report remain unchanged. The unrelated work log remains untracked and was not
 modified.
 
+## Reviewer round 3: canonical dynamic-subject categories
+
+### Finding and root cause
+
+Reviewer found that round 2 compared raw matched subject strings rather than
+the query's meaning. This allowed both
+`明天酒店和机票价格多少：机票价格不用查` and
+`明天车票价格多少：机票价格不用查`: the former shared the flight token even though
+the hotel request remained unnegated, while the latter shared generic `票价`
+text despite rail and flight being different requests. Conversely,
+`明天航班价格多少：机票价格不用查` was refused because `航班` and `机票` are different
+strings even though both identify the same flight request.
+
+### RED
+
+Added two real-boundary regression groups with literal messages:
+
+- `test_opt_out_must_cover_every_requested_dynamic_category`: mixed
+  hotel+flight and rail+flight requests, each with Chinese-colon and LF
+  boundaries, must be refused.
+- `test_flight_synonym_opt_out_exempts_the_same_dynamic_request`: flight
+  `航班` requests with flight `机票` opt-outs, for Chinese-colon and LF
+  boundaries, must remain allowed.
+
+Command:
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "cover_every_requested_dynamic_category or flight_synonym_opt_out" -q
+```
+
+Result: exit `1`; `6 failed, 53 deselected in 1.78s`.
+
+The four insufficient-coverage cases returned `None`; the two valid flight
+synonym cases returned `UNVERIFIABLE_REALTIME_REQUEST`, precisely matching the
+review finding.
+
+### GREEN
+
+Added canonical dynamic categories: flight (`机票`/`航班`), hotel
+(`酒店`/`住宿`/`房价`), rail (`车票`), and admission (`门票`). The raw
+`_DYNAMIC_TRAVEL_SUBJECTS` list still recognizes dynamic requests, including
+generic `票价`; generic price wording does not, however, establish category
+equivalence for opt-out matching.
+
+An explicit opt-out now applies only if its categories cover every category in
+the request clauses. A subjectless opt-out applies only where the request has
+one canonical category. An uncovered opt-out clause remains excluded from the
+request window, so it cannot add dynamic terms to an unrelated request.
+
+Focused command (identical selector):
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "cover_every_requested_dynamic_category or flight_synonym_opt_out" -q
+```
+
+Result: exit `0`; `6 passed, 53 deselected in 1.24s`.
+
+Relevant controls:
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "cover_every_requested_dynamic_category or flight_synonym_opt_out or unrelated_trailing_opt_out or trailing_opt_out or adjacent_clauses or opt_out_only or lookup_opt_out or unverifiable_realtime_and_guaranteed_safety_requests or practical_safety_measures_and_explicit_price_lookup_opt_out or safety_precautions_and_ordinary_flight_planning or direct_safety_guarantees" -q
+```
+
+Result: exit `0`; `27 passed, 32 deselected in 1.26s`. This covers all prior
+leading/trailing opt-outs, split signals, R001/R006/R014, practical safety
+controls, and ordinary flight planning.
+
+### Full verification
+
+- `python -m pytest tests/unit/test_agent_routes.py -q` → exit `0`;
+  `59 passed in 1.38s`.
+- `python -m pytest -q` → exit `0`; `266 passed, 1 warning in 1.94s`.
+  The warning is the existing Starlette/httpx deprecation warning.
+- `python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl
+  --output build/evaluation` → exit `0`; 80 cases, every positive metric
+  `1.0`, `unsupported_fact_rate: 0.0`, `failures: {}`,
+  `failed_thresholds: []`, and `known_failures: []`.
+
+The runner's `agent_failed` output remains E010's expected database-failure
+fallback observation, not an evaluation failure.
+
+### Scope confirmation
+
+This review-fix round changed only `app/agent/safety.py`,
+`tests/unit/test_agent_routes.py`, and this evidence report. Evaluation cases,
+baseline, thresholds, runner, Task 11 assets, and the historical Task 10
+report remain unchanged. The unrelated work log remains untracked and was not
+modified.
+
 ## Reviewer round 2: reverse-order unrelated opt-out
 
 ### Finding and root cause

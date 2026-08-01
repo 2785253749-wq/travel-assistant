@@ -18,6 +18,12 @@ _OUT_OF_SCOPE_TERMS = ("出国", "境外", "国际航班", "写代码", "作业"
 _REALTIME_MARKERS = ("实时", "今天", "明天", "后天", "现在", "今日")
 _DYNAMIC_TRAVEL_SUBJECTS = ("机票", "航班", "酒店", "住宿", "门票", "车票", "票价", "房价")
 _DYNAMIC_REQUEST_TERMS = ("价格", "票价", "多少钱", "库存", "余票", "可订", "空房", "有票", "有房")
+_DYNAMIC_SUBJECT_CATEGORIES = {
+    "flight": ("机票", "航班"),
+    "hotel": ("酒店", "住宿", "房价"),
+    "rail": ("车票",),
+    "admission": ("门票",),
+}
 _HIGH_STAKES_GUARANTEE = re.compile(
     r"(?:保证|绝对).{0,12}(?:安全|地震|灾害|受伤|事故|风险)|不会.{0,4}(?:发生)?(?:地震|灾害|事故)"
 )
@@ -102,24 +108,21 @@ def _requests_realtime_dynamic_data(message: str) -> bool:
 
 
 def _opt_out_applies_to_window(opt_out_clauses: list[str], request_clauses: list[str]) -> bool:
-    """Treat an explicit opt-out as local unless it names another subject."""
-    opt_out_subjects = {
-        subject
-        for clause in opt_out_clauses
-        for subject in _DYNAMIC_TRAVEL_SUBJECTS
-        if subject in clause
+    """Require explicit coverage of every request category for an opt-out."""
+    opt_out_categories = _dynamic_subject_categories(opt_out_clauses)
+    request_categories = _dynamic_subject_categories(request_clauses)
+    if opt_out_categories:
+        return bool(request_categories) and request_categories <= opt_out_categories
+    return len(request_categories) == 1
+
+
+def _dynamic_subject_categories(clauses: list[str]) -> set[str]:
+    """Map explicit travel-subject wording to stable categories."""
+    return {
+        category
+        for category, terms in _DYNAMIC_SUBJECT_CATEGORIES.items()
+        if any(term in clause for clause in clauses for term in terms)
     }
-    request_subjects = {
-        subject
-        for clause in request_clauses
-        for subject in _DYNAMIC_TRAVEL_SUBJECTS
-        if subject in clause
-    }
-    return (
-        not opt_out_subjects
-        or not request_subjects
-        or bool(opt_out_subjects & request_subjects)
-    )
 
 
 def _has_direct_safety_guarantee(message: str) -> bool:

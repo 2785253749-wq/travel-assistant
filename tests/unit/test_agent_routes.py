@@ -344,6 +344,27 @@ def test_unrelated_trailing_opt_out_does_not_suppress_realtime_request(message: 
     assert assess_message(message).code == "UNVERIFIABLE_REALTIME_REQUEST"
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "明天酒店和机票价格多少：机票价格不用查",
+        "明天酒店和机票价格多少\n机票价格不用查",
+        "明天车票价格多少：机票价格不用查",
+        "明天车票价格多少\n机票价格不用查",
+    ],
+)
+def test_opt_out_must_cover_every_requested_dynamic_category(message: str):
+    assert assess_message(message).code == "UNVERIFIABLE_REALTIME_REQUEST"
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["明天航班价格多少：机票价格不用查", "明天航班价格多少\n机票价格不用查"],
+)
+def test_flight_synonym_opt_out_exempts_the_same_dynamic_request(message: str):
+    assert assess_message(message).code is None
+
+
 @pytest.mark.parametrize("separator", ["，", "；", ";"])
 def test_practical_measure_does_not_exempt_guarantee_in_earlier_clause(
     separator: str,
