@@ -78,10 +78,20 @@ def assess_message(message: str) -> SafetyDecision:
 def _requests_realtime_dynamic_data(message: str) -> bool:
     """Require time, travel subject, and dynamic demand in adjacent clauses."""
     clauses = _REQUEST_CLAUSE_SEPARATOR.split(message)
-    for index, clause in enumerate(clauses):
-        window = " ".join(clauses[index : index + 2])
-        if _DYNAMIC_LOOKUP_OPT_OUT.search(window):
+    for index in range(len(clauses)):
+        window_clauses = clauses[index : index + 2]
+        opt_out_clauses = [
+            clause for clause in window_clauses if _DYNAMIC_LOOKUP_OPT_OUT.search(clause)
+        ]
+        request_clauses = [
+            clause for clause in window_clauses if not _DYNAMIC_LOOKUP_OPT_OUT.search(clause)
+        ]
+        if (
+            opt_out_clauses
+            and _opt_out_applies_to_window(opt_out_clauses, request_clauses)
+        ):
             continue
+        window = " ".join(request_clauses)
         if (
             any(marker in window for marker in _REALTIME_MARKERS)
             and any(subject in window for subject in _DYNAMIC_TRAVEL_SUBJECTS)
@@ -89,6 +99,27 @@ def _requests_realtime_dynamic_data(message: str) -> bool:
         ):
             return True
     return False
+
+
+def _opt_out_applies_to_window(opt_out_clauses: list[str], request_clauses: list[str]) -> bool:
+    """Treat an explicit opt-out as local unless it names another subject."""
+    opt_out_subjects = {
+        subject
+        for clause in opt_out_clauses
+        for subject in _DYNAMIC_TRAVEL_SUBJECTS
+        if subject in clause
+    }
+    request_subjects = {
+        subject
+        for clause in request_clauses
+        for subject in _DYNAMIC_TRAVEL_SUBJECTS
+        if subject in clause
+    }
+    return (
+        not opt_out_subjects
+        or not request_subjects
+        or bool(opt_out_subjects & request_subjects)
+    )
 
 
 def _has_direct_safety_guarantee(message: str) -> bool:

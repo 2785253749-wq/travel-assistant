@@ -336,6 +336,14 @@ def test_trailing_opt_out_exempts_its_adjacent_realtime_window(message: str):
     assert assess_message(message).code is None
 
 
+@pytest.mark.parametrize(
+    "message",
+    ["明天酒店价格多少：机票价格不用查", "明天酒店价格多少\n机票价格不用查"],
+)
+def test_unrelated_trailing_opt_out_does_not_suppress_realtime_request(message: str):
+    assert assess_message(message).code == "UNVERIFIABLE_REALTIME_REQUEST"
+
+
 @pytest.mark.parametrize("separator", ["，", "；", ";"])
 def test_practical_measure_does_not_exempt_guarantee_in_earlier_clause(
     separator: str,

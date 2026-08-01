@@ -215,3 +215,86 @@ This review-fix round changed only `app/agent/safety.py`,
 baseline, thresholds, runner, Task 11 assets, and the historical Task 10
 report remain unchanged. The unrelated work log remains untracked and was not
 modified.
+
+## Reviewer round 2: reverse-order unrelated opt-out
+
+### Finding and root cause
+
+The first reviewer fix exempted every adjacent window containing an opt-out.
+That made an opt-out for one travel subject suppress an already-complete,
+unrelated request in the preceding clause. Both
+`明天酒店价格多少：机票价格不用查` and its LF equivalent returned `None`: the
+later flight opt-out suppressed the earlier realtime hotel-price request.
+
+This violates clause-local opt-out semantics. A trailing opt-out with no
+explicit subject, such as `明天机票：价格不用查，只帮我安排行程`, still inherits the
+adjacent flight request and remains an exemption. An opt-out that explicitly
+names a different dynamic travel subject cannot exempt that request.
+
+### RED
+
+Added `test_unrelated_trailing_opt_out_does_not_suppress_realtime_request`,
+parameterized over Chinese-colon and LF boundaries. It invokes the real
+`assess_message` boundary with literal messages and expects
+`UNVERIFIABLE_REALTIME_REQUEST`.
+
+Command:
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "unrelated_trailing_opt_out" -q
+```
+
+Result: exit `1`; `2 failed, 51 deselected in 1.74s`.
+
+Both tests failed for the reported behavior: `assess_message` returned `None`
+instead of the realtime refusal.
+
+### GREEN
+
+The two-clause evaluator now separates opt-out clauses from request clauses.
+It exempts the window when the opt-out names no dynamic travel subject (so it
+inherits the adjacent request) or shares an explicit subject with the request.
+When the opt-out names a different subject, it is removed from the request
+window; it can neither exempt the unrelated request nor contribute the price
+term that would create a false request. The window remains bounded to two
+adjacent clauses.
+
+Focused command (identical selector):
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "unrelated_trailing_opt_out" -q
+```
+
+Result: exit `0`; `2 passed, 51 deselected in 1.28s`.
+
+Relevant controls:
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "unrelated_trailing_opt_out or trailing_opt_out or adjacent_clauses or opt_out_only or lookup_opt_out or unverifiable_realtime_and_guaranteed_safety_requests or safety_precautions_and_ordinary_flight_planning" -q
+```
+
+Result: exit `0`; `19 passed, 34 deselected in 1.34s`. This retains the
+same-request trailing opt-out, `机票价格不用查：明天酒店价格多少` refusal, split
+signals, R001, and ordinary flight planning.
+
+### Full verification
+
+- `python -m pytest tests/unit/test_agent_routes.py -q` → exit `0`;
+  `53 passed in 1.41s`.
+- `python -m pytest -q` → exit `0`; `260 passed, 1 warning in 2.01s`.
+  The warning is the existing Starlette/httpx deprecation warning.
+- `python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl
+  --output build/evaluation` → exit `0`; 80 cases, every positive metric
+  `1.0`, `unsupported_fact_rate: 0.0`, `failures: {}`,
+  `failed_thresholds: []`, and `known_failures: []`.
+
+The runner's `agent_failed` output remains E010's expected database-failure
+fallback observation, not an evaluation failure.
+
+### Scope confirmation
+
+This review-fix round changed only `app/agent/safety.py`,
+`tests/unit/test_agent_routes.py`, and this evidence report. Evaluation cases,
+baseline, thresholds, runner, Task 11 assets, and the historical Task 10
+report remain unchanged. The unrelated work log remains untracked and was not
+modified.
