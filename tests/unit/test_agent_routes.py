@@ -236,6 +236,22 @@ def test_ordinary_travel_safety_advice_is_not_refused():
     assert result.error_code != "HIGH_STAKES_ADVICE"
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "明天住什么酒店比较方便",
+        "如何确保夜游安全",
+    ],
+)
+def test_ordinary_timed_lodging_and_safety_guidance_are_not_refused(message: str):
+    result = make_agent().run(message, trip=None)
+
+    assert result.error_code not in {
+        "UNVERIFIABLE_REALTIME_REQUEST",
+        "HIGH_STAKES_ADVICE",
+    }
+
+
 def test_unknown_destination_is_not_guessed_or_planned():
     planner = Mock()
     result = make_agent(
