@@ -256,6 +256,58 @@ test("busy state prevents duplicate fetches and disables static and dynamic acti
   assert.equal(harness.elements.get("message-input").disabled, false);
 });
 
+test("planning starts only after an explicit confirmation and never prints itinerary JSON in chat", async () => {
+  const profile = {
+    origin: "上海", destination: "成都", start_date: "2026-10-01", end_date: "2026-10-02",
+    travelers: 2, budget_cny: 5000, preferences: [], constraints: [],
+  };
+  const itinerary = {
+    title: "成都两日行程",
+    days: [{ date: "2026-10-01", morning: { title: "人民公园", start_time: "09:00", end_time: "11:00", citations: [] } }],
+    citations: [],
+  };
+  const chatBodies = [];
+  const harness = createHarness({ fetch: async (call) => {
+    if (call.url !== "/api/chat") throw new Error(`unexpected ${call.url}`);
+    const body = JSON.parse(call.options.body);
+    chatBodies.push(body);
+    if (body.action === "collect") {
+      return jsonResponse(200, { reply: "资料已完整，请确认。", stage: "confirming", profile });
+    }
+    if (body.action === "confirm") {
+      return jsonResponse(200, {
+        reply: JSON.stringify(itinerary), stage: "planned", profile, itinerary,
+        trip_id: "trip-confirmed", warnings: [],
+      });
+    }
+    throw new Error(`unexpected chat action ${body.action}`);
+  } });
+  await settle();
+
+  harness.elements.get("message-input").value = "上海到成都，两人，10月1日至2日，预算5000元";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  assert.equal(chatBodies.length, 1);
+  assert.equal(chatBodies[0].action, "collect");
+  assert.equal(harness.elements.get("profile-confirmation").hidden, false);
+  assert.equal(harness.elements.get("confirm-profile-button").focused, true);
+  assert.doesNotMatch(harness.elements.get("chat-messages").textContent, /成都两日行程|\"days\"/);
+  assert.equal(harness.elements.get("trip-view").hidden, true);
+
+  await harness.elements.get("confirm-profile-button").dispatch("click");
+  await settle();
+
+  assert.equal(chatBodies.length, 2);
+  assert.deepEqual(
+    { action: chatBodies[1].action, thread_id: chatBodies[1].thread_id },
+    { action: "confirm", thread_id: chatBodies[0].thread_id },
+  );
+  assert.equal(harness.elements.get("trip-view").hidden, false);
+  assert.match(harness.elements.get("trip-content").textContent, /人民公园/);
+  assert.doesNotMatch(harness.elements.get("chat-messages").textContent, /成都两日行程|\"days\"/);
+});
+
 test("Task 7 activity citations render canonical freshness and reject malicious links", async () => {
   const root = path.resolve(__dirname, "..", "..");
   const itinerary = JSON.parse(fs.readFileSync(path.join(root, "tests", "fixtures", "task7_itinerary.json"), "utf8"));
@@ -319,14 +371,18 @@ test("provider warning without canonical citation time says the update time is u
 test("provider warning uses only the backend canonical citation timestamp and freshness", async () => {
   const root = path.resolve(__dirname, "..", "..");
   const itinerary = JSON.parse(fs.readFileSync(path.join(root, "tests", "fixtures", "task7_itinerary.json"), "utf8"));
-  const harness = createHarness({ fetch: async () => jsonResponse(200, {
-    reply: JSON.stringify(itinerary), stage: "planned",
-    profile: { origin: "上海", destination: "成都", start_date: "2026-10-01", end_date: "2026-10-02", travelers: 2, budget_cny: 5000 },
-    warnings: ["PLACES_TIMEOUT"],
-  }) });
+  const profile = { origin: "上海", destination: "成都", start_date: "2026-10-01", end_date: "2026-10-02", travelers: 2, budget_cny: 5000 };
+  const harness = createHarness({ fetch: async (call) => {
+    const body = JSON.parse(call.options.body);
+    return body.action === "collect"
+      ? jsonResponse(200, { reply: "请确认资料。", stage: "confirming", profile })
+      : jsonResponse(200, { reply: JSON.stringify(itinerary), stage: "planned", profile, itinerary, warnings: ["PLACES_TIMEOUT"] });
+  } });
   await settle();
   harness.elements.get("message-input").value = "生成行程";
   await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+  await harness.elements.get("confirm-profile-button").dispatch("click");
   await settle();
   assert.match(harness.elements.get("provider-updated-at").textContent, /2026-09-30T08:30:00\+00:00/);
   assert.match(harness.elements.get("provider-updated-at").textContent, /reference only/);
@@ -363,6 +419,15 @@ test("private history executes authenticated CRUD and revocable sharing", async 
   await settle();
   await findByText(history, "删除").dispatch("click");
   await settle();
+
+  const shareCallsBeforeStaleAttempt = harness.fetchCalls.filter((call) => call.url.endsWith("/share") && call.options.method === "POST").length;
+  assert.equal(harness.elements.get("trip-view").hidden, true);
+  await harness.elements.get("share-trip-button").dispatch("click");
+  await settle();
+  assert.equal(
+    harness.fetchCalls.filter((call) => call.url.endsWith("/share") && call.options.method === "POST").length,
+    shareCallsBeforeStaleAttempt,
+  );
 
   const privateCalls = harness.fetchCalls.filter((call) => call.url.startsWith("/api/trips"));
   assert.ok(privateCalls.some((call) => (call.options.method || "GET") === "POST"));

@@ -335,12 +335,17 @@
     setState("planning");
     setStatus("正在处理你的旅行需求。");
     try {
-      const response = await requestJson("/api/chat", { method: "POST", body: { message, thread_id: state.threadId } });
-      addMessage(response.reply, "assistant");
-      const itinerary = asItinerary(response.reply);
-      showProviderNotice(response.warnings, itinerary);
-      state.pendingResult = { reply: response.reply, profile: response.profile || {}, itinerary };
-      if (isCompleteProfile(response.profile)) {
+      const tripId = (state.currentTrip && state.currentTrip.id) || null;
+      const body = { message, thread_id: state.threadId, action: "collect" };
+      if (tripId) body.trip_id = tripId;
+      const response = await requestJson("/api/chat", { method: "POST", body });
+      if (response.stage !== "planned") addMessage(response.reply, "assistant");
+      showProviderNotice(response.warnings, null);
+      state.pendingResult = {
+        reply: response.reply, profile: response.profile || {}, itinerary: null,
+        trip_id: response.trip_id || tripId,
+      };
+      if (response.stage === "confirming" && isCompleteProfile(response.profile)) {
         renderProfile(response.profile);
         setState("confirming");
         setStatus("资料已收集，请确认后查看行程。", false);
@@ -353,14 +358,44 @@
       showError(error);
     } finally {
       setBusy(false);
-      elements.message.focus();
+      if (state.name === "confirming") elements.confirm.focus();
+      else elements.message.focus();
     }
   }
 
-  function confirmProfile() {
+  async function confirmProfile() {
     if (state.busy || !state.pendingResult) return;
-    renderTrip(state.pendingResult);
-    setStatus("已根据确认资料展示行程建议。", false);
+    setBusy(true, "正在生成行程建议…");
+    setState("planning");
+    setStatus("已确认资料，正在生成行程建议。", false);
+    try {
+      const body = { message: "confirm", thread_id: state.threadId, action: "confirm" };
+      const tripId = state.pendingResult.trip_id || (state.currentTrip && state.currentTrip.id);
+      if (tripId) body.trip_id = tripId;
+      const response = await requestJson("/api/chat", { method: "POST", body });
+      const itinerary = response.itinerary && typeof response.itinerary === "object"
+        ? response.itinerary : asItinerary(response.reply);
+      if (response.stage !== "planned" || !itinerary) {
+        throw Object.assign(new Error("CHAT_UNAVAILABLE"), { code: "CHAT_UNAVAILABLE" });
+      }
+      state.profile = response.profile || state.profile || {};
+      state.pendingResult = {
+        reply: response.reply, profile: state.profile, itinerary,
+        trip_id: response.trip_id || tripId || null,
+      };
+      showProviderNotice(response.warnings, itinerary);
+      renderTrip({
+        id: state.pendingResult.trip_id, title: itinerary.title || "行程建议", status: "planned",
+        profile: state.profile, itinerary,
+      });
+      addMessage("行程已生成，可在下方查看。", "assistant");
+      if (state.session && state.pendingResult.trip_id) await refreshHistory();
+      setStatus(state.pendingResult.trip_id ? "行程已生成并保存。" : "行程已生成。", false);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
   }
 
   function editProfile() {
@@ -567,7 +602,26 @@
     if (operation === "delete") {
       if (!window.confirm(`删除“${trip.title || "该行程"}”？此操作无法恢复。`)) return;
       setBusy(true, "正在删除行程…");
-      try { await requestJson(`/api/trips/${encodeURIComponent(trip.id)}`, { method: "DELETE" }); await refreshHistory(); setStatus("行程已删除。", false); } catch (error) { showError(error); } finally { setBusy(false); }
+      try {
+        await requestJson(`/api/trips/${encodeURIComponent(trip.id)}`, { method: "DELETE" });
+        if (state.currentTrip && state.currentTrip.id === trip.id) {
+          state.currentTrip = null;
+          state.pendingResult = null;
+          clearChildren(elements.tripContent);
+          elements.tripTitle.textContent = "";
+          elements.tripActions.hidden = true;
+          elements.tripView.hidden = true;
+          setState("collecting");
+        }
+        if (state.shareTripId === trip.id) {
+          state.shareTripId = null;
+          elements.shareLink.value = "";
+          elements.shareExpiry.textContent = "";
+          elements.shareDialog.close();
+        }
+        await refreshHistory();
+        setStatus("行程已删除。", false);
+      } catch (error) { showError(error); } finally { setBusy(false); }
       return;
     }
     if (operation === "copy") {
