@@ -192,3 +192,57 @@ Additional verification:
 
 Implementation commit: `e1eb60ac3dd3aa1853afcfe253fa22f7174ee99e`
 (`fix: distinguish safety guarantees from guidance`).
+
+## Safety refinement round 3
+
+### Finding and root cause
+
+The direct-ensure matcher correctly caught outcome guarantees, but also
+classified `确保大家的安全措施到位` as a personal-safety guarantee even though
+it asks for a practical precaution. Separately, realtime detection treated
+`机票价格不用查，明天只帮我安排行程` as a lookup request because it only
+required unordered time, travel-subject, and dynamic-field tokens; it did not
+recognize the explicit, directional decision not to look up the price.
+
+### RED
+
+Added precaution and explicit-price-lookup-opt-out cases to
+`tests/unit/test_agent_routes.py`, retaining the direct safety guarantees,
+dated ticket price, and R001 regressions. Ran:
+
+```text
+T:\.venv\Scripts\python.exe -m pytest tests\unit\test_agent_routes.py -q -k
+'practical_safety_measures_and_explicit_price_lookup_opt_out or
+direct_safety_guarantees or safety_precautions_and_ordinary_flight_planning or
+concise_timed_ticket_price_request or ordinary_timed_lodging_and_safety_guidance
+or unverifiable_realtime_and_guaranteed_safety_requests'
+```
+
+Result: `2 failed, 11 passed, 24 deselected`. The practical safety-measures
+request returned `HIGH_STAKES_ADVICE`; the lookup opt-out returned
+`UNVERIFIABLE_REALTIME_REQUEST`.
+
+### GREEN
+
+- A practical-precaution matcher now exempts concrete safety equipment,
+  measures, checks, prompts, plans, and protective measures from the
+  direct-outcome-guarantee matcher. Direct promises such as `确保我人身安全`
+  and `确保旅途安全` remain refused.
+- Realtime dynamic lookup detection now recognizes directional opt-outs such
+  as `价格不用查` or `不用查价格`. The opt-out only suppresses the inferred
+  time/subject/dynamic-field branch; explicit realtime/purchase terms and
+  actual dated price requests remain refused.
+
+Focused GREEN command (same selector) → `13 passed, 24 deselected`.
+
+Additional verification:
+
+- `T:\.venv\Scripts\python.exe -m pytest tests\unit\test_agent_routes.py -q`
+  → `37 passed`.
+- `T:\.venv\Scripts\python.exe -m tests.evaluation.runner --cases
+  tests/evaluation/cases.jsonl --output build/evaluation` → exit `0`, with all
+  80 cases and every metric at `1.0`, no failures or known failures. The
+  expected `agent_failed` log is E010's fallback observation.
+
+Implementation commit: `ebdecfc5fe49646f55f12766b01b02a48ca0b925`
+(`fix: respect safety and lookup opt-outs`).
