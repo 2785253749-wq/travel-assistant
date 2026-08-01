@@ -15,12 +15,14 @@ REFUSALS = {
 _REALTIME_TERMS = ("余票", "库存", "实时价格", "实时票价", "保证还有", "保证有票", "帮我买", "预订", "订票", "支付")
 _HIGH_STAKES_TERMS = ("签证", "医疗", "用药", "安全吗", "安全保证", "人身安全")
 _OUT_OF_SCOPE_TERMS = ("出国", "境外", "国际航班", "写代码", "作业")
-_REALTIME_PRICE_REQUEST = re.compile(
-    r"(?:实时|今天|明天|后天|现在|今日).{0,12}(?:机票|航班|酒店|住宿|门票|车票|票价|房价|价格).{0,8}(?:价格|票价|多少钱|库存|余票|可订|空房)"
-    r"|(?:机票|航班|酒店|住宿|门票|车票|票价|房价).{0,12}(?:实时|今天|明天|后天|现在|今日).{0,8}(?:价格|票价|多少钱|库存|余票|可订|空房)"
-)
+_REALTIME_MARKERS = ("实时", "今天", "明天", "后天", "现在", "今日")
+_DYNAMIC_TRAVEL_SUBJECTS = ("机票", "航班", "酒店", "住宿", "门票", "车票", "票价", "房价")
+_DYNAMIC_REQUEST_TERMS = ("价格", "票价", "多少钱", "库存", "余票", "可订", "空房", "有票", "有房")
 _HIGH_STAKES_GUARANTEE = re.compile(
     r"(?:保证|绝对).{0,12}(?:安全|地震|灾害|受伤|事故|风险)|不会.{0,4}(?:发生)?(?:地震|灾害|事故)"
+)
+_DIRECT_ENSURE_SAFETY = re.compile(
+    r"确保(?:我(?:的)?|旅途|出行|行程|游客|人身|全程|大家|所有人).{0,4}(?:人身)?安全(?!装备)"
 )
 
 
@@ -51,14 +53,27 @@ def assess_message(message: str) -> SafetyDecision:
     if (
         any(term in normalized for term in _REALTIME_TERMS)
         or asks_dated_ticket_inventory
-        or _REALTIME_PRICE_REQUEST.search(normalized)
+        or _requests_realtime_dynamic_data(normalized)
     ):
         return SafetyDecision("UNVERIFIABLE_REALTIME_REQUEST")
-    if any(term in normalized for term in _HIGH_STAKES_TERMS) or _HIGH_STAKES_GUARANTEE.search(normalized):
+    if (
+        any(term in normalized for term in _HIGH_STAKES_TERMS)
+        or _HIGH_STAKES_GUARANTEE.search(normalized)
+        or _DIRECT_ENSURE_SAFETY.search(normalized)
+    ):
         return SafetyDecision("HIGH_STAKES_ADVICE")
     if any(term in normalized for term in _OUT_OF_SCOPE_TERMS):
         return SafetyDecision("OUT_OF_SCOPE")
     return SafetyDecision()
+
+
+def _requests_realtime_dynamic_data(message: str) -> bool:
+    """Require time, travel subject, and a dynamic price/availability demand."""
+    return (
+        any(marker in message for marker in _REALTIME_MARKERS)
+        and any(subject in message for subject in _DYNAMIC_TRAVEL_SUBJECTS)
+        and any(term in message for term in _DYNAMIC_REQUEST_TERMS)
+    )
 
 
 def mark_unverified(reply: str, sources: list[dict] | None = None) -> str:

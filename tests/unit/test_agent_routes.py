@@ -252,6 +252,32 @@ def test_ordinary_timed_lodging_and_safety_guidance_are_not_refused(message: str
     }
 
 
+@pytest.mark.parametrize("message", ["确保我人身安全", "确保旅途安全"])
+def test_direct_safety_guarantees_are_refused(message: str):
+    result = make_agent().run(message, trip=None)
+
+    assert result.error_code == "HIGH_STAKES_ADVICE"
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["如何确保夜游安全", "确保带上安全装备", "明天从上海飞北京怎么安排"],
+)
+def test_safety_precautions_and_ordinary_flight_planning_are_not_refused(message: str):
+    result = make_agent().run(message, trip=None)
+
+    assert result.error_code not in {
+        "UNVERIFIABLE_REALTIME_REQUEST",
+        "HIGH_STAKES_ADVICE",
+    }
+
+
+def test_concise_timed_ticket_price_request_is_refused():
+    result = make_agent().run("明天票价是多少", trip=None)
+
+    assert result.error_code == "UNVERIFIABLE_REALTIME_REQUEST"
+
+
 def test_unknown_destination_is_not_guessed_or_planned():
     planner = Mock()
     result = make_agent(
