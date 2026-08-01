@@ -31,6 +31,7 @@ _DYNAMIC_LOOKUP_OPT_OUT = re.compile(
     r"(?:(?:价格|票价|房价|库存|余票|空房|可订).{0,8}(?:不用|不必|无需|别).{0,2}(?:查|查询|看|核实)"
     r"|(?:不用|不必|无需|别).{0,2}(?:查|查询|看|核实).{0,8}(?:价格|票价|房价|库存|余票|空房|可订))"
 )
+_REQUEST_CLAUSE_SEPARATOR = re.compile(r"[，,。；;！？!?]+")
 
 
 @dataclass(frozen=True)
@@ -66,10 +67,7 @@ def assess_message(message: str) -> SafetyDecision:
     if (
         any(term in normalized for term in _HIGH_STAKES_TERMS)
         or _HIGH_STAKES_GUARANTEE.search(normalized)
-        or (
-            _DIRECT_ENSURE_SAFETY.search(normalized)
-            and not _PRACTICAL_SAFETY_MEASURE.search(normalized)
-        )
+        or _has_direct_safety_guarantee(normalized)
     ):
         return SafetyDecision("HIGH_STAKES_ADVICE")
     if any(term in normalized for term in _OUT_OF_SCOPE_TERMS):
@@ -79,12 +77,27 @@ def assess_message(message: str) -> SafetyDecision:
 
 def _requests_realtime_dynamic_data(message: str) -> bool:
     """Require time, travel subject, and a dynamic price/availability demand."""
-    if _DYNAMIC_LOOKUP_OPT_OUT.search(message):
-        return False
-    return (
-        any(marker in message for marker in _REALTIME_MARKERS)
-        and any(subject in message for subject in _DYNAMIC_TRAVEL_SUBJECTS)
-        and any(term in message for term in _DYNAMIC_REQUEST_TERMS)
+    for clause in _REQUEST_CLAUSE_SEPARATOR.split(message):
+        if _DYNAMIC_LOOKUP_OPT_OUT.search(clause):
+            continue
+        if (
+            any(marker in clause for marker in _REALTIME_MARKERS)
+            and any(subject in clause for subject in _DYNAMIC_TRAVEL_SUBJECTS)
+            and any(term in clause for term in _DYNAMIC_REQUEST_TERMS)
+        ):
+            return True
+    return False
+
+
+def _has_direct_safety_guarantee(message: str) -> bool:
+    """Ignore only direct-safety matches covered by a practical precaution."""
+    practical_spans = [match.span() for match in _PRACTICAL_SAFETY_MEASURE.finditer(message)]
+    return any(
+        not any(
+            practical_start <= direct.start() and direct.end() <= practical_end
+            for practical_start, practical_end in practical_spans
+        )
+        for direct in _DIRECT_ENSURE_SAFETY.finditer(message)
     )
 
 
