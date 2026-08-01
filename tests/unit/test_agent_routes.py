@@ -272,6 +272,21 @@ def test_safety_precautions_and_ordinary_flight_planning_are_not_refused(message
     }
 
 
+@pytest.mark.parametrize(
+    "message",
+    ["确保大家的安全措施到位", "机票价格不用查，明天只帮我安排行程"],
+)
+def test_practical_safety_measures_and_explicit_price_lookup_opt_out_are_not_refused(
+    message: str,
+):
+    result = make_agent().run(message, trip=None)
+
+    assert result.error_code not in {
+        "UNVERIFIABLE_REALTIME_REQUEST",
+        "HIGH_STAKES_ADVICE",
+    }
+
+
 def test_concise_timed_ticket_price_request_is_refused():
     result = make_agent().run("明天票价是多少", trip=None)
 

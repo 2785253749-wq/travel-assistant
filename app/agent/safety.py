@@ -24,6 +24,13 @@ _HIGH_STAKES_GUARANTEE = re.compile(
 _DIRECT_ENSURE_SAFETY = re.compile(
     r"确保(?:我(?:的)?|旅途|出行|行程|游客|人身|全程|大家|所有人).{0,4}(?:人身)?安全(?!装备)"
 )
+_PRACTICAL_SAFETY_MEASURE = re.compile(
+    r"确保.{0,16}(?:安全(?:装备|措施|检查|提示|预案)|防护措施)"
+)
+_DYNAMIC_LOOKUP_OPT_OUT = re.compile(
+    r"(?:(?:价格|票价|房价|库存|余票|空房|可订).{0,8}(?:不用|不必|无需|别).{0,2}(?:查|查询|看|核实)"
+    r"|(?:不用|不必|无需|别).{0,2}(?:查|查询|看|核实).{0,8}(?:价格|票价|房价|库存|余票|空房|可订))"
+)
 
 
 @dataclass(frozen=True)
@@ -59,7 +66,10 @@ def assess_message(message: str) -> SafetyDecision:
     if (
         any(term in normalized for term in _HIGH_STAKES_TERMS)
         or _HIGH_STAKES_GUARANTEE.search(normalized)
-        or _DIRECT_ENSURE_SAFETY.search(normalized)
+        or (
+            _DIRECT_ENSURE_SAFETY.search(normalized)
+            and not _PRACTICAL_SAFETY_MEASURE.search(normalized)
+        )
     ):
         return SafetyDecision("HIGH_STAKES_ADVICE")
     if any(term in normalized for term in _OUT_OF_SCOPE_TERMS):
@@ -69,6 +79,8 @@ def assess_message(message: str) -> SafetyDecision:
 
 def _requests_realtime_dynamic_data(message: str) -> bool:
     """Require time, travel subject, and a dynamic price/availability demand."""
+    if _DYNAMIC_LOOKUP_OPT_OUT.search(message):
+        return False
     return (
         any(marker in message for marker in _REALTIME_MARKERS)
         and any(subject in message for subject in _DYNAMIC_TRAVEL_SUBJECTS)
