@@ -76,14 +76,16 @@ def assess_message(message: str) -> SafetyDecision:
 
 
 def _requests_realtime_dynamic_data(message: str) -> bool:
-    """Require time, travel subject, and a dynamic price/availability demand."""
-    for clause in _REQUEST_CLAUSE_SEPARATOR.split(message):
+    """Require time, travel subject, and dynamic demand in adjacent clauses."""
+    clauses = _REQUEST_CLAUSE_SEPARATOR.split(message)
+    for index, clause in enumerate(clauses):
         if _DYNAMIC_LOOKUP_OPT_OUT.search(clause):
             continue
+        window = " ".join(clauses[index : index + 2])
         if (
-            any(marker in clause for marker in _REALTIME_MARKERS)
-            and any(subject in clause for subject in _DYNAMIC_TRAVEL_SUBJECTS)
-            and any(term in clause for term in _DYNAMIC_REQUEST_TERMS)
+            any(marker in window for marker in _REALTIME_MARKERS)
+            and any(subject in window for subject in _DYNAMIC_TRAVEL_SUBJECTS)
+            and any(term in window for term in _DYNAMIC_REQUEST_TERMS)
         ):
             return True
     return False

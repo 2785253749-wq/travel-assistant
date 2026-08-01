@@ -12,6 +12,7 @@ from app.agent.graph import (
     chat,
 )
 from app.agent.intent import IntentResult
+from app.agent.safety import assess_message
 from app.schemas import TravelProfile
 from app.agent.planning import PlanValidationError, Planner as StructuredPlanner
 
@@ -312,6 +313,19 @@ def test_lookup_opt_out_does_not_cross_colon_or_newline_clause_boundaries(
     )
 
     assert result.error_code == "UNVERIFIABLE_REALTIME_REQUEST"
+
+
+@pytest.mark.parametrize("message", ["明天机票：价格多少", "明天机票\n价格多少"])
+def test_realtime_signals_across_adjacent_clauses_are_refused(message: str):
+    assert assess_message(message).code == "UNVERIFIABLE_REALTIME_REQUEST"
+
+
+def test_opt_out_only_applies_to_its_own_clause():
+    assert assess_message("机票价格不用查：明天只帮我安排行程").code is None
+    assert (
+        assess_message("机票价格不用查：明天酒店价格多少").code
+        == "UNVERIFIABLE_REALTIME_REQUEST"
+    )
 
 
 @pytest.mark.parametrize("separator", ["，", "；", ";"])
