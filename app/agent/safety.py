@@ -38,9 +38,6 @@ _DYNAMIC_LOOKUP_OPT_OUT = re.compile(
     r"|(?:不用|不必|无需|别).{0,2}(?:查|查询|看|核实).{0,8}(?:价格|票价|房价|库存|余票|空房|可订))"
 )
 _DYNAMIC_LOOKUP_TARGET = re.compile(r"(?:票价|房价|价格|库存|余票|空房|可订)")
-_DYNAMIC_LOOKUP_NEGATION = re.compile(
-    r"(?:不用|不必|无需|别).{0,2}(?:查询|核实|查|看)"
-)
 _REQUEST_CLAUSE_SEPARATOR = re.compile(r"[，,。；;！？!?:：\r\n]+")
 
 
@@ -60,6 +57,16 @@ class DestinationDecision:
     @property
     def allowed(self) -> bool:
         return self.code is None
+
+
+@dataclass(frozen=True)
+class _DynamicClauseRelations:
+    positive_categories: frozenset[str]
+    negated_categories: frozenset[str]
+    context_categories: frozenset[str]
+    has_positive_lookup: bool
+    has_categoryless_positive_lookup: bool
+    has_categoryless_negated_lookup: bool
 
 
 def assess_message(message: str) -> SafetyDecision:
@@ -90,61 +97,107 @@ def _requests_realtime_dynamic_data(message: str) -> bool:
     clauses = _REQUEST_CLAUSE_SEPARATOR.split(message)
     for index in range(len(clauses)):
         window_clauses = clauses[index : index + 2]
-        opt_out_clauses = [
-            clause for clause in window_clauses if _DYNAMIC_LOOKUP_OPT_OUT.search(clause)
-        ]
-        request_clauses = [
-            clause for clause in window_clauses if not _DYNAMIC_LOOKUP_OPT_OUT.search(clause)
-        ]
-        if (
-            opt_out_clauses
-            and _opt_out_applies_to_window(opt_out_clauses, request_clauses)
-        ):
-            continue
-        window = " ".join(request_clauses)
+        relations = [_dynamic_clause_relations(clause) for clause in window_clauses]
+        window = " ".join(window_clauses)
         if (
             any(marker in window for marker in _REALTIME_MARKERS)
             and any(subject in window for subject in _DYNAMIC_TRAVEL_SUBJECTS)
-            and any(term in window for term in _DYNAMIC_REQUEST_TERMS)
+            and any(relation.has_positive_lookup for relation in relations)
         ):
-            return True
+            if not _negated_relations_cover_window(relations):
+                return True
     return False
 
 
-def _opt_out_applies_to_window(opt_out_clauses: list[str], request_clauses: list[str]) -> bool:
-    """Require explicit coverage of every request category for an opt-out."""
-    opt_out_categories = _opt_out_subject_categories(opt_out_clauses)
-    request_categories = _dynamic_subject_categories(request_clauses)
-    if opt_out_categories:
-        return bool(request_categories) and request_categories <= opt_out_categories
-    return len(request_categories) <= 1
+def _dynamic_clause_relations(clause: str) -> _DynamicClauseRelations:
+    """Separate positive and negated dynamic objects within one clause."""
+    opt_outs = list(_DYNAMIC_LOOKUP_OPT_OUT.finditer(clause))
+    negated_categories: set[str] = set()
+    has_categoryless_negated_lookup = False
+    for opt_out in opt_outs:
+        categories = _categories_attached_to_opt_out(clause, opt_out)
+        negated_categories.update(categories)
+        has_categoryless_negated_lookup |= not categories
 
-
-def _opt_out_subject_categories(clauses: list[str]) -> set[str]:
-    """Map only subjects attached to a dynamic lookup's negated target."""
-    categories: set[str] = set()
-    for clause in clauses:
-        targets = list(_DYNAMIC_LOOKUP_TARGET.finditer(clause))
-        for negation in _DYNAMIC_LOOKUP_NEGATION.finditer(clause):
-            candidates = [
-                (negation.start() - target.end(), target)
-                for target in targets
-                if 0 <= negation.start() - target.end() <= 8
-            ]
-            candidates.extend(
-                (target.start() - negation.end(), target)
-                for target in targets
-                if 0 <= target.start() - negation.end() <= 8
-            )
-            if not candidates:
+    positive_categories: set[str] = set()
+    has_positive_lookup = False
+    has_categoryless_positive_lookup = False
+    for term in _DYNAMIC_REQUEST_TERMS:
+        for demand in re.finditer(re.escape(term), clause):
+            if any(_spans_overlap(demand.span(), opt_out.span()) for opt_out in opt_outs):
                 continue
-            _, target = min(candidates, key=lambda candidate: candidate[0])
-            categories.update(
-                category
-                for category, terms in _DYNAMIC_SUBJECT_CATEGORIES.items()
-                if any(_subject_attaches_to_target(clause, term, target) for term in terms)
+            has_positive_lookup = True
+            segment_start = max(
+                (opt_out.end() for opt_out in opt_outs if opt_out.end() <= demand.start()),
+                default=0,
             )
-    return categories
+            categories = _dynamic_subject_categories(
+                [clause[segment_start : demand.end()]]
+            )
+            positive_categories.update(categories)
+            has_categoryless_positive_lookup |= not categories
+
+    subject_categories = _dynamic_subject_categories([clause])
+    return _DynamicClauseRelations(
+        positive_categories=frozenset(positive_categories),
+        negated_categories=frozenset(negated_categories),
+        context_categories=frozenset(subject_categories - negated_categories),
+        has_positive_lookup=has_positive_lookup,
+        has_categoryless_positive_lookup=has_categoryless_positive_lookup,
+        has_categoryless_negated_lookup=has_categoryless_negated_lookup,
+    )
+
+
+def _categories_attached_to_opt_out(
+    clause: str, opt_out: re.Match[str]
+) -> set[str]:
+    targets = [
+        target
+        for target in _DYNAMIC_LOOKUP_TARGET.finditer(clause)
+        if opt_out.start() <= target.start() and target.end() <= opt_out.end()
+    ]
+    return {
+        category
+        for category, terms in _DYNAMIC_SUBJECT_CATEGORIES.items()
+        if any(
+            _subject_attaches_to_position(clause, term, opt_out.start())
+            or any(_subject_attaches_to_target(clause, term, target) for target in targets)
+            for term in terms
+        )
+    }
+
+
+def _negated_relations_cover_window(relations: list[_DynamicClauseRelations]) -> bool:
+    """Require negated objects to cover every positive request object."""
+    request_categories = set().union(
+        *(relation.positive_categories for relation in relations)
+    )
+    if any(relation.has_categoryless_positive_lookup for relation in relations):
+        request_categories.update(
+            set().union(*(relation.context_categories for relation in relations))
+        )
+
+    negated_categories = set().union(
+        *(relation.negated_categories for relation in relations)
+    )
+    if negated_categories:
+        return bool(request_categories) and request_categories <= negated_categories
+    return (
+        any(relation.has_categoryless_negated_lookup for relation in relations)
+        and len(request_categories) <= 1
+    )
+
+
+def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] < right[1] and right[0] < left[1]
+
+
+def _subject_attaches_to_position(clause: str, term: str, position: int) -> bool:
+    return any(
+        subject.end() <= position
+        and clause[subject.end() : position].strip() in ("", "的")
+        for subject in re.finditer(re.escape(term), clause)
+    )
 
 
 def _subject_attaches_to_target(clause: str, term: str, target: re.Match[str]) -> bool:

@@ -477,3 +477,103 @@ This review-fix round changed only `app/agent/safety.py`,
 baseline, thresholds, runner, Task 11 assets, and the historical Task 10
 report remain unchanged. The unrelated work log remains untracked and was not
 modified.
+
+## Reviewer round 5: object-level positive and negated relations
+
+### Findings and root cause
+
+The final review exposed three consequences of treating an entire clause as
+an opt-out and assigning each negation only its nearest dynamic target:
+
+- `明天酒店价格多少：机票不用查价格` and the `无需查`/`不必查`/`别查`
+  variants inherited the unrelated hotel category through the category-less
+  fallback because the leading `机票` subject was outside the chosen target.
+- Coordinated and repeated full opt-outs could not retain both hotel and
+  flight targets.
+- `明天机票价格多少：机票价格不用查酒店价格多少` discarded the whole second
+  clause, including its positive hotel lookup, merely because that clause also
+  contained a flight opt-out.
+
+The common root cause was clause-level polarity. A single clause can contain
+multiple lookup objects with different polarity, so both positive and negated
+categories must be represented independently before the existing adjacent
+window is evaluated.
+
+### RED
+
+Added three real-boundary regression groups with literal expectations and no
+mocks:
+
+- `test_subject_before_negation_scopes_reversed_opt_out`, parameterized over
+  `不用查`, `无需查`, `不必查`, and `别查`;
+- `test_multi_target_opt_out_covers_every_requested_category`, covering both
+  coordinated-target and repeated-negation forms;
+- `test_positive_lookup_in_opt_out_clause_remains_a_realtime_request`.
+
+Command:
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "subject_before_negation_scopes or multi_target_opt_out or positive_lookup_in_opt_out" -q
+```
+
+Result: exit `1`; `7 failed, 61 deselected in 1.73s`. All four reversed-order
+cases returned `None`, both full multi-target opt-outs returned
+`UNVERIFIABLE_REALTIME_REQUEST`, and the mixed-polarity clause returned `None`.
+Those are the three reported production failures, not setup or collection
+errors.
+
+### GREEN
+
+Replaced whole-clause classification with `_DynamicClauseRelations`. Each
+existing bounded opt-out match is one negated object relation: all lookup
+targets inside its span contribute categories, and a subject immediately
+leading the span handles `机票不用查价格`. Dynamic-demand spans outside opt-out
+relations remain positive, even when another object in the same clause is
+negated.
+
+The existing two-clause window now aggregates positive categories, negated
+categories, and ungoverned context categories separately. An exemption applies
+only when its negated categories cover every positive request category. The
+generic fallback remains limited to a genuinely category-less negation and a
+request with at most one canonical category.
+
+Focused command (identical selector):
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "subject_before_negation_scopes or multi_target_opt_out or positive_lookup_in_opt_out" -q
+```
+
+Result: exit `0`; `7 passed, 61 deselected in 1.26s`.
+
+### Required controls and verification
+
+The focused control selector covered all new regressions plus the prior
+generic opt-out, mixed-object refusal, flight/航班 synonym, leading/trailing
+opt-out, colon/newline, R001/R006/R014, practical-safety, and concise-ticket
+controls:
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -k "subject_before_negation_scopes or multi_target_opt_out or positive_lookup_in_opt_out or generic_price_opt_out or opt_out_categories_only or cover_every_requested_dynamic_category or flight_synonym_opt_out or unrelated_trailing_opt_out or trailing_opt_out or adjacent_clauses or opt_out_only or lookup_opt_out or exemption_in_one_clause or unverifiable_realtime_and_guaranteed_safety_requests or practical_safety_measures_and_explicit_price_lookup_opt_out or safety_precautions_and_ordinary_flight_planning or direct_safety_guarantees or concise_timed_ticket_price_request" -q
+```
+
+Result: exit `0`; `39 passed, 29 deselected in 1.29s`.
+
+- `python -m pytest tests/unit/test_agent_routes.py -q` → exit `0`;
+  `68 passed in 1.27s`.
+- `python -m pytest -q` → exit `0`; `275 passed, 1 warning in 1.94s`.
+  The warning is the existing Starlette/httpx deprecation warning.
+- `python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl
+  --output build/evaluation` → exit `0`; 80 cases, every positive metric
+  `1.0`, `unsupported_fact_rate: 0.0`, `failures: {}`,
+  `failed_thresholds: []`, and `known_failures: []`.
+
+The runner's `agent_failed` output remains E010's expected database-failure
+fallback observation, not an evaluation failure.
+
+### Scope confirmation
+
+This final review-fix round changed only `app/agent/safety.py`,
+`tests/unit/test_agent_routes.py`, and this evidence report. Evaluation cases,
+baseline, thresholds, runner, Task 11 assets, and the historical Task 10
+report remain unchanged. The unrelated work log remains untracked and was not
+modified.

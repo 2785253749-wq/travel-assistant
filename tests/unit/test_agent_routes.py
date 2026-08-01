@@ -375,6 +375,32 @@ def test_opt_out_categories_only_include_subjects_governed_by_negation():
     assert assess_message(message).code == "UNVERIFIABLE_REALTIME_REQUEST"
 
 
+@pytest.mark.parametrize(
+    "opt_out",
+    ["机票不用查价格", "机票无需查价格", "机票不必查价格", "机票别查价格"],
+)
+def test_subject_before_negation_scopes_reversed_opt_out(opt_out: str):
+    message = f"明天酒店价格多少：{opt_out}"
+
+    assert assess_message(message).code == "UNVERIFIABLE_REALTIME_REQUEST"
+
+
+@pytest.mark.parametrize(
+    "opt_out",
+    ["机票价格和酒店价格都不用查", "不用查机票价格也不用查酒店价格"],
+)
+def test_multi_target_opt_out_covers_every_requested_category(opt_out: str):
+    message = f"明天酒店和机票价格多少：{opt_out}"
+
+    assert assess_message(message).code is None
+
+
+def test_positive_lookup_in_opt_out_clause_remains_a_realtime_request():
+    message = "明天机票价格多少：机票价格不用查酒店价格多少"
+
+    assert assess_message(message).code == "UNVERIFIABLE_REALTIME_REQUEST"
+
+
 @pytest.mark.parametrize("separator", ["，", "；", ";"])
 def test_practical_measure_does_not_exempt_guarantee_in_earlier_clause(
     separator: str,
