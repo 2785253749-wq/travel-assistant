@@ -309,3 +309,71 @@ thresholds, baseline, runner, and Task 11 files were unchanged.
 
 Implementation commit: `0c7c4436b7f185393c145e1b5be3333303266eb8`
 (`fix: scope safety exemptions to clauses`).
+
+## Safety refinement round 5
+
+### Findings and root causes
+
+Round 4 split lookup requests only on commas, sentence punctuation, and
+semicolons. Chinese/ASCII colons and CR/LF therefore left an explicit lookup
+opt-out and a separate dated hotel-price query in one clause; finding the
+opt-out skipped that entire unsplit clause. Separately,
+`_PRACTICAL_SAFETY_MEASURE` used `.{0,16}`, which crossed punctuation. In
+`确保旅途安全，也落实安全措施`, its match began at the earlier direct guarantee and
+ended at the later practical measure, so span containment incorrectly exempted
+the guarantee.
+
+### RED
+
+Added focused regressions for Chinese colon, ASCII colon, LF, and CRLF lookup
+boundaries, plus Chinese comma, Chinese semicolon, and ASCII semicolon safety
+boundaries. The retained controls covered R001/R006/R014, standalone practical
+measures, standalone lookup opt-outs, direct guarantees, and normal guidance.
+The worktree venv launcher remained unavailable, so tests used the existing
+Python 3.13 executable with the worktree's existing `.venv/Lib/site-packages`
+on process-local `PYTHONPATH`; no dependency or environment was installed or
+changed.
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -q -k
+'lookup_opt_out_does_not_cross_colon_or_newline_clause_boundaries or
+practical_measure_does_not_exempt_guarantee_in_earlier_clause or
+exemption_in_one_clause_does_not_suppress_a_separate_refusal or
+practical_safety_measures_and_explicit_price_lookup_opt_out or
+direct_safety_guarantees or ordinary_timed_lodging_and_safety_guidance or
+unverifiable_realtime_and_guaranteed_safety_requests'
+```
+
+Result: `7 failed, 11 passed, 28 deselected`. All seven new boundary cases
+returned no refusal; every retained control passed.
+
+### GREEN
+
+- `_REQUEST_CLAUSE_SEPARATOR` now recognizes Chinese/ASCII colons and CR/LF,
+  so an opt-out can skip only its own colon- or newline-delimited clause.
+- `_PRACTICAL_SAFETY_MEASURE` now limits its wildcard to characters inside a
+  clause. It can still cover `确保大家的安全措施到位`, but cannot cross comma,
+  semicolon, colon, sentence punctuation, or a newline to cover an earlier
+  direct guarantee.
+
+Focused GREEN with the same selector: `18 passed, 28 deselected`.
+
+Additional verification:
+
+- `python -m pytest tests/unit/test_agent_routes.py -q` → `46 passed`.
+- `python -m pytest -q` → `253 passed`, with the existing Starlette/httpx
+  deprecation warning.
+- `python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl
+  --output build/evaluation` → exit `0`; all 80 cases passed, every positive
+  metric was `1.0`, unsupported fact rate was `0.0`, and failures, failed
+  thresholds, and known failures were empty. The expected `agent_failed` log
+  remains E010's fallback observation.
+
+Affected implementation files were limited to `app/agent/safety.py` and
+`tests/unit/test_agent_routes.py`. Evaluation cases and expectations,
+thresholds, baseline, runner, the deferred runner Minor, and Task 11 files were
+unchanged. The pre-existing untracked `docs/work-log-2026-07-30.md` was not
+read, changed, staged, or committed.
+
+Implementation commit: `f8c092dd799b637b85e9779ac5f78a07c3550f86`
+(`fix: honor safety clause boundaries`).
