@@ -11,11 +11,30 @@ function Test-PlaceholderValue {
     return $normalized -match '^(your_|replace_|replace-|example|placeholder|test-only-key$|test-key$)'
 }
 
-$trackedFiles = @(& git ls-files)
-if ($LASTEXITCODE -ne 0) {
+$gitStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+$gitStartInfo.FileName = "git"
+$gitStartInfo.Arguments = "ls-files -z"
+$gitStartInfo.UseShellExecute = $false
+$gitStartInfo.CreateNoWindow = $true
+$gitStartInfo.RedirectStandardOutput = $true
+$gitStartInfo.RedirectStandardError = $true
+$gitStartInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+
+$gitProcess = New-Object System.Diagnostics.Process
+$gitProcess.StartInfo = $gitStartInfo
+[void]$gitProcess.Start()
+$trackedOutput = $gitProcess.StandardOutput.ReadToEnd()
+$gitError = $gitProcess.StandardError.ReadToEnd()
+$gitProcess.WaitForExit()
+
+if ($gitProcess.ExitCode -ne 0) {
     Write-Output "Public repository check failed: git ls-files could not be read."
+    if (-not [string]::IsNullOrWhiteSpace($gitError)) {
+        Write-Output $gitError.Trim()
+    }
     exit 2
 }
+$trackedFiles = $trackedOutput -split [char]0 | Where-Object { $_.Length -gt 0 }
 
 $violations = [System.Collections.Generic.List[string]]::new()
 
@@ -73,7 +92,7 @@ foreach ($file in $trackedFiles) {
         $violations.Add("Credential pattern (GitHub token): $normalizedPath")
     }
 
-    if ($content -match '-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----') {
+    if ($content -match '-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----') {
         $violations.Add("Credential pattern (private key): $normalizedPath")
     }
 }

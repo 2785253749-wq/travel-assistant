@@ -110,3 +110,84 @@ Result: exit `0`; `total_cases: 80`; every positive metric and `overall` are `1.
 - DeepSeek usage remains billable independently of Render/Supabase. `AI_ENABLED=false` is the primary stop-cost control; both daily limits can also be set to zero.
 - The existing Starlette/httpx deprecation warning is unchanged by this task.
 - No external Render, Supabase or GitHub deployment was performed, so online smoke tests remain a release-time responsibility after platform secrets are configured.
+
+## Fix round 1: encrypted private keys and Unicode Git paths
+
+### Confirmed findings and root causes
+
+The fix round started from Task 11 commit
+`9d0dc8e8e7ee66887bfc7f6632caf876e8b0d2c1` and changed only the public
+repository scanner, its integration tests, and this report.
+
+1. The private-key expression enumerated only `RSA`, `EC`, `OPENSSH`, and
+   `DSA` as optional prefixes. `ENCRYPTED` therefore could not match, and a
+   tracked PKCS#8 encrypted-private-key header incorrectly passed the release
+   gate.
+2. The script captured default line-oriented `git ls-files` output. Git
+   C-quotes a non-ASCII path by default, so PowerShell received the quote and
+   octal escape characters as part of the alleged filename. With
+   `$ErrorActionPreference = "Stop"`, `Test-Path -LiteralPath` raised
+   `Illegal characters in path` before any content scan.
+
+The path bug is fixed at its source: `System.Diagnostics.ProcessStartInfo`
+runs `git ls-files -z`, decodes Git stdout as UTF-8, and splits only on NUL.
+This works in the intended Windows PowerShell 5.1 environment and in
+PowerShell 7 on GitHub Actions. It does not rely on Git's display quoting or
+newline-delimited filenames. The private-key matcher now accepts zero or more
+uppercase prefix tokens before `PRIVATE KEY`, covering generic, algorithm-
+specific, OpenSSH, and encrypted headers.
+
+### Strict TDD evidence
+
+Before editing the scanner, three behavioral regressions were added. They run
+the real script in disposable Git repositories rather than inspecting its
+source:
+
+- a harmless tracked `资料/占位符.txt` with documented placeholder content must
+  exit `0` and print `Public repository check passed`;
+- a tracked `资料/凭据.txt` containing a constructed non-placeholder DeepSeek
+  assignment must exit non-zero with a credential violation, proving the
+  Unicode file is scanned rather than silently skipped;
+- a constructed encrypted PKCS#8 private-key header must exit non-zero with a
+  credential violation.
+
+RED command:
+
+```powershell
+$env:PYTHONPATH=(Resolve-Path '.venv\Lib\site-packages').Path
+& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest tests/integration/test_deployment_config.py -q -k 'unicode_tracked or encrypted'
+```
+
+RED result: exit `1`, `3 failed, 14 deselected`. The harmless Unicode file
+aborted in `Test-Path` with `Illegal characters in path`; the credential in a
+Unicode file aborted at the same boundary without reporting a credential; the
+encrypted private-key header returned exit `0` and `Public repository check
+passed`.
+
+After the minimal scanner changes, the identical command returned exit `0`,
+`3 passed, 14 deselected`, with the repository's pre-existing Starlette/httpx
+deprecation warning.
+
+### Fix-round verification
+
+- Complete deployment/scanner suite:
+  `python -m pytest tests/integration/test_deployment_config.py -q` -> exit
+  `0`, `17 passed`, one pre-existing deprecation warning.
+- Exact release command:
+  `powershell -ExecutionPolicy Bypass -File scripts/verify_public_repo.ps1`
+  -> exit `0`, `Public repository check passed`.
+- Full suite with `APP_ENV=test` and a test-only DeepSeek value:
+  `python -m pytest -q` -> exit `0`, `292 passed`, one pre-existing
+  deprecation warning.
+- Standalone release evaluator:
+  `python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl
+  --output build/evaluation` -> exit `0`, 80 cases, all positive metrics and
+  overall `1.0`, unsupported-fact rate `0.0`, and empty failures, failed
+  thresholds, and known failures. Its single `agent_failed` line remains the
+  intentional E010 database-fallback observation.
+- `git diff --check` -> exit `0`; Git emitted only expected LF-to-CRLF
+  working-copy notices.
+
+The unrelated `docs/work-log-2026-07-30.md` remains untracked and was not
+read, changed, staged, or committed. No real credential or local deployment
+artifact was created.

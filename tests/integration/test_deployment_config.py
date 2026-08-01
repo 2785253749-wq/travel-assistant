@@ -89,6 +89,26 @@ def test_public_repo_check_accepts_tracked_placeholders(tmp_path: Path):
     assert "Public repository check passed" in result.stdout
 
 
+def test_public_repo_check_accepts_unicode_tracked_placeholder(tmp_path: Path):
+    placeholder = "DEEPSEEK_API" + "_KEY=your_deepseek_api_key_here\n"
+    repo = _tracked_repo(tmp_path, "资料/占位符.txt", placeholder)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Public repository check passed" in result.stdout
+
+
+def test_public_repo_check_scans_credentials_in_unicode_tracked_filename(tmp_path: Path):
+    secret = "DEEPSEEK_API" + "_KEY=live-production-value\n"
+    repo = _tracked_repo(tmp_path, "资料/凭据.txt", secret)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
 @pytest.mark.parametrize(
     "relative_path",
     [
@@ -117,6 +137,7 @@ def test_public_repo_check_rejects_forbidden_tracked_paths(tmp_path: Path, relat
         "gh" + "p_" + "A" * 36,
         "SUPABASE_SERVICE" + "_KEY=production-service-value",
         "-" * 5 + "BEGIN " + "RSA PRIVATE KEY" + "-" * 5,
+        "-" * 5 + "BEGIN " + "ENCRYPTED PRIVATE KEY" + "-" * 5,
     ],
 )
 def test_public_repo_check_rejects_tracked_credentials(tmp_path: Path, secret: str):
