@@ -47,6 +47,11 @@ class PlacesProvider:
             if not places:
                 rewritten = f"{city.strip()} {_normalized_alias(query)}".strip()
                 places = self._search(rewritten, deadline)
+                if not places:
+                    return ProviderResult(
+                        [], PLACES_SOURCE, fetched_at, True,
+                        "PLACES_EMPTY_AFTER_RETRY",
+                    )
         except httpx.TimeoutException:
             return ProviderResult([], PLACES_SOURCE, fetched_at, True, "PLACES_TIMEOUT")
         except httpx.RequestError:

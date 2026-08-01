@@ -20,6 +20,7 @@ from uuid import uuid4
 import httpx
 
 from app.agent.graph import ChatResult, SafeTravelAgent, TrustedEvidence, extract_profile
+from app.agent.extraction import ExtractionCandidate
 from app.agent.intent import IntentResult, classify_intent
 from app.agent.planning import PlanValidationError, Planner
 from app.core.errors import AppError
@@ -141,8 +142,13 @@ class OfflineClassifier:
 class OfflineExtractor:
     """Exercise Task 2's extraction prompt and ModelGateway seam."""
 
-    def extract(self, message: str, profile: TravelProfile) -> TravelProfile:
-        return extract_profile(message, profile, model_factory=model_factory)
+    def __init__(self) -> None:
+        self.last_invalid_fields: dict[str, int] = {}
+
+    def extract(self, message: str, profile: TravelProfile) -> ExtractionCandidate:
+        extraction = extract_profile(message, profile, model_factory=model_factory)
+        self.last_invalid_fields = extraction.invalid_fields
+        return extraction
 
 
 class FixtureEvidenceProvider:
@@ -234,10 +240,11 @@ def run_case(case: EvaluationCase) -> Prediction:
     if scenario is not None:
         return observe_scenario(case.messages[-1]).to_prediction()
     classifier = OfflineClassifier()
+    extractor = OfflineExtractor()
     evidence_provider = FixtureEvidenceProvider([])
     agent = SafeTravelAgent(
         classifier=classifier,
-        extractor=OfflineExtractor(),
+        extractor=extractor,
         planner=FixtureStructuredPlanner(scenario),
         evidence_provider=evidence_provider,
     )
@@ -256,7 +263,7 @@ def run_case(case: EvaluationCase) -> Prediction:
     except ProviderUnavailable as error:
         return Prediction(intent=classifier.last_intent, action="degrade", fields={}, error_code=error.code, fallback_safe=True)
     assert result is not None
-    fields = result.profile
+    fields = {**result.profile, **extractor.last_invalid_fields}
     schema_valid, budget_valid, citation_ids = _structured_output(result)
     predicted_action = _action_for(result, classifier.last_intent, has_trip=trip is not None)
     unsupported_facts = _unsupported_fact_count(result)

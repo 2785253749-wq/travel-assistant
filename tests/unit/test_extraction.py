@@ -2,7 +2,52 @@ import pytest
 from pydantic import ValidationError
 
 from app.agent.extraction import merge_profile, validate_profile
+from app.agent.graph import extract_profile
 from app.schemas import TravelProfile
+
+
+class _StructuredExtractionModel:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def with_structured_output(self, schema: object, *, method: str) -> "_StructuredExtractionModel":
+        assert method == "json_mode"
+        return self
+
+    def invoke(self, _: object) -> dict[str, object]:
+        return {"profile": self._payload}
+
+
+@pytest.mark.parametrize("travelers", [0, -1, 7])
+def test_task2_extraction_keeps_invalid_traveler_out_of_travel_profile(travelers: int):
+    extraction = extract_profile(
+        "上海去苏州，人数需要确认，预算2000",
+        TravelProfile(origin="上海"),
+        model_factory=lambda: _StructuredExtractionModel({
+            "destination": "苏州", "travelers": travelers, "budget_cny": 2000,
+        }),
+    )
+
+    assert extraction.profile == TravelProfile(origin="上海", destination="苏州", budget_cny=2000)
+    assert extraction.invalid_fields == {"travelers": travelers}
+    assert [(issue.code, issue.field) for issue in extraction.issues] == [
+        ("traveler_count", "travelers"),
+    ]
+
+
+@pytest.mark.parametrize("travelers", [1, 6])
+def test_task2_extraction_accepts_supported_traveler_bounds(travelers: int):
+    extraction = extract_profile(
+        "上海去苏州",
+        TravelProfile(origin="上海"),
+        model_factory=lambda: _StructuredExtractionModel({
+            "destination": "苏州", "travelers": travelers,
+        }),
+    )
+
+    assert extraction.profile.travelers == travelers
+    assert extraction.invalid_fields == {}
+    assert extraction.issues == ()
 
 
 def test_empty_extraction_does_not_erase_confirmed_values():

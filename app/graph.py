@@ -17,7 +17,8 @@ from app.schemas import TravelProfile
 def extract(state: TravelState) -> dict[str, Any]:
     """Legacy extraction hook retained while callers migrate to ``app.agent.graph``."""
     current = TravelProfile.model_validate(state.get("profile") or {})
-    profile = extract_profile(state["user_message"], current, model_factory=model)
+    extraction = extract_profile(state["user_message"], current, model_factory=model)
+    profile = extraction.profile
     missing = [field for field in REQUIRED if getattr(profile, field) in (None, "")]
     return {"profile": profile.model_dump(), "missing_fields": missing}
 

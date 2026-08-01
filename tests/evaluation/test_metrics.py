@@ -74,7 +74,7 @@ def test_natural_language_cases_have_independent_extractable_slot_oracles() -> N
             continue
         profile = TravelProfile()
         for message in case.messages:
-            profile = runner.extract_profile(message, profile, model_factory=model_factory)
+            profile = runner.extract_profile(message, profile, model_factory=model_factory).profile
         actual = profile.model_dump(exclude_none=True)
         assert {
             key: actual.get(key)
@@ -145,17 +145,21 @@ def test_allowed_sources_changes_scoring_not_the_fixture_prediction() -> None:
 def test_baseline_is_the_only_gate_configuration() -> None:
     baseline = load_baseline(Path(__file__).with_name("baseline.json"))
     assert baseline["thresholds"]["schema_validity"] == 0.98
-    assert baseline["known_failures"] == ["P015", "P019", "M005", "R001", "R006", "R014", "E002"]
+    assert baseline["known_failures"] == []
 
 
 def test_out_of_range_traveler_fixture_reaches_the_real_extraction_gate() -> None:
     cases = {case.id: case for case in load_cases(Path(__file__).with_name("cases.jsonl"))}
     assert OfflineModel.profile_for(cases["M005"].messages[0])["travelers"] == 0
     assert OfflineModel.profile_for(cases["M006"].messages[0])["travelers"] == 7
-    # TravelProfile currently rejects these before validate_profile can emit its
-    # traveler_count issue for zero; seven reaches validate_profile's safe ask.
-    assert run_case(cases["M005"]).error_code == "AGENT_UNAVAILABLE"
-    assert run_case(cases["M006"]).action == "ask"
+    zero = run_case(cases["M005"])
+    seven = run_case(cases["M006"])
+
+    assert zero.action == "ask"
+    assert zero.error_code is None
+    assert zero.fields["travelers"] == 0
+    assert seven.action == "ask"
+    assert seven.fields["travelers"] == 7
 
 
 def test_multiturn_modifications_extract_each_raw_message_in_thread_order(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -353,7 +357,7 @@ def test_global_limit_case_reaches_real_in_memory_reservation_branch(monkeypatch
     ("case_id", "component", "action", "error_code"),
     [
         ("E001", "weather_provider", "degrade", "WEATHER_TIMEOUT"),
-        ("E002", "places_provider", "plan", None),
+        ("E002", "places_provider", "degrade", "PLACES_EMPTY_AFTER_RETRY"),
         ("E003", "model_gateway", "degrade", "AI_CIRCUIT_OPEN"),
         ("E004", "model_gateway", "degrade", "AI_UNAVAILABLE"),
         ("E005", "model_gateway", "degrade", "AI_RATE_LIMITED"),
@@ -382,7 +386,7 @@ def test_exception_prediction_is_the_target_components_actual_observation(
     assert run_case(case) == observation.to_prediction()
 
 
-def test_places_empty_retry_observes_two_real_attempts_without_inventing_an_error() -> None:
+def test_places_empty_retry_observes_two_real_attempts_and_the_provider_degradation() -> None:
     case = next(
         case
         for case in load_cases(Path(__file__).with_name("cases.jsonl"))
@@ -393,7 +397,7 @@ def test_places_empty_retry_observes_two_real_attempts_without_inventing_an_erro
     observation = runner.observe_scenario(case.messages[-1])
 
     assert observation.attempts == 2
-    assert observation.error_code is None
+    assert observation.error_code == "PLACES_EMPTY_AFTER_RETRY"
 
 
 def test_places_empty_result_does_not_synthesize_degradation_from_expected_values() -> None:
@@ -411,9 +415,9 @@ def test_places_empty_result_does_not_synthesize_degradation_from_expected_value
         expected_error="INVENTED_EXPECTATION",
     )
 
-    assert observation.action == "plan"
-    assert observation.error_code is None
-    assert observation.fallback_safe is False
+    assert observation.action == "degrade"
+    assert observation.error_code == "PLACES_EMPTY_AFTER_RETRY"
+    assert observation.fallback_safe is True
     assert prediction == observation.to_prediction()
     assert run_case(changed_expectation) == prediction
 

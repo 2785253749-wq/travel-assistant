@@ -18,7 +18,7 @@ from uuid import UUID
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_deepseek import ChatDeepSeek
 
-from app.agent.extraction import merge_profile, validate_profile
+from app.agent.extraction import ExtractionCandidate, build_extraction_candidate, merge_profile, validate_profile
 from app.agent.intent import Intent, IntentResult, classify_intent
 from app.agent.safety import REFUSALS, assess_destination, assess_message
 from app.core.config import get_settings
@@ -116,7 +116,7 @@ class IntentClassifier(Protocol):
 
 
 class TravelExtractor(Protocol):
-    def extract(self, message: str, profile: TravelProfile) -> TravelProfile: ...
+    def extract(self, message: str, profile: TravelProfile) -> ExtractionCandidate | TravelProfile: ...
 
 
 class LegacyPlanner(Protocol):
@@ -152,13 +152,13 @@ def model() -> ChatDeepSeek:
 
 
 class ModelTravelExtractor:
-    def extract(self, message: str, profile: TravelProfile) -> TravelProfile:
+    def extract(self, message: str, profile: TravelProfile) -> ExtractionCandidate:
         return extract_profile(message, profile)
 
 
 def extract_profile(
     message: str, profile: TravelProfile, *, model_factory: Any = model
-) -> TravelProfile:
+) -> ExtractionCandidate:
     """Extract only explicit values, with a factory seam for offline tests."""
     schema = json.dumps(ExtractionResult.model_json_schema(), ensure_ascii=False)
     result = get_model_gateway(model_factory).invoke([
@@ -168,7 +168,7 @@ def extract_profile(
             )),
             HumanMessage(content=message),
     ], structured=ExtractionResult)
-    return merge_profile(profile, ExtractionResult.model_validate(result).profile)
+    return build_extraction_candidate(profile, ExtractionResult.model_validate(result).profile)
 
 
 class NullEvidenceProvider:
@@ -265,13 +265,19 @@ class SafeTravelAgent:
                 return ChatResult("请先告诉我出发地、目的地、日期、人数和预算，我会先帮你创建行程。", "collecting", {})
 
             current = trip.profile if trip is not None else self._initial_profile
-            profile = merge_profile(current, self._extractor.extract(message, current))
+            extracted = self._extractor.extract(message, current)
+            candidate = (
+                extracted
+                if isinstance(extracted, ExtractionCandidate)
+                else ExtractionCandidate(merge_profile(current, extracted))
+            )
+            profile = candidate.profile
             if _profile_contains_secret(profile):
                 return ChatResult(
                     "资料中包含疑似凭据或敏感令牌，请删除后重新提交。",
                     "collecting", {}, error_code="SENSITIVE_INPUT_REJECTED",
                 )
-            issues = validate_profile(profile)
+            issues = [*candidate.issues, *validate_profile(profile)]
             missing = [name for name in REQUIRED_FIELDS if getattr(profile, name) in (None, "")]
             if issues or missing:
                 return self._collecting(profile, missing, issues)

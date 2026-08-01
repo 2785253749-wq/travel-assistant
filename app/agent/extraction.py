@@ -1,7 +1,39 @@
 from datetime import date
+from dataclasses import dataclass, field
 import re
 
-from app.schemas import ProfileIssue, TravelProfile
+from app.schemas import ProfileIssue, RawTravelProfile, TravelProfile
+
+
+@dataclass(frozen=True)
+class ExtractionCandidate:
+    """Validated profile fields plus raw-field issues kept outside TravelProfile."""
+
+    profile: TravelProfile
+    issues: tuple[ProfileIssue, ...] = ()
+    invalid_fields: dict[str, int] = field(default_factory=dict)
+
+
+def build_extraction_candidate(
+    current: TravelProfile, raw: RawTravelProfile,
+) -> ExtractionCandidate:
+    """Merge only values that satisfy the product traveler-count boundary."""
+    fields = raw.model_dump()
+    travelers = raw.travelers
+    if travelers is None or 1 <= travelers <= 6:
+        return ExtractionCandidate(merge_profile(current, TravelProfile.model_validate(fields)))
+
+    fields["travelers"] = None
+    issue = ProfileIssue(
+        code="traveler_count",
+        field="travelers",
+        message="仅支持 1 至 6 人出行。",
+    )
+    return ExtractionCandidate(
+        merge_profile(current, TravelProfile.model_validate(fields)),
+        issues=(issue,),
+        invalid_fields={"travelers": travelers},
+    )
 
 
 def merge_profile(current: TravelProfile, extracted: TravelProfile) -> TravelProfile:

@@ -21,8 +21,22 @@ class TravelProfile(StrictSchema):
     preferences: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
 
+
+class RawTravelProfile(StrictSchema):
+    """Model output before product-boundary validation creates a TravelProfile."""
+
+    origin: str | None = None
+    destination: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    travelers: int | None = None
+    budget_cny: int | None = Field(default=None, ge=0)
+    preferences: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+
+
 class ExtractionResult(StrictSchema):
-    profile: TravelProfile
+    profile: RawTravelProfile
 
 
 class ProfileIssue(StrictSchema):

@@ -109,3 +109,14 @@ The baseline remains synchronized with these seven failure IDs:
 `P015`, `P019`, `M005`, `R001`, `R006`, `R014`, and `E002`.
 Production code, thresholds, scenario expectations, and known-failure IDs were
 not changed by this runner-only correction.
+
+## Optimization outcome (current tree)
+
+The subsequent Task 10 product-optimization cycle repaired all seven findings
+in production code without changing the fixed evaluation cases, their expected
+answers, allowed sources, or release thresholds. The latest runner exits 0 for
+all 80 cases: every gate is at 100% except unsupported-fact rate, which remains
+0%. `tests/evaluation/baseline.json` therefore records `known_failures: []`.
+
+The detailed root-cause, RED/GREEN, and final-verification evidence is in
+`.superpowers/sdd/2026-07-28-zero-cost-public-mvp-implementation/task-10-optimization-report.md`.

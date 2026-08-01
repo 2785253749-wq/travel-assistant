@@ -1,6 +1,6 @@
 {
   "version": "2026-07-28",
-  "description": "Offline fixed-fixture baseline. Known failures are product findings retained without changing production behavior, score thresholds, or expected answers.",
+  "description": "Offline fixed-fixture baseline after Task 10 production fixes. Thresholds are unchanged; known failures reflect the latest runner output.",
   "thresholds": {
     "intent_accuracy": 0.9,
     "slot_micro_f1": 0.9,
@@ -15,5 +15,5 @@
     "task_success_rate": 0.85,
     "fallback_success_rate": 1.0
   },
-  "known_failures": ["P015", "P019", "M005", "R001", "R006", "R014", "E002"]
+  "known_failures": []
 }

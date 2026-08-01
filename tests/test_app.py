@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 from app.main import app
-from app.schemas import ExtractionResult, TravelProfile
+from app.schemas import ExtractionResult, RawTravelProfile, TravelProfile
 
 def test_health():
     assert TestClient(app).get("/health").json() == {"status":"ok"}
@@ -16,7 +16,7 @@ def test_extract_uses_json_mode(monkeypatch):
         def invoke(self, messages):
             assert "JSON Schema" in messages[0].content
             return ExtractionResult(
-                profile=TravelProfile(origin="上海", destination="杭州")
+                profile=RawTravelProfile(origin="上海", destination="杭州")
             )
 
     class FakeModel:

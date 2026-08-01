@@ -25,6 +25,22 @@ def test_place_search_rewrites_once_after_empty_result() -> None:
     assert result.degraded is False
 
 
+def test_places_second_empty_result_is_a_safe_degradation_after_one_rewrite() -> None:
+    transport = RecordingTransport([
+        json_response({"features": []}),
+        json_response({"features": []}),
+    ])
+    provider = PlacesProvider(client=httpx.Client(transport=transport))
+
+    result = provider.search(city="杭州", query="西湖景区")
+
+    assert result.data == []
+    assert result.degraded is True
+    assert result.error_code == "PLACES_EMPTY_AFTER_RETRY"
+    assert len(transport.requests) == 2
+    assert parse_qs(urlparse(str(transport.requests[1].url)).query)["q"] == ["杭州 西湖"]
+
+
 def test_weather_timeout_returns_degraded_result() -> None:
     transport = RecordingTransport([httpx.TimeoutException("timed out")])
     provider = WeatherProvider(client=httpx.Client(transport=transport))

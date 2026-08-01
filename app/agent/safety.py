@@ -15,6 +15,13 @@ REFUSALS = {
 _REALTIME_TERMS = ("余票", "库存", "实时价格", "实时票价", "保证还有", "保证有票", "帮我买", "预订", "订票", "支付")
 _HIGH_STAKES_TERMS = ("签证", "医疗", "用药", "安全吗", "安全保证", "人身安全")
 _OUT_OF_SCOPE_TERMS = ("出国", "境外", "国际航班", "写代码", "作业")
+_REALTIME_PRICE_REQUEST = re.compile(
+    r"(?:实时|今天|明天|后天|现在|今日).{0,12}(?:机票|航班|酒店|住宿|门票|车票|票价|房价|价格).{0,8}(?:价格|票价|多少钱|库存|余票|可订|空房)?"
+    r"|(?:机票|航班|酒店|住宿|门票|车票|票价|房价).{0,12}(?:实时|今天|明天|后天|现在|今日).{0,8}(?:价格|票价|多少钱|库存|余票|可订|空房)?"
+)
+_HIGH_STAKES_GUARANTEE = re.compile(
+    r"(?:保证|绝对|确保).{0,12}(?:安全|地震|灾害|受伤|事故|风险)|不会.{0,4}(?:发生)?(?:地震|灾害|事故)"
+)
 
 
 @dataclass(frozen=True)
@@ -41,9 +48,13 @@ def assess_message(message: str) -> SafetyDecision:
     asks_dated_ticket_inventory = bool(
         re.search(r"(?:今天|明天|后天|\d{4}-\d{2}-\d{2}).{0,12}(?:还有|有).{0,8}(?:张|票)", normalized)
     )
-    if any(term in normalized for term in _REALTIME_TERMS) or asks_dated_ticket_inventory:
+    if (
+        any(term in normalized for term in _REALTIME_TERMS)
+        or asks_dated_ticket_inventory
+        or _REALTIME_PRICE_REQUEST.search(normalized)
+    ):
         return SafetyDecision("UNVERIFIABLE_REALTIME_REQUEST")
-    if any(term in normalized for term in _HIGH_STAKES_TERMS):
+    if any(term in normalized for term in _HIGH_STAKES_TERMS) or _HIGH_STAKES_GUARANTEE.search(normalized):
         return SafetyDecision("HIGH_STAKES_ADVICE")
     if any(term in normalized for term in _OUT_OF_SCOPE_TERMS):
         return SafetyDecision("OUT_OF_SCOPE")
@@ -59,7 +70,7 @@ def mark_unverified(reply: str, sources: list[dict] | None = None) -> str:
 
 _DOMESTIC_DESTINATIONS = (
     "北京", "上海", "天津", "重庆", "杭州", "南京", "苏州", "成都", "西安", "广州", "深圳", "厦门",
-    "武汉", "长沙", "昆明", "大理", "丽江", "三亚", "青岛", "济南", "洛阳", "郑州", "哈尔滨",
+    "武汉", "长沙", "昆明", "大理", "丽江", "三亚", "青岛", "济南", "洛阳", "郑州", "哈尔滨", "兰州", "兰州市", "西宁", "西宁市",
     "长春", "沈阳", "福州", "泉州", "黄山", "桂林", "拉萨", "贵阳", "南宁", "海口",
     "河北", "山西", "辽宁", "吉林", "黑龙江", "江苏", "浙江", "安徽", "福建", "江西", "山东", "河南",
     "湖北", "湖南", "广东", "海南", "四川", "贵州", "云南", "陕西", "甘肃", "青海", "内蒙古",

@@ -1,6 +1,8 @@
 from unittest.mock import Mock
 from datetime import datetime, timezone
 
+import pytest
+
 from app.agent.graph import (
     ChatSessionStore,
     PlanClaim,
@@ -83,6 +85,36 @@ def test_invalid_profile_is_collected_without_calling_planner():
 
     assert result.stage == "collecting"
     assert result.issues[0].code == "trip_duration"
+    planner.invoke.assert_not_called()
+
+
+def test_invalid_extracted_traveler_count_asks_without_storing_an_invalid_profile():
+    from app.agent.extraction import ExtractionCandidate
+    from app.schemas import ProfileIssue
+
+    class InvalidTravelerExtractor:
+        def extract(self, message: str, profile: TravelProfile) -> ExtractionCandidate:
+            return ExtractionCandidate(
+                TravelProfile(
+                    origin="上海", destination="苏州", start_date="2026-10-01",
+                    end_date="2026-10-03", budget_cny=2000,
+                ),
+                issues=(ProfileIssue(
+                    code="traveler_count", field="travelers", message="仅支持 1 至 6 人出行。",
+                ),),
+                invalid_fields={"travelers": 0},
+            )
+
+    planner = Mock()
+    result = SafeTravelAgent(
+        classifier=StubClassifier(), extractor=InvalidTravelerExtractor(), planner=planner,
+    ).run("上海去苏州，0个人，预算2000", trip=None)
+
+    assert result.stage == "collecting"
+    assert [(issue.code, issue.field) for issue in result.issues] == [
+        ("traveler_count", "travelers"),
+    ]
+    assert result.profile["travelers"] is None
     planner.invoke.assert_not_called()
 
 
@@ -173,6 +205,35 @@ def test_mainland_province_and_city_are_allowlisted():
 
     assert assess_destination("浙江省杭州市").allowed
     assert assess_destination("四川省成都市").allowed
+
+
+@pytest.mark.parametrize("destination", ["兰州", "兰州市", "西宁", "西宁市"])
+def test_new_domestic_city_aliases_are_allowlisted(destination: str):
+    from app.agent.safety import assess_destination
+
+    assert assess_destination(destination).allowed
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_code"),
+    [
+        ("查明天上海到北京的实时机票价格", "UNVERIFIABLE_REALTIME_REQUEST"),
+        ("保证夜游西安绝对安全", "HIGH_STAKES_ADVICE"),
+        ("给我保证不会发生地震的旅行建议", "HIGH_STAKES_ADVICE"),
+    ],
+)
+def test_unverifiable_realtime_and_guaranteed_safety_requests_are_refused(
+    message: str, expected_code: str,
+):
+    result = make_agent().run(message, trip=None)
+
+    assert result.error_code == expected_code
+
+
+def test_ordinary_travel_safety_advice_is_not_refused():
+    result = make_agent().run("给我夜游西安的安全建议", trip=None)
+
+    assert result.error_code != "HIGH_STAKES_ADVICE"
 
 
 def test_unknown_destination_is_not_guessed_or_planned():
