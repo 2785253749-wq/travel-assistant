@@ -10,13 +10,14 @@ import secrets
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, HTTPException, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
-from app.agent.graph import chat
+from app.composition import execute_chat_request as chat
 from app.api.auth import OptionalCurrentUser
 from app.core.errors import AppError, ERROR_STATUS, safe_error_detail
 from app.core.config import get_settings
-from app.core.usage import ProviderUnavailable, get_usage_guard, model_usage_scope
+from app.core.usage import ProviderUnavailable, get_usage_guard
 from app.schemas import ChatRequest, ChatResponse, TravelProfile
 
 
@@ -84,27 +85,36 @@ def api_chat(
                     max_age=60 * 60 * 24,
                 )
             session_scope = "anon:" + hashlib.sha256(session_id.encode("ascii")).hexdigest()
-        reservation = get_usage_guard().reserve(session_scope)
         try:
-            with model_usage_scope() as model_usage:
-                result = chat(user, None, request.message, thread_id=request.thread_id, session_scope=session_scope)
+            result = chat(
+                user,
+                request.trip_id,
+                request.message,
+                thread_id=request.thread_id,
+                session_scope=session_scope,
+                action=request.action,
+            )
         except ProviderUnavailable as exc:
-            reservation.rollback()
-            return JSONResponse({"reply": "AI provider is temporarily unavailable.", "stage": "collecting", "profile": TravelProfile().model_dump(mode="json"), "warnings": [exc.code]})
+            code = exc.code if exc.code in {"AI_RATE_LIMITED", "AI_UNAVAILABLE", "AI_CIRCUIT_OPEN"} else "AI_UNAVAILABLE"
+            return JSONResponse({"reply": "AI provider is temporarily unavailable.", "stage": "collecting", "profile": TravelProfile().model_dump(mode="json"), "warnings": [code]})
         except Exception:
-            reservation.rollback()
             raise
         if result.error_code == "AGENT_UNAVAILABLE":
-            reservation.rollback()
             return JSONResponse({"reply": result.reply, "stage": result.stage, "profile": TravelProfile.model_validate(result.profile).model_dump(mode="json"), "warnings": ["AI_PROVIDER_UNAVAILABLE"]})
-        # Missing provider metadata is charged conservatively: one token per
-        # model call, never a zero-cost successful request.
-        reservation.commit(max(model_usage.input_tokens, model_usage.calls), model_usage.output_tokens)
-        return ChatResponse(
-            reply=result.reply,
-            stage=result.stage,
-            profile=TravelProfile.model_validate(result.profile),
-        )
+        payload = {
+            "reply": result.reply,
+            "stage": result.stage,
+            "profile": TravelProfile.model_validate(result.profile).model_dump(mode="json"),
+        }
+        if result.itinerary is not None:
+            payload["itinerary"] = result.itinerary.model_dump(mode="json")
+        if result.trip_id is not None:
+            payload["trip_id"] = str(result.trip_id)
+        if result.sources:
+            payload["sources"] = result.sources
+        if result.warnings:
+            payload["warnings"] = result.warnings
+        return JSONResponse(jsonable_encoder(payload), headers=dict(response.headers))
     except AppError as exc:
         raise HTTPException(status_code=ERROR_STATUS.get(exc.code, 503), detail=safe_error_detail(exc)) from None
     except ProviderUnavailable as exc:

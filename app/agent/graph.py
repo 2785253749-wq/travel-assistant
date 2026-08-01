@@ -23,7 +23,7 @@ from app.agent.intent import Intent, IntentResult, classify_intent
 from app.agent.safety import REFUSALS, assess_destination, assess_message
 from app.core.config import get_settings
 from app.core.usage import ProviderUnavailable, get_model_gateway
-from app.schemas import ExtractionResult, ProfileIssue, TravelProfile
+from app.schemas import ExtractionResult, Itinerary, ProfileIssue, TravelProfile
 from app.trips.models import Trip
 
 
@@ -45,18 +45,21 @@ class TravelState(TypedDict, total=False):
     issues: list[ProfileIssue]
     sources: list[dict[str, Any]]
     reply: str
-    stage: Literal["collecting", "planned"]
+    stage: Literal["collecting", "confirming", "planned"]
     error_code: str | None
 
 
 @dataclass
 class ChatResult:
     reply: str
-    stage: Literal["collecting", "planned"]
+    stage: Literal["collecting", "confirming", "planned"]
     profile: dict[str, Any]
     issues: list[ProfileIssue] = field(default_factory=list)
     sources: list[dict[str, Any]] = field(default_factory=list)
     error_code: str | None = None
+    itinerary: Itinerary | None = None
+    warnings: list[str] = field(default_factory=list)
+    trip_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -138,6 +141,16 @@ class ModelIntentClassifier:
         return classify_intent(message, has_trip)
 
 
+class RuleIntentClassifier:
+    """Credential-free pre-confirmation routing; paid models are planning-only."""
+
+    def classify(self, message: str, has_trip: bool) -> IntentResult:
+        normalized = message.lower()
+        if has_trip and any(term in normalized for term in ("\u6539", "\u8c03\u6574", "change", "update")):
+            return IntentResult(intent="modify_trip", confidence=1.0)
+        return IntentResult(intent="plan_trip", confidence=1.0)
+
+
 def model() -> ChatDeepSeek:
     settings = get_settings()
     if settings.deepseek_api_key is None or not settings.deepseek_api_key.get_secret_value().strip():
@@ -154,6 +167,39 @@ def model() -> ChatDeepSeek:
 class ModelTravelExtractor:
     def extract(self, message: str, profile: TravelProfile) -> ExtractionCandidate:
         return extract_profile(message, profile)
+
+
+class RuleTravelExtractor:
+    """Conservatively extracts explicit profile fields without any model call."""
+
+    _ROUTE = re.compile(
+        r"(?:\u4ece|from)\s*([^\s\uff0c,\u3002]{1,30}?)(?:\u51fa\u53d1)?(?:\u5230|\u53bb|to)\s*([^\s\uff0c,\u30020-9]{1,30})",
+        re.IGNORECASE,
+    )
+    _DATE = re.compile(r"\b20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
+    _TRAVELERS = re.compile(r"(?<!\d)([1-9]\d?)\s*(?:\u4eba|travellers?|travelers?)", re.IGNORECASE)
+    _BUDGET = re.compile(
+        r"(?:\u9884\u7b97(?:\u6539\u4e3a|\u8c03\u6574\u4e3a|\u4e3a|\u662f|\u7ea6)?|budget(?:\s+(?:to|is))?)\s*[:\uff1a]?\s*(\d{1,8})",
+        re.IGNORECASE,
+    )
+
+    def extract(self, message: str, profile: TravelProfile) -> TravelProfile:
+        updates: dict[str, Any] = {}
+        route = self._ROUTE.search(message)
+        if route:
+            updates.update(origin=route.group(1).strip(), destination=route.group(2).strip())
+        dates = self._DATE.findall(message)
+        if dates:
+            updates["start_date"] = dates[0]
+        if len(dates) > 1:
+            updates["end_date"] = dates[1]
+        travelers = self._TRAVELERS.search(message)
+        if travelers:
+            updates["travelers"] = int(travelers.group(1))
+        budget = self._BUDGET.search(message)
+        if budget:
+            updates["budget_cny"] = int(budget.group(1))
+        return TravelProfile.model_validate({**profile.model_dump(), **updates})
 
 
 def extract_profile(
@@ -249,6 +295,127 @@ class SafeTravelAgent:
         self._usage_guard = usage_guard
         self._evidence_provider = evidence_provider or NullEvidenceProvider()
         self._initial_profile = initial_profile or TravelProfile()
+
+    def collect(self, message: str, trip: Trip | None) -> ChatResult:
+        """Normalize travel details and stop before providers or the planner."""
+        safety = assess_message(message)
+        if safety.refused:
+            return self._refusal(safety.code or "OUT_OF_SCOPE")
+        try:
+            intent = self._classifier.classify(message, trip is not None).intent
+            if intent == "unsupported":
+                return self._refusal("OUT_OF_SCOPE")
+            if intent == "smalltalk":
+                return ChatResult("I can help plan a 2 to 7 day domestic trip.", "collecting", {})
+            if intent in {"modify_trip", "explain_trip"} and trip is None:
+                return ChatResult("Please provide the trip details first.", "collecting", {})
+            current = trip.profile if trip is not None else self._initial_profile
+            extracted = self._extractor.extract(message, current)
+            candidate = (
+                extracted
+                if isinstance(extracted, ExtractionCandidate)
+                else ExtractionCandidate(merge_profile(current, extracted))
+            )
+            profile = candidate.profile
+            if _profile_contains_secret(profile):
+                return ChatResult(
+                    "Remove credentials or sensitive tokens before continuing.",
+                    "collecting",
+                    {},
+                    error_code="SENSITIVE_INPUT_REJECTED",
+                )
+            issues = [*candidate.issues, *validate_profile(profile)]
+            missing = [name for name in REQUIRED_FIELDS if getattr(profile, name) in (None, "")]
+            if issues or missing:
+                return self._collecting(profile, missing, issues)
+            destination = assess_destination(profile.destination)
+            if not destination.allowed:
+                if destination.code == "OUT_OF_SCOPE":
+                    return self._refusal(destination.code)
+                return ChatResult(
+                    "Please confirm a specific destination in mainland China.",
+                    "collecting",
+                    profile.model_dump(),
+                    error_code=destination.code,
+                )
+            return ChatResult(
+                "Trip details are complete. Confirm them to generate the itinerary.",
+                "confirming",
+                profile.model_dump(),
+            )
+        except ProviderUnavailable:
+            raise
+        except Exception as exc:
+            logging.getLogger("app.agent").warning(
+                "agent_failed",
+                extra={"error_code": "AGENT_UNAVAILABLE", "exception_type": type(exc).__name__},
+            )
+            return ChatResult(
+                "Unable to collect trip details right now.",
+                "collecting",
+                {},
+                error_code="AGENT_UNAVAILABLE",
+            )
+
+    def plan_confirmed(
+        self,
+        profile: TravelProfile,
+        trip: Trip | None,
+        user_id: UUID | None,
+        message: str,
+    ) -> ChatResult:
+        """Fetch evidence and plan only for a server-held validated profile."""
+        del trip, user_id, message
+        issues = validate_profile(profile)
+        missing = [name for name in REQUIRED_FIELDS if getattr(profile, name) in (None, "")]
+        if issues or missing:
+            return self._collecting(profile, missing, issues)
+        destination = assess_destination(profile.destination)
+        if not destination.allowed:
+            return self._refusal(destination.code or "OUT_OF_SCOPE")
+        try:
+            fetched = self._evidence_provider.fetch(profile)
+            provider_results = getattr(fetched, "results", fetched)
+            warnings = list(getattr(fetched, "warnings", ()))
+            if not hasattr(self._planner, "invoke") and hasattr(self._planner, "plan"):
+                from app.agent.planning import PlanValidationError
+
+                try:
+                    itinerary = self._planner.plan(profile, provider_results)
+                except PlanValidationError:
+                    return ChatResult(
+                        "Unable to safely validate this itinerary; please try again.",
+                        "collecting",
+                        profile.model_dump(),
+                        error_code="PLAN_VALIDATION_FAILED",
+                        warnings=warnings,
+                    )
+                citations = _itinerary_citations(itinerary)
+                return ChatResult(
+                    itinerary.model_dump_json(),
+                    "planned",
+                    profile.model_dump(),
+                    sources=[citation.model_dump(mode="json") for citation in citations],
+                    itinerary=itinerary,
+                    warnings=warnings,
+                )
+            evidence = tuple(_planning_evidence(provider_results))
+            result = self._verify_plan(self._planner.invoke(profile, evidence), evidence, profile)
+            result.warnings = warnings
+            return result
+        except ProviderUnavailable:
+            raise
+        except Exception as exc:
+            logging.getLogger("app.agent").warning(
+                "agent_failed",
+                extra={"error_code": "AGENT_UNAVAILABLE", "exception_type": type(exc).__name__},
+            )
+            return ChatResult(
+                "Unable to generate an itinerary right now.",
+                "collecting",
+                {},
+                error_code="AGENT_UNAVAILABLE",
+            )
 
     def run(self, message: str, trip: Trip | None, user_id: UUID | None = None) -> ChatResult:
         safety = assess_message(message)
@@ -387,6 +554,7 @@ def chat(
     *,
     thread_id: str | None = None,
     session_scope: str | None = None,
+    action: Literal["collect", "confirm"] = "collect",
 ) -> ChatResult:
     """Public application entry point; authenticated persistence is wired in later tasks."""
     profile = _chat_store.get(session_scope, thread_id) if thread_id and session_scope else None

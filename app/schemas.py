@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from typing import Literal
+from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
@@ -47,11 +48,17 @@ class ProfileIssue(StrictSchema):
 class ChatRequest(StrictSchema):
     message: str = Field(min_length=1, max_length=4000)
     thread_id: str = Field(min_length=1, max_length=100)
+    action: Literal["collect", "confirm"] = "collect"
+    trip_id: UUID | None = None
 
 class ChatResponse(StrictSchema):
     reply: str
-    stage: Literal["collecting", "planned"]
+    stage: Literal["collecting", "confirming", "planned"]
     profile: TravelProfile
+    itinerary: Itinerary | None = None
+    trip_id: UUID | None = None
+    sources: list[SourceCitation] | None = None
+    warnings: list[str] | None = None
 
 
 class SourceCitation(StrictSchema):
