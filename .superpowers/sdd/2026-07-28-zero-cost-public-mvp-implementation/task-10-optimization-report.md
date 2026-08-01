@@ -87,3 +87,58 @@ expected deterministic observation, not a runner failure.
   into a `TravelProfile`, planner input, or session store.
 - `docs/work-log-2026-07-30.md` was already untracked in the worktree and was
   deliberately not read, changed, staged, or committed by this task.
+
+## Safety refinement round 1
+
+### Finding and root cause
+
+The first dynamic-request regex made its trailing price/inventory predicate
+optional. A relative-date lodging guidance request (`明天住什么酒店比较方便`) therefore
+matched as if it required a realtime provider. Separately, the guarantee regex
+treated `确保` as an unconditional safety promise, so a request for guidance
+(`如何确保夜游安全`) was refused.
+
+### RED
+
+Added `test_ordinary_timed_lodging_and_safety_guidance_are_not_refused` to
+`tests/unit/test_agent_routes.py`, retaining the existing R001/R006/R014
+refusal assertions. Ran:
+
+```text
+T:\.venv\Scripts\python.exe -m pytest tests\unit\test_agent_routes.py -q -k
+'ordinary_timed_lodging_and_safety_guidance or
+unverifiable_realtime_and_guaranteed_safety_requests'
+```
+
+Result: `2 failed, 3 passed, 24 deselected`. The ordinary lodging request
+returned `UNVERIFIABLE_REALTIME_REQUEST`; the ordinary safety-guidance request
+returned `HIGH_STAKES_ADVICE`.
+
+### GREEN
+
+- The realtime pattern now requires a price, inventory, or availability token
+  after a timed flight/hotel/ticket subject.
+- The high-stakes pattern retains `保证` and `绝对` promises plus disaster
+  impossibility claims, but no longer treats `确保` alone as a guarantee.
+
+Focused GREEN command:
+
+```text
+T:\.venv\Scripts\python.exe -m pytest tests\unit\test_agent_routes.py -q -k
+'ordinary_timed_lodging_and_safety_guidance or
+unverifiable_realtime_and_guaranteed_safety_requests or
+ordinary_travel_safety_advice'
+```
+
+Result: `6 passed, 23 deselected`.
+
+Additional verification:
+
+- `T:\.venv\Scripts\python.exe -m pytest tests\unit\test_agent_routes.py -q`
+  → `29 passed`.
+- `T:\.venv\Scripts\python.exe -m tests.evaluation.runner --cases
+  tests/evaluation/cases.jsonl --output build/evaluation` → exit `0`.
+  The expected `agent_failed` log is the E010 fallback scenario.
+
+Implementation commit: `7abadf7d8d0acd557c97676ef44aa96d9222116b`
+(`fix: narrow safety refusal patterns`).
