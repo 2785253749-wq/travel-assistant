@@ -246,3 +246,66 @@ Additional verification:
 
 Implementation commit: `ebdecfc5fe49646f55f12766b01b02a48ca0b925`
 (`fix: respect safety and lookup opt-outs`).
+
+## Safety refinement round 4
+
+### Finding and root cause
+
+Round 3 made both exemptions message-global. A practical-safety match anywhere
+in the message suppressed every direct-safety-guarantee match, so
+`确保大家的安全措施到位，也确保旅途安全` was accepted despite its separate outcome
+guarantee. Likewise, a dynamic-lookup opt-out anywhere in the message returned
+`False` for the whole request, so `机票价格不用查，明天酒店价格多少` was accepted
+despite its separate live hotel-price query.
+
+### RED
+
+Added two mixed-clause cases to `tests/unit/test_agent_routes.py`, while
+retaining the standalone practical precaution, standalone lookup opt-out,
+ordinary safety guidance, direct guarantee, concise timed ticket-price, and
+R001 regressions. Because this session's venv launcher could not start, the
+existing Python 3.13 installation was given the worktree's existing
+`.venv/Lib/site-packages` through process-local `PYTHONPATH`; no environment or
+dependency was created or modified.
+
+```text
+python -m pytest tests/unit/test_agent_routes.py -q -k
+'exemption_in_one_clause_does_not_suppress_a_separate_refusal or
+practical_safety_measures_and_explicit_price_lookup_opt_out or
+direct_safety_guarantees or ordinary_timed_lodging_and_safety_guidance or
+concise_timed_ticket_price_request or
+unverifiable_realtime_and_guaranteed_safety_requests'
+```
+
+Result: `2 failed, 10 passed, 27 deselected`. Both new mixed-clause requests
+returned no refusal; every retained control passed.
+
+### GREEN
+
+- Direct-safety guarantees are now evaluated match by match. A practical
+  precaution exempts only a direct-guarantee match whose complete span it
+  covers; a separate direct guarantee remains refused.
+- Dynamic price/inventory detection now evaluates punctuation-delimited
+  clauses. An explicit lookup opt-out skips only its own clause; another
+  clause with a time marker, travel subject, and dynamic-data demand remains
+  refused.
+
+Focused GREEN with the same selector: `12 passed, 27 deselected`.
+
+Additional verification:
+
+- `python -m pytest tests/unit/test_agent_routes.py -q` → `39 passed`.
+- `python -m pytest -q` → `246 passed`, with the existing
+  Starlette/httpx deprecation warning.
+- `python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl
+  --output build/evaluation` → exit `0`; all 80 cases passed, every positive
+  metric was `1.0`, unsupported fact rate was `0.0`, and failures,
+  failed thresholds, and known failures were empty. The expected
+  `agent_failed` log remains E010's fallback observation.
+
+Affected files were limited to `app/agent/safety.py` and
+`tests/unit/test_agent_routes.py`. The fixed evaluation cases, expectations,
+thresholds, baseline, runner, and Task 11 files were unchanged.
+
+Implementation commit: `0c7c4436b7f185393c145e1b5be3333303266eb8`
+(`fix: scope safety exemptions to clauses`).
