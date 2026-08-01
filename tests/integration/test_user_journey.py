@@ -42,6 +42,6 @@ def test_profile_share_and_history_controls_are_labeled_and_private_by_default(c
 
 
 def test_public_share_route_is_still_available_without_private_credentials(client):
-    response = client.get("/api/shared/not-a-valid-token")
+    response = client.post("/api/shared/resolve", json={"token": "not-a-valid-token"})
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "SHARE_NOT_FOUND"

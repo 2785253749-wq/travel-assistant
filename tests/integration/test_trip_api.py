@@ -75,14 +75,14 @@ def test_share_endpoint_is_public_read_only_and_revocable(client):
     assert share.status_code == 201
     token = share.json()["token"]
 
-    public = client.get(f"/api/shared/{token}")
+    public = client.post("/api/shared/resolve", json={"token": token})
     assert public.status_code == 200
     assert set(public.json()) == {"id", "title", "status", "profile", "itinerary", "updated_at"}
     assert "user_id" not in public.text
 
     revoked = client.delete(f"/api/trips/{trip['id']}/share", headers=_headers("user-a"))
     assert revoked.status_code == 204
-    assert client.get(f"/api/shared/{token}").status_code == 404
+    assert client.post("/api/shared/resolve", json={"token": token}).status_code == 404
 
 
 def test_non_owner_cannot_list_mutate_or_manage_share_links(client):
@@ -123,7 +123,9 @@ def test_development_default_services_share_one_in_memory_store(monkeypatch):
         )
         assert share.status_code == 201
 
-        public = development_client.get(f"/api/shared/{share.json()['token']}")
+    public = development_client.post(
+        "/api/shared/resolve", json={"token": share.json()["token"]}
+    )
 
     assert public.status_code == 200
     assert public.json()["id"] == trip["id"]

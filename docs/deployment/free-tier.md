@@ -47,6 +47,12 @@ $bytes = New-Object byte[] 32
 
 `APP_ENV=production` 会让应用在启动时检查 Supabase 与签名配置。缺失或明显的占位符会使部署失败，这是预期的安全行为。
 
+`render.yaml` 还固定设置 `TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip`，并通过 `--no-proxy-headers` 禁止 Uvicorn 信任通用转发头。匿名对话仍由签名 Cookie 隔离，但 AI 单用户额度使用客户端网络前缀的 HMAC 摘要；删除 Cookie 不会重置额度，服务端也不会保存原始 IP。这个模式基于 Render 公网流量经过 Cloudflare 的部署边界，只接受格式严格的单值 `CF-Connecting-IP`，完全忽略可由客户端构造链条的 `X-Forwarded-For`。缺失、重复或非法的可信头会统一落到共享的 fail-closed 额度主体，不会为请求创建新额度。参见 [Render 公网服务边界](https://render.com/docs/web-services)、[Render 的 Cloudflare 入口说明](https://render.com/docs/uptime-best-practices) 和 [Cloudflare 请求头契约](https://developers.cloudflare.com/fundamentals/reference/http-headers/)。
+
+如果迁移到其他平台，先确认其入口无法被绕过、可信客户端地址头会由代理覆盖，随后再显式选择对应模式；当前未配置的平台默认忽略所有转发头并使用 socket peer。不要仅凭“代理跳数”信任 `X-Forwarded-For`。
+
+登录用户额度按已验证的用户 UUID 计算；匿名网络额度和全局额度同时保留。共享网络可能共用匿名额度，这是防止低成本 Cookie 轮换绕过的明确取舍。Render 启动命令关闭 Uvicorn 原始 access log，改用应用的结构化请求日志。浏览器把 bearer 分享令牌保留在 URL fragment（fragment 不会发送到服务器），再通过固定的 `POST /api/shared/resolve` 请求体解析；令牌不会进入应用、Uvicorn 或 Render 平台的请求路径日志。
+
 ## 4. 先关闭 AI 做首次冒烟测试
 
 首次部署建议把 Render 的 `AI_ENABLED` 改为 `false` 并重新部署，然后检查：

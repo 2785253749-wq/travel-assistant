@@ -337,7 +337,9 @@ test("Task 7 activity citations render canonical freshness and reject malicious 
     source_type: "forged", fetched_at: "2098-01-01T00:00:00Z", freshness: "FORGED-ALLOWED-HOST-MARKER", fact: "forged shape",
   });
   const harness = createHarness({ hash: "#share=opaque", fetch: async (call) => {
-    assert.equal(call.url, "/api/shared/opaque");
+    assert.equal(call.url, "/api/shared/resolve");
+    assert.equal(call.options.method, "POST");
+    assert.deepEqual(JSON.parse(call.options.body), { token: "opaque" });
     return jsonResponse(200, { id: "trip-1", title: "shared", status: "planned", profile: {}, itinerary, updated_at: null });
   } });
   await settle();

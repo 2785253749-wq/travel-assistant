@@ -57,13 +57,16 @@ def test_chat_api_logs_only_stable_error_metadata(monkeypatch, caplog):
     monkeypatch.setattr(chat_api, "chat", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("Bearer jwt-secret")))
     with caplog.at_level("WARNING", logger="app.api.chat"):
         response = TestClient(app).post(
-            "/api/chat", json={"message": "从北京出发", "thread_id": "thread-1"}
+            "/api/chat", headers={"X-Request-ID": "req-agent-failure"},
+            json={"message": "从北京出发", "thread_id": "thread-1"}
         )
 
     assert response.status_code == 503
     record = next(record for record in caplog.records if record.message == "chat_request_failed")
     assert record.error_code == "CHAT_UNAVAILABLE"
     assert record.exception_type == "RuntimeError"
+    assert record.request_id == "req-agent-failure"
+    assert response.json()["request_id"] == "req-agent-failure"
     assert "jwt-secret" not in caplog.text
 
 
@@ -74,7 +77,7 @@ def test_anonymous_session_cookie_scopes_same_thread_per_client(monkeypatch):
 
     profiles = {}
 
-    def fake_chat(user, trip_id, message, *, thread_id, session_scope, action):
+    def fake_chat(user, trip_id, message, *, thread_id, session_scope, quota_subject, action):
         key = (session_scope, thread_id)
         profile = dict(profiles.get(key, {}))
         if message == "first":
@@ -99,6 +102,85 @@ def test_anonymous_session_cookie_scopes_same_thread_per_client(monkeypatch):
     assert second_a.json()["profile"]["destination"] == "杭州"
     assert "set-cookie" not in second_a.headers
     assert len({scope for scope, _ in profiles}) == 2
+
+
+def test_anonymous_quota_subject_survives_cookie_deletion_and_ignores_spoofed_forwarding(monkeypatch):
+    """A caller must not receive a fresh AI allowance by dropping one cookie."""
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+
+    identities = []
+
+    def fake_chat(
+        user, trip_id, message, *, thread_id, session_scope, quota_subject, action
+    ):
+        identities.append((session_scope, quota_subject))
+        return ChatResult("ok", "collecting", {})
+
+    monkeypatch.setattr(chat_api, "chat", fake_chat)
+    client = TestClient(app, client=("198.51.100.24", 51000))
+
+    first = client.post(
+        "/api/chat",
+        headers={"X-Forwarded-For": "203.0.113.99"},
+        json={"message": "first", "thread_id": "quota", "action": "collect"},
+    )
+    client.cookies.clear()
+    second = client.post(
+        "/api/chat",
+        headers={"X-Forwarded-For": "192.0.2.88"},
+        json={"message": "second", "thread_id": "quota", "action": "collect"},
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert identities[0][0] != identities[1][0]
+    assert identities[0][1] == identities[1][1]
+    assert identities[0][1].startswith("anon-network:")
+    assert "198.51.100.24" not in identities[0][1]
+
+
+def test_render_cloudflare_identity_is_single_value_and_fails_closed(monkeypatch):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+    from app.core.config import get_settings
+
+    quota_subjects = []
+
+    def fake_chat(user, trip_id, message, **kwargs):
+        quota_subjects.append(kwargs["quota_subject"])
+        return ChatResult("ok", "collecting", {})
+
+    monkeypatch.setattr(chat_api, "chat", fake_chat)
+    monkeypatch.setenv("TRUSTED_CLIENT_IP_HEADER", "cf-connecting-ip")
+    get_settings.cache_clear()
+    clients = [
+        TestClient(app, client=("10.0.0.1", 51000)),
+        TestClient(app, client=("10.0.0.2", 51000)),
+        TestClient(app, client=("10.0.0.3", 51000)),
+        TestClient(app, client=("10.0.0.4", 51000)),
+    ]
+    headers = [
+        {"CF-Connecting-IP": "2001:db8:1:2::10", "X-Forwarded-For": "203.0.113.1"},
+        {"CF-Connecting-IP": "2001:db8:1:2::99", "X-Forwarded-For": "192.0.2.9"},
+        {},
+        {"CF-Connecting-IP": "bad,203.0.113.7"},
+    ]
+    try:
+        for client, request_headers in zip(clients, headers, strict=True):
+            response = client.post(
+                "/api/chat",
+                headers=request_headers,
+                json={"message": "hello", "thread_id": "quota", "action": "collect"},
+            )
+            assert response.status_code == 200
+    finally:
+        get_settings.cache_clear()
+
+    assert quota_subjects[0] == quota_subjects[1]
+    assert quota_subjects[2] == quota_subjects[3]
+    assert quota_subjects[0] != quota_subjects[2]
 
 
 def test_well_formed_client_supplied_legacy_cookie_is_rotated(monkeypatch):
@@ -155,7 +237,7 @@ def test_tampered_real_cookie_cannot_access_existing_profile(monkeypatch):
 
     profiles = {}
 
-    def fake_chat(user, trip_id, message, *, thread_id, session_scope, action):
+    def fake_chat(user, trip_id, message, *, thread_id, session_scope, quota_subject, action):
         key = (session_scope, thread_id)
         profile = dict(profiles.get(key, {}))
         if message == "first":
@@ -193,7 +275,7 @@ def test_authenticated_users_scope_same_thread_by_verified_user_id(monkeypatch):
 
     scopes = []
 
-    def fake_chat(user, trip_id, message, *, thread_id, session_scope, action):
+    def fake_chat(user, trip_id, message, *, thread_id, session_scope, quota_subject, action):
         scopes.append(session_scope)
         return ChatResult("ok", "collecting", {})
 
@@ -340,7 +422,7 @@ def _planned_candidate(*, budget: int, evidence_id: str, fact: str) -> dict:
     }
 
 
-def test_http_production_path_plans_persists_reopens_modifies_and_degrades(monkeypatch):
+def test_http_production_path_plans_persists_reopens_modifies_and_degrades(monkeypatch, caplog):
     """Bypassing production composition must lose provider evidence or persisted plans."""
     from app.agent.graph import ModelIntentClassifier, ModelTravelExtractor, TrustedEvidence
     from app.agent.intent import IntentResult
@@ -456,10 +538,12 @@ def test_http_production_path_plans_persists_reopens_modifies_and_degrades(monke
         assert collected.json()["stage"] == "confirming"
         assert provider_calls == []
 
-        planned = client.post(
-            "/api/chat",
-            json={"message": "confirm", "thread_id": "journey-1", "action": "confirm"},
-        )
+        with caplog.at_level("INFO"):
+            planned = client.post(
+                "/api/chat",
+                headers={"X-Request-ID": "req-http-plan"},
+                json={"message": "confirm", "thread_id": "journey-1", "action": "confirm"},
+            )
         assert planned.status_code == 200
         first = planned.json()
         assert first["stage"] == "planned"
@@ -467,6 +551,17 @@ def test_http_production_path_plans_persists_reopens_modifies_and_degrades(monke
         assert first["sources"][0]["evidence_id"] == evidence_id
         assert first["itinerary"]["budget"]["trip_total"] == 3000
         assert first["trip_id"]
+        journey_records = [
+            record
+            for record in caplog.records
+            if record.message in {"planning_started", "provider_result", "model_usage", "request_complete"}
+            and getattr(record, "request_id", None) == "req-http-plan"
+        ]
+        assert {record.message for record in journey_records} == {
+            "planning_started", "provider_result", "model_usage", "request_complete"
+        }
+        assert all(record.subject.startswith("user-digest:") for record in journey_records)
+        assert all(str(user.id) not in record.subject for record in journey_records)
 
         reopened = client.get(f"/api/trips/{first['trip_id']}")
         assert reopened.status_code == 200

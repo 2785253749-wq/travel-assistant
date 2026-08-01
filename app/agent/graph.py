@@ -22,6 +22,7 @@ from app.agent.extraction import ExtractionCandidate, build_extraction_candidate
 from app.agent.intent import Intent, IntentResult, classify_intent
 from app.agent.safety import REFUSALS, assess_destination, assess_message
 from app.core.config import get_settings
+from app.core.logging import operational_context
 from app.core.usage import ProviderUnavailable, get_model_gateway
 from app.schemas import ExtractionResult, Itinerary, ProfileIssue, TravelProfile
 from app.trips.models import Trip
@@ -303,6 +304,9 @@ class SafeTravelAgent:
             return self._refusal(safety.code or "OUT_OF_SCOPE")
         try:
             intent = self._classifier.classify(message, trip is not None).intent
+            logging.getLogger("app.agent").info(
+                "intent_classified", extra=operational_context(intent=intent)
+            )
             if intent == "unsupported":
                 return self._refusal("OUT_OF_SCOPE")
             if intent == "smalltalk":
@@ -348,7 +352,7 @@ class SafeTravelAgent:
         except Exception as exc:
             logging.getLogger("app.agent").warning(
                 "agent_failed",
-                extra={"error_code": "AGENT_UNAVAILABLE", "exception_type": type(exc).__name__},
+                extra=operational_context(error_code="AGENT_UNAVAILABLE", exception_type=type(exc).__name__),
             )
             return ChatResult(
                 "Unable to collect trip details right now.",
@@ -365,7 +369,7 @@ class SafeTravelAgent:
         message: str,
     ) -> ChatResult:
         """Fetch evidence and plan only for a server-held validated profile."""
-        del trip, user_id, message
+        del user_id, message
         issues = validate_profile(profile)
         missing = [name for name in REQUIRED_FIELDS if getattr(profile, name) in (None, "")]
         if issues or missing:
@@ -374,6 +378,12 @@ class SafeTravelAgent:
         if not destination.allowed:
             return self._refusal(destination.code or "OUT_OF_SCOPE")
         try:
+            logging.getLogger("app.agent").info(
+                "planning_started",
+                extra=operational_context(
+                    intent="modify_trip" if trip is not None else "plan_trip"
+                ),
+            )
             fetched = self._evidence_provider.fetch(profile)
             provider_results = getattr(fetched, "results", fetched)
             warnings = list(getattr(fetched, "warnings", ()))
@@ -408,7 +418,7 @@ class SafeTravelAgent:
         except Exception as exc:
             logging.getLogger("app.agent").warning(
                 "agent_failed",
-                extra={"error_code": "AGENT_UNAVAILABLE", "exception_type": type(exc).__name__},
+                extra=operational_context(error_code="AGENT_UNAVAILABLE", exception_type=type(exc).__name__),
             )
             return ChatResult(
                 "Unable to generate an itinerary right now.",
@@ -486,7 +496,7 @@ class SafeTravelAgent:
         except Exception as exc:
             logging.getLogger("app.agent").warning(
                 "agent_failed",
-                extra={"error_code": "AGENT_UNAVAILABLE", "exception_type": type(exc).__name__},
+                extra=operational_context(error_code="AGENT_UNAVAILABLE", exception_type=type(exc).__name__),
             )
             return ChatResult("暂时无法生成行程，请稍后重试。", "collecting", {}, error_code="AGENT_UNAVAILABLE")
 

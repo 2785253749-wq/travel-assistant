@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import logging
 from typing import Any
 
 from app.providers.base import ProviderResult, utc_now
 from app.providers.booking_links import BookingLinkBuilder, BookingLinks
 from app.providers.free_weather import WEATHER_SOURCE, WeatherProvider
 from app.providers.places import PLACES_SOURCE, PlacesProvider
+from app.core.logging import operational_context
 from app.schemas import TravelProfile
 
 
@@ -65,6 +67,11 @@ class ProviderEvidenceAggregator:
                 utc_now(),
                 degraded=True,
                 error_code="PLACES_UNAVAILABLE",
+            )
+        for provider, result in (("weather", weather), ("places", places)):
+            logging.getLogger("app.provider").info(
+                "provider_result",
+                extra=operational_context(provider=provider, error_code=result.error_code),
             )
         return ProviderBundle(
             results=(weather, places),

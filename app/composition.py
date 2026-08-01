@@ -47,6 +47,7 @@ def execute_chat_request(
     *,
     thread_id: str,
     session_scope: str,
+    quota_subject: str,
     action: str,
 ):
     application = build_chat_application(user)
@@ -60,5 +61,5 @@ def execute_chat_request(
     if action == "collect":
         return application.collect(**arguments)
     if action == "confirm":
-        return application.confirm(**arguments)
+        return application.confirm(**arguments, quota_subject=quota_subject)
     raise ValueError("unsupported chat action")

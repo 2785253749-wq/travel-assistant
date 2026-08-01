@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     ai_enabled: bool = True
     ai_user_daily_limit: int = Field(default=5, ge=0, le=100)
     ai_global_daily_limit: int = Field(default=100, ge=0, le=10_000)
+    trusted_client_ip_header: Literal["none", "cf-connecting-ip"] = "none"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

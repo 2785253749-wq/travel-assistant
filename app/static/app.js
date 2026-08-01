@@ -707,7 +707,7 @@
     const token = decodeURIComponent(match[1]);
     setBusy(true, "正在打开只读分享…");
     try {
-      const trip = await requestJson(`/api/shared/${encodeURIComponent(token)}`);
+      const trip = await requestJson("/api/shared/resolve", { method: "POST", body: { token } });
       renderTrip(trip, { public: true });
       elements.messages.closest("section").hidden = true;
       elements.history.hidden = true;

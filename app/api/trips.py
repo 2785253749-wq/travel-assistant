@@ -31,6 +31,11 @@ class ShareRequest(BaseModel):
     expires_in_days: int = Field(default=30, ge=1, le=365)
 
 
+class ResolveShareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str = Field(min_length=1, max_length=512)
+
+
 def _trip_response(trip: Trip) -> dict[str, Any]:
     return {
         "id": str(trip.id),
@@ -102,9 +107,9 @@ def revoke_share_link(trip_id: UUID, user: CurrentUser, service: TripService = D
         _raise_http(error)
 
 
-@router.get("/api/shared/{token}")
-def get_shared_trip(token: str, service: TripService = Depends(get_public_trip_service)):
+@router.post("/api/shared/resolve")
+def get_shared_trip(request: ResolveShareRequest, service: TripService = Depends(get_public_trip_service)):
     try:
-        return service.get_shared_trip(token)
+        return service.get_shared_trip(request.token)
     except AppError as error:
         _raise_http(error)

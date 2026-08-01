@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+import logging
 from threading import RLock
 from typing import Callable, Protocol
 from uuid import UUID
 
 from app.agent.graph import ChatResult, SafeTravelAgent
 from app.core.errors import AppError
+from app.core.logging import operational_context
 from app.core.usage import ProviderUnavailable, UsageGuard, model_usage_scope
 from app.schemas import TravelProfile
 from app.trips.models import Trip
@@ -112,6 +114,7 @@ class TravelChatApplication:
         *,
         user_id: UUID | None,
         subject: str,
+        quota_subject: str | None = None,
         thread_id: str,
         trip_id: UUID | None,
         message: str,
@@ -123,7 +126,7 @@ class TravelChatApplication:
                 raise AppError("CONFIRMATION_REQUIRED", "Collect and confirm trip details first")
             pending = PendingConfirmation(trip.profile, message)
 
-        reservation = self._usage_guard.reserve(subject)
+        reservation = self._usage_guard.reserve(quota_subject or subject)
         try:
             with model_usage_scope() as usage:
                 result = self._agent_factory(pending.profile).plan_confirmed(
@@ -136,6 +139,14 @@ class TravelChatApplication:
             reservation.rollback()
             return result
         reservation.commit(max(usage.input_tokens, usage.calls), usage.output_tokens)
+        logging.getLogger("app.model").info(
+            "model_usage",
+            extra=operational_context(
+                model_calls=usage.calls,
+                model_input_tokens=usage.input_tokens,
+                model_output_tokens=usage.output_tokens,
+            ),
+        )
 
         if user_id is not None:
             if self._trip_service is None:

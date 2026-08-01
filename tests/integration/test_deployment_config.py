@@ -51,6 +51,8 @@ def test_render_uses_free_plan_port_and_platform_secrets():
     assert service["runtime"] == "python"
     assert service["plan"] == "free"
     assert "--port $PORT" in service["startCommand"]
+    assert "--no-access-log" in service["startCommand"]
+    assert "--no-proxy-headers" in service["startCommand"]
     assert service["healthCheckPath"] == "/health"
     env = {item["key"]: item for item in service["envVars"]}
     for key in (
@@ -62,6 +64,7 @@ def test_render_uses_free_plan_port_and_platform_secrets():
     ):
         assert env[key]["sync"] is False
     assert env["APP_ENV"]["value"] == "production"
+    assert env["TRUSTED_CLIENT_IP_HEADER"]["value"] == "cf-connecting-ip"
 
 
 def test_ci_runs_tests_offline_evaluation_and_public_repo_gate():

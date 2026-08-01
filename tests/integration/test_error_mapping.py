@@ -34,6 +34,7 @@ def test_daily_limit_is_a_safe_429_with_request_id(monkeypatch):
     assert response.status_code == 429
     assert response.headers["X-Request-ID"] == "request-8"
     assert response.json()["detail"]["code"] == "AI_DAILY_LIMIT_REACHED"
+    assert response.json()["request_id"] == "request-8"
 
 
 def test_disabled_ai_is_a_safe_503_without_calling_chat(monkeypatch):
