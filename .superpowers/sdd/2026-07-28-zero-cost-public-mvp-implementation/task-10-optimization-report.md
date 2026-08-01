@@ -142,3 +142,53 @@ Additional verification:
 
 Implementation commit: `7abadf7d8d0acd557c97676ef44aa96d9222116b`
 (`fix: narrow safety refusal patterns`).
+
+## Safety refinement round 2
+
+### Finding and root cause
+
+Round 1 correctly stopped treating every `确保` phrase as a guarantee, but
+therefore missed direct promises such as `确保旅途安全`. Its realtime regex also
+required a second dynamic token after the timed travel subject; concise
+requests such as `明天票价是多少` have one `票价` token that is both the travel
+subject and price demand.
+
+### RED
+
+Added direct-guarantee, precaution/guidance, ordinary-flight-planning, and
+concise-ticket-price cases to `tests/unit/test_agent_routes.py`. Ran:
+
+```text
+T:\.venv\Scripts\python.exe -m pytest tests\unit\test_agent_routes.py -q -k
+'direct_safety_guarantees or safety_precautions_and_ordinary_flight_planning or
+concise_timed_ticket_price_request or ordinary_timed_lodging_and_safety_guidance
+or unverifiable_realtime_and_guaranteed_safety_requests'
+```
+
+Result: `2 failed, 9 passed, 24 deselected`. `确保旅途安全` was not refused, and
+`明天票价是多少` was not refused. The ordinary guidance and planning cases were
+already non-refused.
+
+### GREEN
+
+- A direct-ensure matcher now requires `确保` to be followed by an explicit
+  protected traveler/itinerary subject and safety result. It refuses direct
+  promises (`确保我人身安全`, `确保旅途安全`) but does not match guidance or
+  equipment precautions (`如何确保夜游安全`, `确保带上安全装备`).
+- Realtime detection now requires three semantic signals: a time marker, a
+  travel subject, and a price/inventory/availability demand. `票价` appears in
+  both the subject and demand sets so concise price questions remain refused,
+  while normal hotel/flight planning lacks a dynamic demand.
+
+Focused GREEN command (same selector) → `11 passed, 24 deselected`.
+
+Additional verification:
+
+- `T:\.venv\Scripts\python.exe -m pytest tests\unit\test_agent_routes.py -q`
+  → `35 passed`.
+- `T:\.venv\Scripts\python.exe -m tests.evaluation.runner --cases
+  tests/evaluation/cases.jsonl --output build/evaluation` → exit `0`.
+  The expected `agent_failed` log is E010's fallback observation.
+
+Implementation commit: `e1eb60ac3dd3aa1853afcfe253fa22f7174ee99e`
+(`fix: distinguish safety guarantees from guidance`).
