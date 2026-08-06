@@ -12,15 +12,51 @@ def _migration() -> str:
     return MIGRATION.read_text(encoding="utf-8").lower()
 
 
+def _policy_blocks(migration: str) -> list[tuple[str, str]]:
+    """Return every policy separately so duplicate weak policies cannot hide."""
+    pattern = re.compile(
+        r'create\s+policy\s+(?:"[^"]+"|[a-z_][a-z0-9_$]*)'
+        r'\s+on\s+public\.(?P<table>[a-z_]+)'
+        r'(?P<body>[\s\S]*?)(?=create\s+policy\b|\Z)'
+    )
+    return [
+        (match.group("table"), match.group("body"))
+        for match in pattern.finditer(migration)
+    ]
+
+
+def test_policy_parser_does_not_skip_unquoted_policy_names():
+    migration = _migration() + (
+        "\ncreate policy weak on public.trips for select using (true);"
+    )
+
+    trip_policies = [
+        body for table, body in _policy_blocks(migration) if table == "trips"
+    ]
+
+    assert len(trip_policies) == 2
+    assert "using (true)" in trip_policies[1]
+
+
 def test_private_user_tables_enable_rls_and_scope_to_authenticated_owner():
     """Removing an ownership policy must expose the missing isolation contract."""
     migration = _migration()
+    policies = _policy_blocks(migration)
 
     for table in ("profiles", "trips", "conversation_messages", "share_links", "ai_usage"):
         assert f"create table public.{table}" in migration
         assert f"alter table public.{table} enable row level security" in migration
-        assert f"on public.{table}" in migration
-        assert "auth.uid() = user_id" in migration
+        table_policies = [body for policy_table, body in policies if policy_table == table]
+        assert table_policies
+        for policy in table_policies:
+            assert re.search(r"\bfor\s+all\b", policy)
+            assert re.search(
+                r"\busing\s*\(\s*auth\.uid\(\)\s*=\s*user_id\s*\)", policy
+            )
+            assert re.search(
+                r"\bwith\s+check\s*\(\s*auth\.uid\(\)\s*=\s*user_id\s*\)",
+                policy,
+            )
 
 
 def test_share_links_store_only_hashes_and_have_no_public_read_policy():

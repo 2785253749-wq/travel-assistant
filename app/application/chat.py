@@ -158,7 +158,7 @@ class TravelChatApplication:
                 trip.id,
                 profile=pending.profile,
                 status="planned",
-                itinerary=result.itinerary.model_dump(mode="json"),
+                itinerary=result.itinerary,
             )
             self._trip_service.append_message(
                 user_id, trip.id, role="user", content=pending.user_message

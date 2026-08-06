@@ -14,8 +14,6 @@ from typing import Any
 from fastapi import Request, Response
 
 from app.core.config import get_settings
-
-
 _REQUEST_ID = ContextVar[str | None]("request_id", default=None)
 _SUBJECT = ContextVar[str | None]("log_subject", default=None)
 _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")

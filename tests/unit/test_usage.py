@@ -11,7 +11,9 @@ import pytest
 
 from app.core.errors import AppError
 from app.core.config import get_settings
-from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircuitBreaker, ProviderUnavailable, ReserveResult, SupabaseUsageRepository, UsageGuard, classify_provider_error, get_usage_guard, model_usage_scope
+from app.composition import get_usage_guard
+from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircuitBreaker, ProviderUnavailable, ReserveResult, UsageGuard, classify_provider_error, model_usage_scope
+from app.infrastructure.usage import SupabaseUsageRepository
 
 
 TODAY = datetime(2026, 7, 29, tzinfo=UTC).date()
@@ -20,6 +22,14 @@ MIGRATIONS = Path(__file__).parents[2] / "supabase" / "migrations"
 RESERVE_SIGNATURE = ("text", "date", "integer", "integer")
 COMMIT_SIGNATURE = ("uuid", "text", "date", "integer", "integer")
 ROLLBACK_SIGNATURE = ("uuid", "text", "date")
+
+
+def test_core_usage_has_no_config_or_supabase_adapter_dependency():
+    source = Path("app/core/usage.py").read_text(encoding="utf-8")
+
+    assert "app.core.config" not in source
+    assert "class SupabaseUsageRepository" not in source
+    assert "from supabase" not in source
 
 
 def _parse_usage_functions(sql: str, migration_name: str):

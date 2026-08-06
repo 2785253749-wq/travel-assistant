@@ -1,12 +1,15 @@
 from uuid import UUID
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.auth import AuthenticatedUser, get_supabase_auth_gateway_factory
+from app.composition import get_public_trip_service, get_trip_service
 from app.infrastructure.repositories import InMemoryTripRepository
 from app.main import app
-from app.trips.service import TripService, get_public_trip_service, get_trip_service
+from app.schemas import Itinerary
+from app.trips.service import TripService
 
 
 USER_A = UUID("11111111-1111-1111-1111-111111111111")
@@ -23,15 +26,19 @@ class FakeAuthGateway:
 
 
 @pytest.fixture
-def client(monkeypatch):
+def trip_service():
+    return TripService(InMemoryTripRepository())
+
+
+@pytest.fixture
+def client(monkeypatch, trip_service):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     from app.core.config import get_settings
 
     get_settings.cache_clear()
     app.dependency_overrides[get_supabase_auth_gateway_factory] = lambda: lambda: FakeAuthGateway()
-    service = TripService(InMemoryTripRepository())
-    app.dependency_overrides[get_trip_service] = lambda: service
-    app.dependency_overrides[get_public_trip_service] = lambda: service
+    app.dependency_overrides[get_trip_service] = lambda: trip_service
+    app.dependency_overrides[get_public_trip_service] = lambda: trip_service
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -52,14 +59,14 @@ def _create_trip(client: TestClient) -> dict:
     return response.json()
 
 
-def test_private_crud_uses_verified_owner_and_ignores_body_user_id(client):
+def test_private_crud_uses_verified_owner(client):
     trip = _create_trip(client)
     assert trip["user_id"] == str(USER_A)
 
     response = client.patch(
         f"/api/trips/{trip['id']}",
         headers=_headers("user-a"),
-        json={"title": "updated", "user_id": str(USER_B)},
+        json={"title": "updated"},
     )
     assert response.status_code == 200
     assert response.json()["user_id"] == str(USER_A)
@@ -67,6 +74,48 @@ def test_private_crud_uses_verified_owner_and_ignores_body_user_id(client):
     forbidden = client.get(f"/api/trips/{trip['id']}", headers=_headers("user-b"))
     assert forbidden.status_code == 404
     assert forbidden.json()["detail"]["code"] == "TRIP_NOT_FOUND"
+
+
+def test_client_cannot_write_planned_status_itinerary_or_unknown_fields(client):
+    trip = _create_trip(client)
+    forged = {"title": "forged", "days": [{"date": "2099-01-01"}]}
+
+    for payload in (
+        {"itinerary": forged},
+        {"status": "planned"},
+        {"profile": {"destination": "Forged"}},
+        {"title": "updated", "user_id": str(USER_B)},
+    ):
+        response = client.patch(
+            f"/api/trips/{trip['id']}", headers=_headers("user-a"), json=payload
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "REQUEST_INVALID"
+
+    unchanged = client.get(f"/api/trips/{trip['id']}", headers=_headers("user-a"))
+    assert unchanged.json()["status"] == "collecting"
+    assert unchanged.json()["itinerary"] is None
+
+
+def test_copy_endpoint_clones_only_server_validated_trip(client, trip_service):
+    trip = _create_trip(client)
+    itinerary = Itinerary.model_validate_json(
+        Path("tests/fixtures/task7_itinerary.json").read_text(encoding="utf-8")
+    )
+    trip_service.update_trip(
+        USER_A, UUID(trip["id"]), status="planned", itinerary=itinerary
+    )
+
+    response = client.post(
+        f"/api/trips/{trip['id']}/copy", headers=_headers("user-a")
+    )
+
+    assert response.status_code == 201
+    copied = response.json()
+    assert copied["id"] != trip["id"]
+    assert copied["user_id"] == str(USER_A)
+    assert copied["status"] == "planned"
+    assert copied["itinerary"] == itinerary.model_dump(mode="json")
 
 
 def test_share_endpoint_is_public_read_only_and_revocable(client):
@@ -89,9 +138,13 @@ def test_non_owner_cannot_list_mutate_or_manage_share_links(client):
     trip = _create_trip(client)
 
     assert client.get("/api/trips", headers=_headers("user-b")).json() == []
-    for method, suffix in (("patch", ""), ("delete", ""), ("post", "/share"), ("delete", "/share")):
+    for method, suffix in (("patch", ""), ("delete", ""), ("post", "/copy"), ("post", "/share"), ("delete", "/share")):
+        payload = {"title": "stolen"} if method == "patch" else None
         response = client.request(
-            method.upper(), f"/api/trips/{trip['id']}{suffix}", headers=_headers("user-b"), json={"title": "stolen"}
+            method.upper(),
+            f"/api/trips/{trip['id']}{suffix}",
+            headers=_headers("user-b"),
+            json=payload,
         )
         assert response.status_code == 404
         assert response.json()["detail"]["code"] == "TRIP_NOT_FOUND"
@@ -104,7 +157,7 @@ def test_development_default_services_share_one_in_memory_store(monkeypatch):
     monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
     monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
     from app.core.config import get_settings
-    from app.trips import service as service_module
+    from app import composition as service_module
 
     get_settings.cache_clear()
     for name in ("get_trip_service", "get_public_trip_service", "get_development_repository"):

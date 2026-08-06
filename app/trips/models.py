@@ -1,9 +1,9 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from uuid import UUID, uuid4
 
-from app.schemas import TravelProfile
+from app.schemas import Itinerary, TravelProfile
 
 
 @dataclass
@@ -13,7 +13,7 @@ class Trip:
     profile: TravelProfile
     id: UUID = field(default_factory=uuid4)
     status: Literal["collecting", "planned"] = "collecting"
-    itinerary: dict[str, Any] | None = None
+    itinerary: Itinerary | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

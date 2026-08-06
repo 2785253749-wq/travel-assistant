@@ -350,12 +350,6 @@ def test_complete_profile_stops_at_confirmation_without_reserving_or_planning(mo
         )
 
     monkeypatch.setattr(chat_api, "chat", collect_only)
-    monkeypatch.setattr(
-        chat_api,
-        "get_usage_guard",
-        lambda: (_ for _ in ()).throw(AssertionError("quota reserved before confirmation")),
-    )
-
     response = TestClient(app).post(
         "/api/chat",
         json={"message": "complete details", "thread_id": "confirm-1", "action": "collect"},
@@ -432,7 +426,7 @@ def test_http_production_path_plans_persists_reopens_modifies_and_degrades(monke
     from app.providers.free_weather import WeatherProvider
     from app.providers.places import PlacesProvider
     from app.schemas import TravelProfile
-    from app.trips.service import get_development_repository
+    from app.composition import get_development_repository
 
     user = AuthenticatedUser(
         UUID("11111111-1111-1111-1111-111111111111"),

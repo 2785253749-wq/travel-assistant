@@ -13,9 +13,8 @@ from threading import RLock
 from typing import Any, Callable, Protocol
 from contextlib import contextmanager
 from contextvars import ContextVar
-from uuid import UUID, uuid4
+from uuid import uuid4
 
-from app.core.config import get_settings
 from app.core.errors import AppError
 
 
@@ -239,66 +238,6 @@ class InMemoryUsageRepository:
         return UsageCount(count.request_count, count.pending - 1, count.input_tokens, count.output_tokens)
 
 
-class SupabaseUsageRepository:
-    """Server-only service-role adapter for the atomic usage RPCs."""
-
-    def __init__(self, client: object) -> None:
-        self._client = client
-
-    @classmethod
-    def from_settings(cls) -> "SupabaseUsageRepository":
-        settings = get_settings()
-        if settings.supabase_url is None or settings.supabase_service_key is None:
-            raise RuntimeError("server-side usage storage is not configured")
-        from supabase import create_client
-        return cls(create_client(str(settings.supabase_url), settings.supabase_service_key.get_secret_value()))
-
-    @staticmethod
-    def _data(response: object) -> object:
-        return getattr(response, "data", response)
-
-    def get_daily(self, user_key: str, day: date) -> UsageCount:
-        # Reads are only used to classify a failed atomic reservation.
-        response = self._client.rpc("get_ai_usage", {"p_subject_key": user_key, "p_usage_date": day.isoformat()}).execute()
-        row = self._data(response) or {}
-        if isinstance(row, list): row = row[0] if row else {}
-        return UsageCount(**{key: int(row.get(key, 0)) for key in UsageCount.__dataclass_fields__})
-
-    def get_global_daily(self, day: date) -> UsageCount:
-        response = self._client.rpc("get_ai_global_usage", {"p_usage_date": day.isoformat()}).execute()
-        row = self._data(response) or {}
-        if isinstance(row, list): row = row[0] if row else {}
-        return UsageCount(**{key: int(row.get(key, 0)) for key in UsageCount.__dataclass_fields__})
-
-    def reserve(self, user_key: str, day: date, user_limit: int, global_limit: int) -> ReserveResult:
-        try:
-            result = self._data(self._client.rpc("reserve_ai_usage", {"p_subject_key": user_key, "p_usage_date": day.isoformat(), "p_user_limit": user_limit, "p_global_limit": global_limit}).execute())
-        except Exception:
-            raise ProviderUnavailable() from None
-        if isinstance(result, list):
-            result = result[0] if len(result) == 1 else None
-        if not isinstance(result, dict) or set(result) != {"allowed", "reservation_id", "reason"}:
-            raise ProviderUnavailable()
-        allowed = result["allowed"]
-        reservation_id = result["reservation_id"]
-        reason = result["reason"]
-        if allowed is False and reservation_id is None and reason in {"user_limit", "global_limit"}:
-            return ReserveResult(None, reason)
-        if allowed is True and isinstance(reservation_id, str) and reason is None:
-            try:
-                if str(UUID(reservation_id)) == reservation_id:
-                    return ReserveResult(reservation_id, None)
-            except ValueError:
-                pass
-        raise ProviderUnavailable()
-
-    def commit(self, reservation_id: str, user_key: str, day: date, input_tokens: int, output_tokens: int) -> None:
-        self._client.rpc("commit_ai_usage", {"p_reservation_id": reservation_id, "p_subject_key": user_key, "p_usage_date": day.isoformat(), "p_input_tokens": input_tokens, "p_output_tokens": output_tokens}).execute()
-
-    def rollback(self, reservation_id: str, user_key: str, day: date) -> None:
-        self._client.rpc("rollback_ai_usage", {"p_reservation_id": reservation_id, "p_subject_key": user_key, "p_usage_date": day.isoformat()}).execute()
-
-
 class UsageReservation:
     def __init__(self, repository: UsageRepository, reservation_id: str, user_key: str, day: date) -> None:
         self._repository = repository
@@ -340,19 +279,3 @@ class UsageGuard:
             code = "AI_DAILY_LIMIT_REACHED" if result.failure_reason == "user_limit" else "AI_GLOBAL_DAILY_LIMIT_REACHED"
             raise AppError(code, "AI daily limit reached" if code == "AI_DAILY_LIMIT_REACHED" else "AI global daily limit reached")
         return UsageReservation(self.repository, result.reservation_id, user_key, day)
-
-
-_repository = InMemoryUsageRepository()
-
-
-def get_usage_guard() -> UsageGuard:
-    settings = get_settings()
-    configured = settings.deepseek_api_key is not None and bool(settings.deepseek_api_key.get_secret_value().strip())
-    repository: UsageRepository = _repository if settings.app_env != "production" else SupabaseUsageRepository.from_settings()
-    return UsageGuard(
-        repository=repository,
-        user_daily_limit=settings.ai_user_daily_limit,
-        global_daily_limit=settings.ai_global_daily_limit,
-        enabled=settings.ai_enabled,
-        provider_configured=configured,
-    )

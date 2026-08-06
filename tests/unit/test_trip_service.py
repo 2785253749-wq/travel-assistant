@@ -1,12 +1,13 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID
 
 import pytest
 
 from app.core.errors import AppError
 from app.infrastructure.repositories import InMemoryTripRepository
-from app.schemas import TravelProfile
+from app.schemas import Itinerary, TravelProfile
 from app.trips.service import TripService
 
 
@@ -81,3 +82,22 @@ def test_public_view_excludes_owner_and_conversation_data(service, trip):
         "itinerary": None,
         "updated_at": trip.updated_at.isoformat(),
     }
+
+
+def test_server_validated_itinerary_can_be_persisted_and_copied_without_aliasing(service, trip):
+    itinerary = Itinerary.model_validate_json(
+        Path("tests/fixtures/task7_itinerary.json").read_text(encoding="utf-8")
+    )
+    planned = service.update_trip(
+        USER_A, trip.id, status="planned", itinerary=itinerary
+    )
+
+    copied = service.copy_trip(USER_A, trip.id)
+
+    assert planned.itinerary == itinerary
+    assert copied.id != planned.id
+    assert copied.user_id == USER_A
+    assert copied.status == "planned"
+    assert copied.itinerary == itinerary
+    assert copied.itinerary is not planned.itinerary
+    assert copied.title == f"{planned.title} (copy)"

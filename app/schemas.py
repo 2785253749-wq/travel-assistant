@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
@@ -12,28 +12,37 @@ class StrictSchema(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+
+ProfileLocation = Annotated[str, Field(max_length=200)]
+ProfileDate = Annotated[str, Field(max_length=32)]
+ProfileListItem = Annotated[str, Field(max_length=500)]
+DisplayNote = Annotated[str, Field(max_length=500)]
+WarningText = Annotated[str, Field(max_length=500)]
+
 class TravelProfile(StrictSchema):
-    origin: str | None = None
-    destination: str | None = None
-    start_date: str | None = None
-    end_date: str | None = None
-    travelers: int | None = Field(default=None, ge=1)
-    budget_cny: int | None = Field(default=None, ge=0)
-    preferences: list[str] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
+    origin: ProfileLocation | None = None
+    destination: ProfileLocation | None = None
+    start_date: ProfileDate | None = None
+    end_date: ProfileDate | None = None
+    # Keep a hard transport/resource bound here while leaving the product limit
+    # (1-6) to validate_profile(), which returns stable field-level issue codes.
+    travelers: int | None = Field(default=None, ge=1, le=100)
+    budget_cny: int | None = Field(default=None, ge=0, le=10_000_000)
+    preferences: list[ProfileListItem] = Field(default_factory=list, max_length=20)
+    constraints: list[ProfileListItem] = Field(default_factory=list, max_length=20)
 
 
 class RawTravelProfile(StrictSchema):
     """Model output before product-boundary validation creates a TravelProfile."""
 
-    origin: str | None = None
-    destination: str | None = None
-    start_date: str | None = None
-    end_date: str | None = None
-    travelers: int | None = None
-    budget_cny: int | None = Field(default=None, ge=0)
-    preferences: list[str] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
+    origin: ProfileLocation | None = None
+    destination: ProfileLocation | None = None
+    start_date: ProfileDate | None = None
+    end_date: ProfileDate | None = None
+    travelers: int | None = Field(default=None, ge=-100, le=100)
+    budget_cny: int | None = Field(default=None, ge=0, le=10_000_000)
+    preferences: list[ProfileListItem] = Field(default_factory=list, max_length=20)
+    constraints: list[ProfileListItem] = Field(default_factory=list, max_length=20)
 
 
 class ExtractionResult(StrictSchema):
@@ -57,8 +66,8 @@ class ChatResponse(StrictSchema):
     profile: TravelProfile
     itinerary: Itinerary | None = None
     trip_id: UUID | None = None
-    sources: list[SourceCitation] | None = None
-    warnings: list[str] | None = None
+    sources: list[SourceCitation] | None = Field(default=None, max_length=100)
+    warnings: list[WarningText] | None = Field(default=None, max_length=40)
 
 
 class SourceCitation(StrictSchema):
@@ -86,7 +95,7 @@ class Activity(StrictSchema):
     title: str = Field(min_length=1, max_length=300)
     start_time: str = Field(pattern=r"^\d{2}:\d{2}$")
     end_time: str = Field(pattern=r"^\d{2}:\d{2}$")
-    notes: list[str] = Field(default_factory=list, max_length=20)
+    notes: list[DisplayNote] = Field(default_factory=list, max_length=20)
     facts: list["FactClaim"] = Field(default_factory=list, max_length=20, validation_alias=AliasChoices("facts", "claims"))
     citations: list[SourceCitation] = Field(default_factory=list, max_length=20)
 
@@ -192,7 +201,7 @@ class Itinerary(StrictSchema):
     end_date: date
     days: list[ItineraryDay] = Field(min_length=2, max_length=7)
     budget: BudgetBreakdown
-    notes: list[str] = Field(default_factory=list, max_length=40)
+    notes: list[DisplayNote] = Field(default_factory=list, max_length=40)
     assumptions: list[PlanningAssumption] = Field(min_length=1, max_length=40)
     citations: list[SourceCitation] = Field(default_factory=list, max_length=100)
 

@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from app.trips.models import ConversationMessage, ShareLink, Trip
-from app.schemas import TravelProfile
+from app.schemas import Itinerary, TravelProfile
 
 
 class InMemoryTripRepository:
@@ -78,7 +80,11 @@ class InMemoryTripRepository:
             "title": trip.title,
             "status": trip.status,
             "profile": trip.profile.model_dump(mode="json"),
-            "itinerary": trip.itinerary,
+            "itinerary": (
+                trip.itinerary.model_dump(mode="json")
+                if trip.itinerary is not None
+                else None
+            ),
             "updated_at": trip.updated_at.isoformat() if trip.updated_at else None,
         }
 
@@ -98,11 +104,12 @@ class SupabaseTripRepository:
 
     def get(self, user_id: UUID, trip_id: UUID) -> Trip | None:
         response = self._client.table("trips").select("*").eq("id", str(trip_id)).eq("user_id", str(user_id)).execute()
-        return self._trip_from_row(response.data[0]) if response.data else None
+        return self._read_trip(response.data[0]) if response.data else None
 
     def list_for_user(self, user_id: UUID) -> list[Trip]:
         response = self._client.table("trips").select("*").eq("user_id", str(user_id)).order("updated_at", desc=True).execute()
-        return [self._trip_from_row(row) for row in response.data]
+        trips = (self._read_trip(row) for row in response.data)
+        return [trip for trip in trips if trip is not None]
 
     def update(self, user_id: UUID, trip_id: UUID, trip: Trip) -> Trip | None:
         response = self._client.table("trips").update(self._trip_row(trip, include_id=False)).eq("id", str(trip_id)).eq("user_id", str(user_id)).execute()
@@ -128,14 +135,61 @@ class SupabaseTripRepository:
 
     @staticmethod
     def _trip_row(trip: Trip, *, include_id: bool = True) -> dict:
-        row = {"user_id": str(trip.user_id), "title": trip.title, "status": trip.status, "profile": trip.profile.model_dump(mode="json"), "itinerary": trip.itinerary}
+        row = {
+            "user_id": str(trip.user_id),
+            "title": trip.title,
+            "status": trip.status,
+            "profile": trip.profile.model_dump(mode="json"),
+            "itinerary": (
+                trip.itinerary.model_dump(mode="json")
+                if trip.itinerary is not None
+                else None
+            ),
+        }
         if include_id:
             row["id"] = str(trip.id)
         return row
 
     @staticmethod
     def _trip_from_row(row: dict) -> Trip:
-        return Trip(id=UUID(row["id"]), user_id=UUID(row["user_id"]), title=row["title"], status=row["status"], profile=TravelProfile.model_validate(row["profile"]), itinerary=row.get("itinerary"), created_at=datetime.fromisoformat(row["created_at"]) if row.get("created_at") else None, updated_at=datetime.fromisoformat(row["updated_at"]) if row.get("updated_at") else None)
+        status = row["status"]
+        if status not in {"collecting", "planned"}:
+            raise ValueError("invalid stored trip status")
+        itinerary = (
+            Itinerary.model_validate(row["itinerary"])
+            if row.get("itinerary") is not None
+            else None
+        )
+        if (status == "planned") != (itinerary is not None):
+            raise ValueError("stored trip status and itinerary do not match")
+        return Trip(
+            id=UUID(row["id"]),
+            user_id=UUID(row["user_id"]),
+            title=row["title"],
+            status=status,
+            profile=TravelProfile.model_validate(row["profile"]),
+            itinerary=itinerary,
+            created_at=(
+                datetime.fromisoformat(row["created_at"])
+                if row.get("created_at")
+                else None
+            ),
+            updated_at=(
+                datetime.fromisoformat(row["updated_at"])
+                if row.get("updated_at")
+                else None
+            ),
+        )
+
+    @classmethod
+    def _read_trip(cls, row: object) -> Trip | None:
+        """Treat legacy or corrupted database rows as unavailable, not trusted data."""
+        if not isinstance(row, dict):
+            return None
+        try:
+            return cls._trip_from_row(row)
+        except (KeyError, TypeError, ValueError, ValidationError):
+            return None
 
     @staticmethod
     def _share_from_row(row: dict) -> ShareLink:
@@ -172,26 +226,20 @@ class SupabasePublicShareRepository:
         return response.data[0] if response.data else None
 
 
-def create_user_scoped_supabase_repository(access_token: str) -> SupabaseTripRepository:
+def create_user_scoped_supabase_repository(
+    url: str, anon_key: str, access_token: str
+) -> SupabaseTripRepository:
     """Create a client whose PostgREST requests carry the verified caller's JWT."""
-    from app.core.config import get_settings
     from supabase import create_client
 
-    settings = get_settings()
-    client = create_client(
-        str(settings.supabase_url), settings.supabase_anon_key.get_secret_value()
-    )
+    client = create_client(url, anon_key)
     client.postgrest.auth(access_token)
     return SupabaseTripRepository(client)
 
 
-def create_public_share_repository() -> SupabasePublicShareRepository:
+def create_public_share_repository(url: str, anon_key: str) -> SupabasePublicShareRepository:
     """Use only the anon key; the SECURITY DEFINER RPC is its sole data capability."""
-    from app.core.config import get_settings
     from supabase import create_client
 
-    settings = get_settings()
-    client = create_client(
-        str(settings.supabase_url), settings.supabase_anon_key.get_secret_value()
-    )
+    client = create_client(url, anon_key)
     return SupabasePublicShareRepository(client)

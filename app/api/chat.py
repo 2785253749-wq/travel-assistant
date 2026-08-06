@@ -19,7 +19,7 @@ from app.api.auth import OptionalCurrentUser
 from app.core.errors import AppError, ERROR_STATUS, safe_error_detail
 from app.core.config import get_settings
 from app.core.logging import log_subject, operational_context
-from app.core.usage import ProviderUnavailable, get_usage_guard
+from app.core.usage import ProviderUnavailable
 from app.schemas import ChatRequest, ChatResponse, TravelProfile
 
 

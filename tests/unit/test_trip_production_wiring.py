@@ -1,14 +1,24 @@
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 import secrets
 
 from app.api.auth import AuthenticatedUser
 from app.core.config import get_settings
-from app.infrastructure.repositories import InMemoryTripRepository
+from app.infrastructure.repositories import InMemoryTripRepository, SupabaseTripRepository
 from app.trips.models import ShareLink
 
 
 USER_A = UUID("11111111-1111-1111-1111-111111111111")
+
+
+def test_trip_domain_service_has_no_fastapi_config_or_infrastructure_dependencies():
+    source = Path("app/trips/service.py").read_text(encoding="utf-8")
+
+    assert "app.api" not in source
+    assert "app.core.config" not in source
+    assert "app.infrastructure" not in source
+    assert "fastapi" not in source.lower()
 
 
 def _clear_service_state(service_module):
@@ -26,13 +36,13 @@ def test_production_service_uses_verified_bearer_for_jwt_scoped_repository(monke
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "unused-by-trips")
     monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", secrets.token_urlsafe(32))
     get_settings.cache_clear()
-    from app.trips import service as service_module
+    from app import composition as service_module
 
     seen = []
     monkeypatch.setattr(
         service_module,
         "create_user_scoped_supabase_repository",
-        lambda token: seen.append(token) or InMemoryTripRepository(),
+        lambda _url, _key, token: seen.append(token) or InMemoryTripRepository(),
     )
     _clear_service_state(service_module)
 
@@ -53,13 +63,13 @@ def test_same_verified_token_does_not_reuse_jwt_scoped_client(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "unused-by-trips")
     monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", secrets.token_urlsafe(32))
     get_settings.cache_clear()
-    from app.trips import service as service_module
+    from app import composition as service_module
 
     repositories = [InMemoryTripRepository(), InMemoryTripRepository()]
     monkeypatch.setattr(
         service_module,
         "create_user_scoped_supabase_repository",
-        lambda token: repositories.pop(0),
+        lambda _url, _key, _token: repositories.pop(0),
     )
     _clear_service_state(service_module)
     user = AuthenticatedUser(
@@ -73,6 +83,61 @@ def test_same_verified_token_does_not_reuse_jwt_scoped_client(monkeypatch):
     assert repositories == []
     get_settings.cache_clear()
     _clear_service_state(service_module)
+
+
+def test_supabase_repository_isolates_legacy_invalid_trip_rows_on_reads():
+    valid_id = uuid4()
+    invalid_row = {
+        "id": str(uuid4()),
+        "user_id": str(USER_A),
+        "title": "legacy invalid",
+        "status": "planned",
+        "profile": {},
+        "itinerary": None,
+    }
+    valid_row = {
+        "id": str(valid_id),
+        "user_id": str(USER_A),
+        "title": "valid collecting trip",
+        "status": "collecting",
+        "profile": {},
+        "itinerary": None,
+    }
+
+    class Query:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def select(self, _columns):
+            return self
+
+        def eq(self, _field, _value):
+            return self
+
+        def order(self, _field, *, desc):
+            assert desc is True
+            return self
+
+        def execute(self):
+            return type("Response", (), {"data": self.rows})()
+
+    class FakeClient:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def table(self, name):
+            assert name == "trips"
+            return Query(self.rows)
+
+    listed = SupabaseTripRepository(
+        FakeClient([invalid_row, valid_row])
+    ).list_for_user(USER_A)
+    fetched = SupabaseTripRepository(FakeClient([invalid_row])).get(
+        USER_A, UUID(invalid_row["id"])
+    )
+
+    assert [trip.id for trip in listed] == [valid_id]
+    assert fetched is None
 
 
 def test_supabase_repository_maps_created_share_link():

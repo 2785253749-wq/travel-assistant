@@ -320,6 +320,7 @@
     elements.tripContent.append(itinerary ? renderStructuredItinerary(itinerary) : renderReply(trip && trip.reply));
     state.currentTrip = options.public ? null : trip;
     elements.tripActions.hidden = Boolean(options.public || !state.session);
+    elements.save.hidden = Boolean(options.public || (trip && trip.id));
     elements.tripView.hidden = false;
     elements.profileCard.hidden = true;
     setState("planned");
@@ -627,9 +628,7 @@
     if (operation === "copy") {
       setBusy(true, "正在复制行程…");
       try {
-        const original = await requestJson(`/api/trips/${encodeURIComponent(trip.id)}`);
-        const created = await requestJson("/api/trips", { method: "POST", body: { profile: original.profile || {} } });
-        await requestJson(`/api/trips/${encodeURIComponent(created.id)}`, { method: "PATCH", body: { title: `${original.title || "行程"}（副本）`, status: original.status, itinerary: original.itinerary } });
+        await requestJson(`/api/trips/${encodeURIComponent(trip.id)}/copy`, { method: "POST" });
         await refreshHistory(); setStatus("已复制行程。", false);
       } catch (error) { showError(error); } finally { setBusy(false); }
     }
@@ -648,16 +647,12 @@
   }
 
   async function saveTrip() {
-    if (!requireAuthentication() || !state.profile || state.busy) return;
-    setBusy(true, "正在保存行程…");
-    try {
-      const itinerary = asItinerary(state.pendingResult && state.pendingResult.reply) || state.pendingResult && state.pendingResult.itinerary;
-      const created = await requestJson("/api/trips", { method: "POST", body: { profile: state.profile } });
-      const saved = await requestJson(`/api/trips/${encodeURIComponent(created.id)}`, { method: "PATCH", body: { status: "planned", itinerary: itinerary || { summary: state.pendingResult && state.pendingResult.reply } } });
-      state.currentTrip = saved;
-      await refreshHistory();
-      setStatus("行程已保存到你的私有历史。", false);
-    } catch (error) { showError(error); } finally { setBusy(false); }
+    if (!requireAuthentication() || state.busy) return;
+    if (state.currentTrip && state.currentTrip.id) {
+      setStatus("行程已由服务器保存到你的私有历史。", false);
+      return;
+    }
+    setStatus("请先在对话中确认资料；已确认的行程会由服务器自动保存。", true);
   }
 
   async function createShare() {

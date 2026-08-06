@@ -390,13 +390,51 @@ test("provider warning uses only the backend canonical citation timestamp and fr
   assert.match(harness.elements.get("provider-updated-at").textContent, /reference only/);
 });
 
+test("authenticated confirmed plans are already server-saved and are never reposted from browser state", async () => {
+  const profile = {
+    origin: "上海", destination: "成都", start_date: "2026-10-01", end_date: "2026-10-02",
+    travelers: 2, budget_cny: 5000, preferences: [], constraints: [],
+  };
+  const itinerary = { title: "成都行程", days: [], citations: [] };
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ auth, fetch: async (call) => {
+    const method = call.options.method || "GET";
+    if (call.url === "/api/trips" && method === "GET") return jsonResponse(200, []);
+    if (call.url === "/api/chat") {
+      const body = JSON.parse(call.options.body);
+      return body.action === "collect"
+        ? jsonResponse(200, { reply: "请确认。", stage: "confirming", profile })
+        : jsonResponse(200, { reply: JSON.stringify(itinerary), stage: "planned", profile, itinerary, trip_id: "trip-saved" });
+    }
+    if (call.url === "/api/trips" && method === "POST") return jsonResponse(201, { id: "client-created" });
+    if (call.url.startsWith("/api/trips/") && method === "PATCH") return jsonResponse(200, { id: "client-created", profile, itinerary });
+    throw new Error(`unexpected ${method} ${call.url}`);
+  } });
+  await settle();
+  harness.elements.get("message-input").value = "完整资料";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+  await harness.elements.get("confirm-profile-button").dispatch("click");
+  await settle();
+
+  await harness.elements.get("save-trip-button").dispatch("click");
+  await settle();
+
+  const browserWrites = harness.fetchCalls.filter((call) => {
+    const method = call.options.method || "GET";
+    return call.url.startsWith("/api/trips") && ["POST", "PATCH"].includes(method);
+  });
+  assert.deepEqual(browserWrites, []);
+  assert.match(harness.elements.get("status-message").textContent, /已.*保存/);
+});
+
 test("private history executes authenticated CRUD and revocable sharing", async () => {
   const trip = { id: "trip-1", title: "成都", status: "planned", profile: {}, itinerary: { title: "成都", days: [], budget: null }, updated_at: "2026-01-01T00:00:00Z" };
   const auth = new FakeSupabaseAuth({ initialSession: SESSION });
   const harness = createHarness({ auth, fetch: async (call) => {
     const method = call.options.method || "GET";
     if (call.url === "/api/trips" && method === "GET") return jsonResponse(200, [trip]);
-    if (call.url === "/api/trips" && method === "POST") return jsonResponse(201, { ...trip, id: "trip-copy" });
+    if (call.url === "/api/trips/trip-1/copy" && method === "POST") return jsonResponse(201, { ...trip, id: "trip-copy" });
     if (call.url === "/api/trips/trip-1" && method === "GET") return jsonResponse(200, trip);
     if (call.url.startsWith("/api/trips/") && method === "PATCH") return jsonResponse(200, trip);
     if (call.url === "/api/trips/trip-1" && method === "DELETE") return jsonResponse(204, {});
@@ -432,8 +470,9 @@ test("private history executes authenticated CRUD and revocable sharing", async 
   );
 
   const privateCalls = harness.fetchCalls.filter((call) => call.url.startsWith("/api/trips"));
-  assert.ok(privateCalls.some((call) => (call.options.method || "GET") === "POST"));
+  assert.ok(privateCalls.some((call) => call.url.endsWith("/copy") && call.options.method === "POST"));
   assert.ok(privateCalls.some((call) => call.options.method === "PATCH"));
   assert.ok(privateCalls.some((call) => call.options.method === "DELETE"));
+  assert.ok(privateCalls.every((call) => !call.options.body || !Object.hasOwn(JSON.parse(call.options.body), "itinerary")));
   assert.ok(privateCalls.every((call) => call.options.headers.Authorization === "Bearer access-one"));
 });

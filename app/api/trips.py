@@ -5,29 +5,28 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.auth import CurrentUser
+from app.composition import get_public_trip_service, get_trip_service
 from app.core.errors import AppError
 from app.schemas import TravelProfile
 from app.trips.models import Trip
-from app.trips.service import TripService, get_public_trip_service, get_trip_service
+from app.trips.service import TripService
 
 
 router = APIRouter(tags=["trips"])
 
 
 class CreateTripRequest(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
     profile: TravelProfile = Field(default_factory=TravelProfile)
 
 
 class UpdateTripRequest(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
     title: str | None = Field(default=None, min_length=1, max_length=100)
-    profile: TravelProfile | None = None
-    status: str | None = None
-    itinerary: dict[str, Any] | None = None
 
 
 class ShareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     expires_in_days: int = Field(default=30, ge=1, le=365)
 
 
@@ -43,7 +42,11 @@ def _trip_response(trip: Trip) -> dict[str, Any]:
         "title": trip.title,
         "status": trip.status,
         "profile": trip.profile.model_dump(mode="json"),
-        "itinerary": trip.itinerary,
+        "itinerary": (
+            trip.itinerary.model_dump(mode="json")
+            if trip.itinerary is not None
+            else None
+        ),
         "created_at": trip.created_at.isoformat() if trip.created_at else None,
         "updated_at": trip.updated_at.isoformat() if trip.updated_at else None,
     }
@@ -76,6 +79,18 @@ def get_trip(trip_id: UUID, user: CurrentUser, service: TripService = Depends(ge
 def update_trip(trip_id: UUID, request: UpdateTripRequest, user: CurrentUser, service: TripService = Depends(get_trip_service)):
     try:
         return _trip_response(service.update_trip(user.id, trip_id, **request.model_dump(exclude_none=True)))
+    except AppError as error:
+        _raise_http(error)
+
+
+@router.post("/api/trips/{trip_id}/copy", status_code=status.HTTP_201_CREATED)
+def copy_trip(
+    trip_id: UUID,
+    user: CurrentUser,
+    service: TripService = Depends(get_trip_service),
+):
+    try:
+        return _trip_response(service.copy_trip(user.id, trip_id))
     except AppError as error:
         _raise_http(error)
 

@@ -1,18 +1,12 @@
 import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
-from functools import lru_cache
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from app.core.errors import AppError
-from app.api.auth import AuthenticatedUser, CurrentUser
-from app.core.config import get_settings
-from app.infrastructure.repositories import (
-    InMemoryTripRepository,
-    create_public_share_repository,
-    create_user_scoped_supabase_repository,
-)
-from app.schemas import TravelProfile
+from app.schemas import Itinerary, TravelProfile
 from app.trips.models import ConversationMessage, ShareLink, Trip
 from app.trips.repository import PublicShareRepository, TripRepository
 
@@ -35,22 +29,58 @@ class TripService:
     def list_trips(self, user_id: UUID) -> list[Trip]:
         return self._repository.list_for_user(user_id)
 
-    def update_trip(self, user_id: UUID, trip_id: UUID, *, title: str | None = None, profile: TravelProfile | None = None, status: str | None = None, itinerary: dict | None = None) -> Trip:
+    def update_trip(
+        self,
+        user_id: UUID,
+        trip_id: UUID,
+        *,
+        title: str | None = None,
+        profile: TravelProfile | None = None,
+        status: str | None = None,
+        itinerary: Itinerary | None = None,
+    ) -> Trip:
         trip = self.get_trip(user_id, trip_id)
+        next_profile = (
+            TravelProfile.model_validate(profile.model_dump(mode="json"))
+            if profile is not None
+            else trip.profile
+        )
+        next_itinerary = (
+            Itinerary.model_validate(itinerary.model_dump(mode="json"))
+            if itinerary is not None
+            else trip.itinerary
+        )
+        next_status = status or trip.status
+        if next_status not in {"collecting", "planned"}:
+            raise AppError("TRIP_INVALID", "Invalid trip status")
+        if (next_status == "planned") != (next_itinerary is not None):
+            raise AppError("TRIP_INVALID", "Trip status and itinerary do not match")
         if title is not None:
             trip.title = title
-        if profile is not None:
-            trip.profile = profile
-        if status is not None:
-            if status not in {"collecting", "planned"}:
-                raise AppError("TRIP_INVALID", "Invalid trip status")
-            trip.status = status
-        if itinerary is not None:
-            trip.itinerary = itinerary
+        trip.profile = next_profile
+        trip.status = next_status
+        trip.itinerary = next_itinerary
         updated = self._repository.update(user_id, trip_id, trip)
         if updated is None:
             raise AppError("TRIP_NOT_FOUND", "Trip not found")
         return updated
+
+    def copy_trip(self, user_id: UUID, trip_id: UUID) -> Trip:
+        source = self.get_trip(user_id, trip_id)
+        profile = TravelProfile.model_validate(source.profile.model_dump(mode="json"))
+        itinerary = (
+            Itinerary.model_validate(source.itinerary.model_dump(mode="json"))
+            if source.itinerary is not None
+            else None
+        )
+        copied = Trip(
+            user_id=user_id,
+            title=f"{source.title[:93]} (copy)",
+            profile=profile,
+            status=source.status,
+            itinerary=itinerary,
+        )
+        return self._repository.create(copied)
 
     def delete_trip(self, user_id: UUID, trip_id: UUID) -> None:
         if not self._repository.delete(user_id, trip_id):
@@ -78,35 +108,38 @@ class TripService:
         trip = self._public_repository.get_shared_trip(self._token_hash(token))
         if trip is None:
             raise AppError("SHARE_NOT_FOUND", "Shared trip not found")
-        return trip
+        try:
+            profile = TravelProfile.model_validate(trip["profile"])
+            itinerary = (
+                Itinerary.model_validate(trip["itinerary"])
+                if trip.get("itinerary") is not None
+                else None
+            )
+            status = trip["status"]
+            if status not in {"collecting", "planned"}:
+                raise ValueError("invalid status")
+            if (status == "planned") != (itinerary is not None):
+                raise ValueError("inconsistent public trip")
+            trip_id = str(UUID(str(trip["id"])))
+            title = trip["title"]
+            updated_at = trip.get("updated_at")
+            if not isinstance(title, str) or not 1 <= len(title) <= 100:
+                raise ValueError("invalid title")
+            if updated_at is not None and not isinstance(updated_at, str):
+                raise ValueError("invalid timestamp")
+        except (KeyError, TypeError, ValueError, ValidationError):
+            raise AppError("SHARE_NOT_FOUND", "Shared trip not found") from None
+        return {
+            "id": trip_id,
+            "title": title,
+            "status": status,
+            "profile": profile.model_dump(mode="json"),
+            "itinerary": (
+                itinerary.model_dump(mode="json") if itinerary is not None else None
+            ),
+            "updated_at": updated_at,
+        }
 
     @staticmethod
     def _token_hash(token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def _uses_supabase() -> bool:
-    settings = get_settings()
-    return settings.app_env == "production" or (
-        settings.supabase_url is not None and settings.supabase_anon_key is not None
-    )
-
-
-@lru_cache(maxsize=1)
-def get_development_repository() -> InMemoryTripRepository:
-    """Share one credential-free store across local private and public dependencies."""
-    return InMemoryTripRepository()
-
-
-def get_trip_service(user: CurrentUser) -> TripService:
-    if _uses_supabase():
-        if not user.access_token:
-            raise RuntimeError("A verified bearer token is required for Supabase trip access")
-        return TripService(create_user_scoped_supabase_repository(user.access_token))
-    return TripService(get_development_repository())
-
-
-def get_public_trip_service() -> TripService:
-    if _uses_supabase():
-        return TripService(InMemoryTripRepository(), create_public_share_repository())
-    return TripService(get_development_repository())
