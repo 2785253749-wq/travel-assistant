@@ -71,3 +71,81 @@ Result before implementation commit: exit `0`, no whitespace errors. The staged 
 - The installed FastAPI test shim emits one known Starlette/httpx deprecation warning; it does not affect current behavior or test results.
 - Request bodies are intentionally buffered only up to 64 KiB before dispatch. This MVP therefore does not support large uploads or streaming request bodies.
 - Legacy invalid trip rows are hidden fail-closed rather than repaired automatically. If a deployed database later contains such rows, repair should be performed with a separate audited data migration.
+
+## 2026-08-08 independent-review fix round 1
+
+### Status and commit
+
+- Status: the four Segment D review findings were fixed; Segment E was not started.
+- Implementation commit: `05c8b93` (`fix: close segment d review findings`).
+- The pre-existing untracked `docs/work-log-2026-07-30.md` remains untracked and was not included in the implementation commit.
+- No evaluation case, baseline, expected answer, or threshold changed.
+
+### Review findings closed
+
+1. The explicit `/api/chat` response now constructs and validates `ChatResponse` before creating `JSONResponse`. Citations use stable first-seen `evidence_id` deduplication and retain the first 100 unique entries; warnings retain the first 40 entries. Optional top-level fields remain omitted without removing `None` fields from the legacy nested profile shape.
+2. A central 1–100-character `TripTitle` contract now matches the database check. Generated destination titles reserve five characters for `" trip"`; create, direct service update, copy, Supabase write/read, and public share projection all use the same validator. Invalid legacy titles fail closed in both get and list paths.
+3. The RLS contract loads every `*.sql` migration in filename order and splits SQL outside line/block comments, single/double quotes, and dollar-quoted bodies. It tracks final CREATE/DROP policy state, rejects any later RLS disable, rejects weak owner policies, prohibits policies on service-role accounting tables, and fails closed on unmodeled private-table `ALTER POLICY` statements.
+4. The pure-ASGI request-body replay remembers a terminal disconnect and returns `http.disconnect` on every later receive without calling an exhausted upstream receive again.
+
+### RED evidence
+
+```powershell
+python -m pytest tests/integration/test_chat_api.py::test_chat_api_bounds_and_deduplicates_generated_citations_and_warnings tests/integration/test_request_limits.py::test_request_body_limit_middleware_replays_terminal_disconnect_after_buffering tests/unit/test_trip_service.py::test_trip_titles_are_bounded_for_long_destinations_and_updates tests/unit/test_trip_production_wiring.py::test_supabase_repository_isolates_legacy_invalid_trip_rows_on_reads -q
+```
+
+Result before production changes: exit `1`, `4 failed`. The observed values were 102 sources, two upstream disconnect reads, a 205-character generated title, and a non-null 101-character legacy title row.
+
+```powershell
+python -m pytest tests/integration/test_rls_contract.py -q
+```
+
+Initial result after adding the migration/parser regressions: exit `1`, `4 failed, 5 passed`. The original fixed-path loader omitted later migrations, quoted policy identifiers were skipped, and later quoted `DISABLE RLS`/weak policies were not rejected.
+
+Additional boundary cycles were also observed RED before their implementations:
+
+- Long-title save/share/list coverage: `3 failed`.
+- Service-role table RLS plus validation-before-insert coverage: `3 failed, 2 passed`.
+- Later private-table `ALTER POLICY`/`DROP POLICY` coverage: `2 failed, 4 passed`.
+
+### GREEN and regression evidence
+
+Focused transitions were observed GREEN as follows:
+
+- `/api/chat` bounds/deduplication: `1 passed`.
+- Terminal disconnect replay: `1 passed`.
+- Long-title generation/update/share and legacy-row isolation: `3 passed`.
+- Final RLS contract suite: `13 passed`.
+- Complete chat API suite after preserving the nested legacy profile shape: `14 passed`.
+
+Final Python verification:
+
+```powershell
+$env:PYTHONPATH='D:\Users\Asus\Desktop\旅行助手\.worktrees\zero-cost-public-mvp\.venv\Lib\site-packages'
+& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest -q
+```
+
+Result: exit `0`, `335 passed`, one pre-existing Starlette/httpx deprecation warning, `40.00s`.
+
+Final browser verification:
+
+```powershell
+node --test tests/frontend/app.test.js
+```
+
+Result: exit `0`, `16 passed`, `0 failed`, `140.2394ms`.
+
+Repository checks:
+
+```powershell
+git diff --check
+git diff --cached --check
+```
+
+Results: exit `0`; no whitespace errors. The implementation commit contains only the six production files and five corresponding test files listed by the staged diff, with no evaluation fixture or baseline path.
+
+### Remaining risks after review fix
+
+- The known Starlette/httpx deprecation warning remains unchanged.
+- The offline RLS auditor deliberately rejects private-table `ALTER POLICY`; a future legitimate policy alteration must first add explicit, tested final-state semantics to the auditor.
+- Citation and warning overflow is intentionally deterministic truncation, so lower-priority evidence beyond the public response bounds is not returned to the browser.
