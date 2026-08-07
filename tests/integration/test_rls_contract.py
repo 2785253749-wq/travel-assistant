@@ -195,9 +195,12 @@ def _assert_private_rls_contract(migration: str) -> None:
         rf'{_QUALIFIED_TABLE}\b',
         re.IGNORECASE,
     )
-    alter_rls = re.compile(
-        rf'^alter\s+table(?:\s+only)?\s+{_QUALIFIED_TABLE}\s+'
-        r'(?P<action>enable|disable)\s+row\s+level\s+security$',
+    alter_table = re.compile(
+        rf'^alter\s+table(?:\s+if\s+exists)?\s+'
+        rf'(?:only\s+)?(?:\(\s*)?'
+        rf'(?:(?P<schema>{_IDENTIFIER})\s*\.\s*)?'
+        rf'(?P<table>{_IDENTIFIER})(?:\s*\*)?\s*\)?\s+'
+        r'(?P<actions>[\s\S]+)$',
         re.IGNORECASE,
     )
     alter_policy = re.compile(
@@ -226,17 +229,22 @@ def _assert_private_rls_contract(migration: str) -> None:
         ):
             created_tables.add(_normalized_identifier(create_match.group("table")))
 
-        alter_match = alter_rls.match(statement)
-        if (
-            alter_match is None
-            or _normalized_identifier(alter_match.group("schema")) != "public"
-        ):
+        alter_match = alter_table.match(statement)
+        if alter_match is None:
             continue
+        schema_identifier = alter_match.group("schema")
+        schema = (
+            _normalized_identifier(schema_identifier)
+            if schema_identifier is not None
+            else None
+        )
         table = _normalized_identifier(alter_match.group("table"))
-        if table not in rls_enabled:
+        if table not in rls_enabled or schema not in {None, "public"}:
             continue
-        action = alter_match.group("action").lower()
-        assert action != "disable", f"RLS disabled for private table {table}"
+        actions = re.sub(r"\s+", " ", alter_match.group("actions")).strip().lower()
+        assert actions == "enable row level security", (
+            f"unmodeled or unsafe ALTER TABLE on private table {table}"
+        )
         rls_enabled[table] = True
 
     for table in PRIVATE_TABLES:
@@ -314,6 +322,16 @@ def test_policy_parser_handles_comments_quoted_identifiers_and_statement_boundar
     "later_migration",
     [
         'alter table "public"."trips" disable row level security;',
+        'alter table if exists public.trips disable row level security;',
+        (
+            'alter table public.trips add column audit_marker text, '
+            'disable row level security;'
+        ),
+        'alter table public.trips add column audit_marker text;',
+        (
+            'alter table if exists only public.trips * '
+            'add column audit_marker text;'
+        ),
         'create policy weak on "public"."trips" for select using (true);',
         'alter table public.ai_usage_counters disable row level security;',
         'create policy weak on public.ai_usage_counters for select using (true);',

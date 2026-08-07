@@ -149,3 +149,44 @@ Results: exit `0`; no whitespace errors. The implementation commit contains only
 - The known Starlette/httpx deprecation warning remains unchanged.
 - The offline RLS auditor deliberately rejects private-table `ALTER POLICY`; a future legitimate policy alteration must first add explicit, tested final-state semantics to the auditor.
 - Citation and warning overflow is intentionally deterministic truncation, so lower-priority evidence beyond the public response bounds is not returned to the browser.
+
+## 2026-08-08 scoped re-review fix round 2
+
+### Scope and implementation
+
+- Scope: close only the remaining RLS `ALTER TABLE` parser Important; Segment E and all evaluation artifacts were untouched.
+- Root cause: the first-round regular expression recognized only unmodified, single-action `ALTER TABLE schema.table ENABLE|DISABLE ROW LEVEL SECURITY` statements. Valid `IF EXISTS` and multi-action statements therefore skipped state processing.
+- Fix: parse `IF EXISTS`, `ONLY`, an optional parenthesized target, optional schema, and optional `*` far enough to identify a known private table. For such tables, the only modeled and accepted action is the single action `ENABLE ROW LEVEL SECURITY`; every other action or action list fails closed. Current legal migrations remain accepted.
+- The test and this report are one atomic scoped fix commit; the final SHA is recorded in the task handoff.
+
+### RED and GREEN evidence
+
+Focused RED command:
+
+```powershell
+python -m pytest tests/integration/test_rls_contract.py::test_final_rls_contract_rejects_later_security_regressions -q
+```
+
+Result before the parser fix: exit `1`, `4 failed, 6 passed`. The four silent bypasses were `IF EXISTS ... DISABLE RLS`, a multi-action statement ending in `DISABLE RLS`, an unmodeled single `ADD COLUMN`, and an `IF EXISTS ONLY ... *` unmodeled action.
+
+Focused GREEN command:
+
+```powershell
+python -m pytest tests/integration/test_rls_contract.py -q
+```
+
+Result: exit `0`, `17 passed`, one pre-existing Starlette/httpx deprecation warning.
+
+Full regression command:
+
+```powershell
+$env:PYTHONPATH='D:\Users\Asus\Desktop\旅行助手\.worktrees\zero-cost-public-mvp\.venv\Lib\site-packages'
+& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest -q
+```
+
+Result: exit `0`, `339 passed`, one pre-existing Starlette/httpx deprecation warning, `42.07s`.
+
+### Remaining risk
+
+- Fail-closed is intentionally conservative: a future legitimate non-RLS `ALTER TABLE` on a known private table must extend this audited parser and its tests before the migration can pass CI.
+- This remains an offline contract auditor rather than a temporary PostgreSQL catalog inspection; unrecognized private-table mutations are rejected instead of guessed.
