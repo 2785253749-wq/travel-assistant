@@ -146,6 +146,119 @@ def _normalized_identifier(identifier: str) -> str:
     return identifier.lower()
 
 
+def _next_sql_token(
+    statement: str, index: int
+) -> tuple[str, str, int, int] | None:
+    while index < len(statement) and statement[index].isspace():
+        index += 1
+    if index == len(statement):
+        return None
+
+    start = index
+    char = statement[index]
+    if (
+        char.lower() == "u"
+        and statement[index + 1 : index + 3] == '&"'
+    ):
+        index += 3
+        while index < len(statement):
+            if statement[index] != '"':
+                index += 1
+                continue
+            if index + 1 < len(statement) and statement[index + 1] == '"':
+                index += 2
+                continue
+            index += 1
+            return ("unicode_identifier", statement[start:index], start, index)
+        raise AssertionError("unterminated Unicode identifier in ALTER TABLE")
+
+    if char == '"':
+        index += 1
+        while index < len(statement):
+            if statement[index] != '"':
+                index += 1
+                continue
+            if index + 1 < len(statement) and statement[index + 1] == '"':
+                index += 2
+                continue
+            index += 1
+            return ("identifier", statement[start:index], start, index)
+        raise AssertionError("unterminated quoted identifier in ALTER TABLE")
+
+    if char == "_" or char.isalpha():
+        index += 1
+        while index < len(statement):
+            char = statement[index]
+            if char == "_" or char == "$" or char.isalnum():
+                index += 1
+                continue
+            break
+        return ("identifier", statement[start:index], start, index)
+
+    return ("punctuation", char, start, index + 1)
+
+
+def _is_keyword(token: tuple[str, str, int, int] | None, keyword: str) -> bool:
+    return (
+        token is not None
+        and token[0] == "identifier"
+        and not token[1].startswith('"')
+        and token[1].lower() == keyword
+    )
+
+
+def _alter_table_target(statement: str) -> tuple[str | None, str, str] | None:
+    """Read the ALTER TABLE target using PostgreSQL token boundaries."""
+    token = _next_sql_token(statement, 0)
+    if not _is_keyword(token, "alter"):
+        return None
+    token = _next_sql_token(statement, token[3])
+    if not _is_keyword(token, "table"):
+        return None
+
+    token = _next_sql_token(statement, token[3])
+    if _is_keyword(token, "if"):
+        token = _next_sql_token(statement, token[3])
+        if not _is_keyword(token, "exists"):
+            raise AssertionError("unmodeled ALTER TABLE IF clause")
+        token = _next_sql_token(statement, token[3])
+
+    if _is_keyword(token, "only"):
+        token = _next_sql_token(statement, token[3])
+
+    parenthesized = token is not None and token[1] == "("
+    if parenthesized:
+        token = _next_sql_token(statement, token[3])
+    if token is None or token[0] != "identifier":
+        raise AssertionError("unmodeled ALTER TABLE target")
+
+    identifiers = [token[1]]
+    token = _next_sql_token(statement, token[3])
+    while token is not None and token[1] == ".":
+        token = _next_sql_token(statement, token[3])
+        if token is None or token[0] != "identifier":
+            raise AssertionError("invalid qualified ALTER TABLE target")
+        identifiers.append(token[1])
+        token = _next_sql_token(statement, token[3])
+    if len(identifiers) > 3:
+        raise AssertionError("unmodeled qualified ALTER TABLE target")
+
+    if token is not None and token[1] == "*":
+        token = _next_sql_token(statement, token[3])
+    if parenthesized:
+        if token is None or token[1] != ")":
+            raise AssertionError("unterminated parenthesized ALTER TABLE target")
+        token = _next_sql_token(statement, token[3])
+        if token is not None and token[1] == "*":
+            token = _next_sql_token(statement, token[3])
+
+    action_start = token[2] if token is not None else len(statement)
+    actions = statement[action_start:].strip()
+    normalized = [_normalized_identifier(identifier) for identifier in identifiers]
+    schema = normalized[-2] if len(normalized) >= 2 else None
+    return schema, normalized[-1], actions
+
+
 def _policy_blocks(migration: str) -> list[tuple[str, str]]:
     """Apply CREATE/DROP statements and return policies in their final order."""
     create_pattern = re.compile(
@@ -195,14 +308,6 @@ def _assert_private_rls_contract(migration: str) -> None:
         rf'{_QUALIFIED_TABLE}\b',
         re.IGNORECASE,
     )
-    alter_table = re.compile(
-        rf'^alter\s+table(?:\s+if\s+exists)?\s+'
-        rf'(?:only\s+)?(?:\(\s*)?'
-        rf'(?:(?P<schema>{_IDENTIFIER})\s*\.\s*)?'
-        rf'(?P<table>{_IDENTIFIER})(?:\s*\*)?\s*\)?\s+'
-        r'(?P<actions>[\s\S]+)$',
-        re.IGNORECASE,
-    )
     alter_policy = re.compile(
         rf'^alter\s+policy\s+{_IDENTIFIER}\s+on\s+'
         rf'{_QUALIFIED_TABLE}\b',
@@ -229,19 +334,13 @@ def _assert_private_rls_contract(migration: str) -> None:
         ):
             created_tables.add(_normalized_identifier(create_match.group("table")))
 
-        alter_match = alter_table.match(statement)
-        if alter_match is None:
+        alter_target = _alter_table_target(statement)
+        if alter_target is None:
             continue
-        schema_identifier = alter_match.group("schema")
-        schema = (
-            _normalized_identifier(schema_identifier)
-            if schema_identifier is not None
-            else None
-        )
-        table = _normalized_identifier(alter_match.group("table"))
+        schema, table, raw_actions = alter_target
         if table not in rls_enabled or schema not in {None, "public"}:
             continue
-        actions = re.sub(r"\s+", " ", alter_match.group("actions")).strip().lower()
+        actions = re.sub(r"\s+", " ", raw_actions).strip().lower()
         assert actions == "enable row level security", (
             f"unmodeled or unsafe ALTER TABLE on private table {table}"
         )
@@ -323,6 +422,12 @@ def test_policy_parser_handles_comments_quoted_identifiers_and_statement_boundar
     [
         'alter table "public"."trips" disable row level security;',
         'alter table if exists public.trips disable row level security;',
+        'alter table if exists public.trips*disable row level security;',
+        (
+            'alter table if exists only"public"."trips"*'
+            'disable row level security;'
+        ),
+        'alter table u&"public".u&"trips" disable row level security;',
         (
             'alter table public.trips add column audit_marker text, '
             'disable row level security;'

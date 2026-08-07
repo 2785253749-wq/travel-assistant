@@ -190,3 +190,44 @@ Result: exit `0`, `339 passed`, one pre-existing Starlette/httpx deprecation war
 
 - Fail-closed is intentionally conservative: a future legitimate non-RLS `ALTER TABLE` on a known private table must extend this audited parser and its tests before the migration can pass CI.
 - This remains an offline contract auditor rather than a temporary PostgreSQL catalog inspection; unrecognized private-table mutations are rejected instead of guessed.
+
+## 2026-08-08 scoped re-review fix round 3
+
+### Scope and implementation
+
+- Scope: close only the remaining PostgreSQL token-boundary bypass in the RLS contract; evaluation files and Segment E were untouched.
+- Root cause: the round-2 target regular expression required whitespace between optional `*`/`)` target tokens and the first action token. PostgreSQL punctuation already terminates the preceding token, so valid forms such as `public.trips*disable` and `only"public"."trips"*disable` were ignored.
+- Fix: replace the target regex with a small token-aware reader for `ALTER TABLE`. It recognizes keyword tokens, ordinary and quoted identifiers, qualification dots, `IF EXISTS`, adjacent `ONLY`, parentheses, and `*` without relying on whitespace. An incomplete target fails closed. PostgreSQL `U&"..."` Unicode identifiers are identified explicitly and fail closed because their escape semantics are not modeled.
+- The parser tests and this report form one atomic scoped commit; its final SHA is recorded in the task handoff.
+
+### RED and GREEN evidence
+
+Required RED command:
+
+```powershell
+python -m pytest tests/integration/test_rls_contract.py::test_final_rls_contract_rejects_later_security_regressions -q
+```
+
+Initial result: exit `1`, `2 failed, 10 passed`; both no-whitespace `*` and adjacent `ONLY`/quoted-identifier forms were accepted. A follow-up Unicode-identifier boundary test was separately observed RED as `1 failed, 12 passed` before its fail-closed token handling was added.
+
+Focused GREEN command:
+
+```powershell
+python -m pytest tests/integration/test_rls_contract.py -q
+```
+
+Result: exit `0`, `20 passed`, one pre-existing Starlette/httpx deprecation warning.
+
+Full regression command:
+
+```powershell
+$env:PYTHONPATH='D:\Users\Asus\Desktop\旅行助手\.worktrees\zero-cost-public-mvp\.venv\Lib\site-packages'
+& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest -q
+```
+
+Result: exit `0`, `342 passed`, one pre-existing Starlette/httpx deprecation warning, `40.43s`.
+
+### Remaining risk
+
+- The reader deliberately models only the table target, not every PostgreSQL `ALTER TABLE` action. Once a known private target is identified, only the single audited `ENABLE ROW LEVEL SECURITY` action is accepted; all other actions remain fail-closed.
+- Unicode-escaped identifiers are rejected rather than decoded, so a future legitimate migration using `U&"..."` for any `ALTER TABLE` target will require explicit parser support and tests.
