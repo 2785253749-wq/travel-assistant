@@ -3,10 +3,14 @@ from pathlib import Path
 from uuid import UUID, uuid4
 import secrets
 
+import pytest
+from pydantic import ValidationError
+
 from app.api.auth import AuthenticatedUser
 from app.core.config import get_settings
 from app.infrastructure.repositories import InMemoryTripRepository, SupabaseTripRepository
-from app.trips.models import ShareLink
+from app.schemas import TravelProfile
+from app.trips.models import ShareLink, Trip
 
 
 USER_A = UUID("11111111-1111-1111-1111-111111111111")
@@ -103,6 +107,14 @@ def test_supabase_repository_isolates_legacy_invalid_trip_rows_on_reads():
         "profile": {},
         "itinerary": None,
     }
+    invalid_title_row = {
+        "id": str(uuid4()),
+        "user_id": str(USER_A),
+        "title": "x" * 101,
+        "status": "collecting",
+        "profile": {},
+        "itinerary": None,
+    }
 
     class Query:
         def __init__(self, rows):
@@ -130,14 +142,43 @@ def test_supabase_repository_isolates_legacy_invalid_trip_rows_on_reads():
             return Query(self.rows)
 
     listed = SupabaseTripRepository(
-        FakeClient([invalid_row, valid_row])
+        FakeClient([invalid_row, invalid_title_row, valid_row])
     ).list_for_user(USER_A)
     fetched = SupabaseTripRepository(FakeClient([invalid_row])).get(
         USER_A, UUID(invalid_row["id"])
     )
+    title_fetched = SupabaseTripRepository(FakeClient([invalid_title_row])).get(
+        USER_A, UUID(invalid_title_row["id"])
+    )
 
     assert [trip.id for trip in listed] == [valid_id]
     assert fetched is None
+    assert title_fetched is None
+
+
+def test_supabase_repository_rejects_invalid_title_before_insert():
+    inserted_rows = []
+
+    class Query:
+        def insert(self, row):
+            inserted_rows.append(row)
+            return self
+
+        def execute(self):
+            return type("Response", (), {"data": inserted_rows})()
+
+    class FakeClient:
+        def table(self, name):
+            assert name == "trips"
+            return Query()
+
+    trip = Trip(user_id=USER_A, title="valid", profile=TravelProfile())
+    trip.title = "x" * 101
+
+    with pytest.raises(ValidationError):
+        SupabaseTripRepository(FakeClient()).create(trip)
+
+    assert inserted_rows == []
 
 
 def test_supabase_repository_maps_created_share_link():

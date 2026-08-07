@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
-from app.trips.models import ConversationMessage, ShareLink, Trip
+from app.trips.models import ConversationMessage, ShareLink, Trip, validate_trip_title
 from app.schemas import Itinerary, TravelProfile
 
 
@@ -137,7 +137,7 @@ class SupabaseTripRepository:
     def _trip_row(trip: Trip, *, include_id: bool = True) -> dict:
         row = {
             "user_id": str(trip.user_id),
-            "title": trip.title,
+            "title": validate_trip_title(trip.title),
             "status": trip.status,
             "profile": trip.profile.model_dump(mode="json"),
             "itinerary": (

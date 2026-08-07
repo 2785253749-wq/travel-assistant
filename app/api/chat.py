@@ -20,7 +20,7 @@ from app.core.errors import AppError, ERROR_STATUS, safe_error_detail
 from app.core.config import get_settings
 from app.core.logging import log_subject, operational_context
 from app.core.usage import ProviderUnavailable
-from app.schemas import ChatRequest, ChatResponse, TravelProfile
+from app.schemas import ChatRequest, ChatResponse, SourceCitation, TravelProfile
 
 
 router = APIRouter()
@@ -102,6 +102,54 @@ def _log_subject(quota_subject: str) -> str:
     return "user-digest:" + digest
 
 
+def _bounded_citations(sources: list[dict]) -> list[SourceCitation] | None:
+    """Keep the first validated citation for each evidence id, then cap output."""
+    bounded: list[SourceCitation] = []
+    seen_evidence_ids: set[str] = set()
+    for source in sources:
+        citation = SourceCitation.model_validate(source)
+        if citation.evidence_id in seen_evidence_ids:
+            continue
+        seen_evidence_ids.add(citation.evidence_id)
+        bounded.append(citation)
+        if len(bounded) == 100:
+            break
+    return bounded or None
+
+
+def _json_chat_response(
+    response: Response,
+    *,
+    reply: str,
+    stage: str,
+    profile: TravelProfile,
+    itinerary=None,
+    trip_id=None,
+    sources: list[dict] | None = None,
+    warnings: list[str] | None = None,
+) -> JSONResponse:
+    """Validate the public model before returning an explicit response object."""
+    payload = ChatResponse.model_validate(
+        {
+            "reply": reply,
+            "stage": stage,
+            "profile": profile,
+            "itinerary": itinerary,
+            "trip_id": trip_id,
+            "sources": _bounded_citations(sources or []),
+            "warnings": (warnings or [])[:40] or None,
+        }
+    )
+    content = payload.model_dump(mode="json")
+    for optional_field in ("itinerary", "trip_id", "sources", "warnings"):
+        if content[optional_field] is None:
+            del content[optional_field]
+    return JSONResponse(
+        jsonable_encoder(content),
+        headers=dict(response.headers),
+    )
+
+
 @router.post("/api/chat", response_model=ChatResponse)
 def api_chat(
     request: ChatRequest,
@@ -144,28 +192,42 @@ def api_chat(
                 )
             except ProviderUnavailable as exc:
                 code = exc.code if exc.code in {"AI_RATE_LIMITED", "AI_UNAVAILABLE", "AI_CIRCUIT_OPEN"} else "AI_UNAVAILABLE"
-                return JSONResponse({"reply": "AI provider is temporarily unavailable.", "stage": "collecting", "profile": TravelProfile().model_dump(mode="json"), "warnings": [code]})
+                return _json_chat_response(
+                    response,
+                    reply="AI provider is temporarily unavailable.",
+                    stage="collecting",
+                    profile=TravelProfile(),
+                    warnings=[code],
+                )
             if result.error_code == "AGENT_UNAVAILABLE":
-                return JSONResponse({"reply": result.reply, "stage": result.stage, "profile": TravelProfile.model_validate(result.profile).model_dump(mode="json"), "warnings": ["AI_PROVIDER_UNAVAILABLE"]})
-            payload = {
-                "reply": result.reply,
-                "stage": result.stage,
-                "profile": TravelProfile.model_validate(result.profile).model_dump(mode="json"),
-            }
-            if result.itinerary is not None:
-                payload["itinerary"] = result.itinerary.model_dump(mode="json")
-            if result.trip_id is not None:
-                payload["trip_id"] = str(result.trip_id)
-            if result.sources:
-                payload["sources"] = result.sources
-            if result.warnings:
-                payload["warnings"] = result.warnings
-            return JSONResponse(jsonable_encoder(payload), headers=dict(response.headers))
+                return _json_chat_response(
+                    response,
+                    reply=result.reply,
+                    stage=result.stage,
+                    profile=TravelProfile.model_validate(result.profile),
+                    warnings=["AI_PROVIDER_UNAVAILABLE"],
+                )
+            return _json_chat_response(
+                response,
+                reply=result.reply,
+                stage=result.stage,
+                profile=TravelProfile.model_validate(result.profile),
+                itinerary=result.itinerary,
+                trip_id=result.trip_id,
+                sources=result.sources,
+                warnings=result.warnings,
+            )
         except AppError as exc:
             raise HTTPException(status_code=ERROR_STATUS.get(exc.code, 503), detail=safe_error_detail(exc)) from None
         except ProviderUnavailable as exc:
             code = exc.code if exc.code in {"AI_RATE_LIMITED", "AI_UNAVAILABLE", "AI_CIRCUIT_OPEN"} else "AI_UNAVAILABLE"
-            return JSONResponse({"reply": "AI provider is temporarily unavailable.", "stage": "collecting", "profile": TravelProfile().model_dump(mode="json"), "warnings": [code]})
+            return _json_chat_response(
+                response,
+                reply="AI provider is temporarily unavailable.",
+                stage="collecting",
+                profile=TravelProfile(),
+                warnings=[code],
+            )
         except Exception as exc:
             logging.getLogger("app.api.chat").warning(
                 "chat_request_failed",

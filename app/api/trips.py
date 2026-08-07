@@ -8,7 +8,7 @@ from app.api.auth import CurrentUser
 from app.composition import get_public_trip_service, get_trip_service
 from app.core.errors import AppError
 from app.schemas import TravelProfile
-from app.trips.models import Trip
+from app.trips.models import Trip, TripTitle
 from app.trips.service import TripService
 
 
@@ -22,7 +22,7 @@ class CreateTripRequest(BaseModel):
 
 class UpdateTripRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    title: str | None = Field(default=None, min_length=1, max_length=100)
+    title: TripTitle | None = None
 
 
 class ShareRequest(BaseModel):

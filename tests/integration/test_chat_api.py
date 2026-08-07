@@ -32,6 +32,45 @@ def test_chat_api_keeps_legacy_response_shape(monkeypatch):
     }
 
 
+def test_chat_api_bounds_and_deduplicates_generated_citations_and_warnings(monkeypatch):
+    """A direct JSONResponse must not bypass the public response contract."""
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+
+    generated_at = datetime(2026, 8, 7, tzinfo=UTC)
+    sources = [
+        {
+            "evidence_id": f"evidence-{index}",
+            "source_url": f"https://example.com/source-{index}",
+            "source_type": "official",
+            "fetched_at": generated_at,
+            "freshness": "reference only",
+        }
+        for index in range(101)
+    ]
+    sources.insert(1, dict(sources[0]))
+    warnings = [f"warning-{index}" for index in range(41)]
+    monkeypatch.setattr(
+        chat_api,
+        "chat",
+        lambda *args, **kwargs: ChatResult(
+            "ok", "collecting", {}, sources=sources, warnings=warnings
+        ),
+    )
+
+    response = TestClient(app).post(
+        "/api/chat", json={"message": "sources", "thread_id": "bounds"}
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["sources"]) == 100
+    assert [source["evidence_id"] for source in payload["sources"]].count("evidence-0") == 1
+    assert payload["sources"][-1]["evidence_id"] == "evidence-99"
+    assert payload["warnings"] == [f"warning-{index}" for index in range(40)]
+
+
 def test_chat_api_returns_safe_error_without_exception_detail(monkeypatch):
     from app.main import app
     from app.api import chat as chat_api

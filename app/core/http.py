@@ -46,10 +46,19 @@ class RequestBodyLimitMiddleware:
             if not message.get("more_body", False):
                 break
 
+        terminal_disconnect_seen = False
+
         async def replay_receive() -> Message:
+            nonlocal terminal_disconnect_seen
             if buffered:
-                return buffered.popleft()
-            return await receive()
+                message = buffered.popleft()
+            elif terminal_disconnect_seen:
+                return {"type": "http.disconnect"}
+            else:
+                message = await receive()
+            if message["type"] == "http.disconnect":
+                terminal_disconnect_seen = True
+            return message
 
         await self._app(scope, replay_receive, send)
 

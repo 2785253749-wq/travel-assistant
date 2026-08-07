@@ -53,6 +53,41 @@ def test_request_body_limit_middleware_replays_allowed_chunks():
     assert sent_messages[0]["status"] == 204
 
 
+def test_request_body_limit_middleware_replays_terminal_disconnect_after_buffering():
+    middleware_type = getattr(http_module, "RequestBodyLimitMiddleware", None)
+    assert middleware_type is not None
+
+    upstream_calls = 0
+    received = []
+
+    async def downstream(scope, receive, send):
+        del scope, send
+        received.append(await receive())
+        received.append(await receive())
+
+    async def exercise():
+        nonlocal upstream_calls
+
+        async def receive():
+            nonlocal upstream_calls
+            upstream_calls += 1
+            return {"type": "http.disconnect"}
+
+        async def send(_message):
+            return None
+
+        await middleware_type(downstream)(
+            {"type": "http", "method": "POST", "headers": [], "state": {}},
+            receive,
+            send,
+        )
+
+    asyncio.run(exercise())
+
+    assert received == [{"type": "http.disconnect"}] * 2
+    assert upstream_calls == 1
+
+
 @pytest.mark.parametrize(
     ("method", "path"),
     [

@@ -7,7 +7,14 @@ from pydantic import ValidationError
 
 from app.core.errors import AppError
 from app.schemas import Itinerary, TravelProfile
-from app.trips.models import ConversationMessage, ShareLink, Trip
+from app.trips.models import (
+    ConversationMessage,
+    ShareLink,
+    Trip,
+    copied_trip_title,
+    destination_trip_title,
+    validate_trip_title,
+)
 from app.trips.repository import PublicShareRepository, TripRepository
 
 
@@ -17,8 +24,13 @@ class TripService:
         self._public_repository = public_repository or repository
 
     def create_trip(self, user_id: UUID, profile: TravelProfile) -> Trip:
-        destination = profile.destination or "New"
-        return self._repository.create(Trip(user_id=user_id, title=f"{destination} trip", profile=profile))
+        return self._repository.create(
+            Trip(
+                user_id=user_id,
+                title=destination_trip_title(profile.destination),
+                profile=profile,
+            )
+        )
 
     def get_trip(self, user_id: UUID, trip_id: UUID) -> Trip:
         trip = self._repository.get(user_id, trip_id)
@@ -56,7 +68,7 @@ class TripService:
         if (next_status == "planned") != (next_itinerary is not None):
             raise AppError("TRIP_INVALID", "Trip status and itinerary do not match")
         if title is not None:
-            trip.title = title
+            trip.title = validate_trip_title(title)
         trip.profile = next_profile
         trip.status = next_status
         trip.itinerary = next_itinerary
@@ -75,7 +87,7 @@ class TripService:
         )
         copied = Trip(
             user_id=user_id,
-            title=f"{source.title[:93]} (copy)",
+            title=copied_trip_title(source.title),
             profile=profile,
             status=source.status,
             itinerary=itinerary,
@@ -121,10 +133,8 @@ class TripService:
             if (status == "planned") != (itinerary is not None):
                 raise ValueError("inconsistent public trip")
             trip_id = str(UUID(str(trip["id"])))
-            title = trip["title"]
+            title = validate_trip_title(trip["title"])
             updated_at = trip.get("updated_at")
-            if not isinstance(title, str) or not 1 <= len(title) <= 100:
-                raise ValueError("invalid title")
             if updated_at is not None and not isinstance(updated_at, str):
                 raise ValueError("invalid timestamp")
         except (KeyError, TypeError, ValueError, ValidationError):

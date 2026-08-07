@@ -4,6 +4,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from app.core.errors import AppError
 from app.infrastructure.repositories import InMemoryTripRepository
@@ -44,6 +45,25 @@ def test_create_trip_uses_authenticated_owner_and_profile_title(service):
 
     assert trip.user_id == USER_A
     assert trip.title == "Hangzhou trip"
+
+
+def test_trip_titles_are_bounded_for_long_destinations_and_updates(service):
+    trip = service.create_trip(USER_A, TravelProfile(destination="x" * 200))
+
+    assert trip.title == f"{'x' * 95} trip"
+    assert len(trip.title) == 100
+
+    with pytest.raises(ValidationError):
+        service.update_trip(USER_A, trip.id, title="x" * 101)
+
+
+def test_long_destination_trip_remains_shareable(service):
+    trip = service.create_trip(USER_A, TravelProfile(destination="目的地" * 66 + "目的"))
+
+    token = service.create_share_link(USER_A, trip.id)
+
+    assert service.get_shared_trip(token)["title"] == trip.title
+    assert len(trip.title) == 100
 
 
 def test_share_token_is_stored_as_hash(service, repository, trip):
