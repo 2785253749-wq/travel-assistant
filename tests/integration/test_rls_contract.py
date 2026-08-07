@@ -259,41 +259,105 @@ def _alter_table_target(statement: str) -> tuple[str | None, str, str] | None:
     return schema, normalized[-1], actions
 
 
+def _normalized_policy_identifier(
+    token: tuple[str, str, int, int],
+) -> str:
+    if token[0] == "identifier":
+        return _normalized_identifier(token[1])
+    if token[0] != "unicode_identifier":
+        raise AssertionError("unmodeled policy identifier")
+
+    quoted_identifier = token[1][2:]
+    contents = quoted_identifier[1:-1].replace('""', '"')
+    if not contents.isascii() or "\\" in contents:
+        raise AssertionError("unmodeled Unicode escape in policy identifier")
+    return contents.lower()
+
+
+def _policy_relation_target(
+    statement: str, index: int
+) -> tuple[str | None, str, int]:
+    token = _next_sql_token(statement, index)
+    if token is None or token[0] not in {"identifier", "unicode_identifier"}:
+        raise AssertionError("unmodeled policy table target")
+
+    identifier_kind = token[0]
+    identifiers = [_normalized_policy_identifier(token)]
+    token = _next_sql_token(statement, token[3])
+    if identifier_kind == "unicode_identifier" and _is_keyword(token, "uescape"):
+        raise AssertionError("unmodeled UESCAPE in policy table target")
+    while token is not None and token[1] == ".":
+        token = _next_sql_token(statement, token[3])
+        if token is None or token[0] not in {"identifier", "unicode_identifier"}:
+            raise AssertionError("invalid qualified policy table target")
+        identifier_kind = token[0]
+        identifiers.append(_normalized_policy_identifier(token))
+        token = _next_sql_token(statement, token[3])
+        if identifier_kind == "unicode_identifier" and _is_keyword(
+            token, "uescape"
+        ):
+            raise AssertionError("unmodeled UESCAPE in policy table target")
+
+    if len(identifiers) > 2:
+        raise AssertionError("unmodeled qualified policy table target")
+    schema = identifiers[0] if len(identifiers) == 2 else None
+    remainder_start = token[2] if token is not None else len(statement)
+    return schema, identifiers[-1], remainder_start
+
+
+def _policy_statement(
+    statement: str,
+) -> tuple[str, str | None, str, str, str] | None:
+    """Read CREATE/DROP/ALTER POLICY names and table targets by SQL tokens."""
+    token = _next_sql_token(statement, 0)
+    operations = ("create", "drop", "alter")
+    operation = next(
+        (candidate for candidate in operations if _is_keyword(token, candidate)),
+        None,
+    )
+    if operation is None:
+        return None
+
+    token = _next_sql_token(statement, token[3])
+    if not _is_keyword(token, "policy"):
+        return None
+    token = _next_sql_token(statement, token[3])
+
+    if operation == "drop" and _is_keyword(token, "if"):
+        token = _next_sql_token(statement, token[3])
+        if not _is_keyword(token, "exists"):
+            raise AssertionError("unmodeled DROP POLICY IF clause")
+        token = _next_sql_token(statement, token[3])
+
+    if token is None or token[0] not in {"identifier", "unicode_identifier"}:
+        raise AssertionError("unmodeled policy name")
+    policy = _normalized_policy_identifier(token)
+
+    token = _next_sql_token(statement, token[3])
+    if not _is_keyword(token, "on"):
+        raise AssertionError("policy statement is missing ON target")
+    schema, table, remainder_start = _policy_relation_target(statement, token[3])
+    remainder = statement[remainder_start:].strip()
+    return operation, schema, table, policy, remainder
+
+
 def _policy_blocks(migration: str) -> list[tuple[str, str]]:
     """Apply CREATE/DROP statements and return policies in their final order."""
-    create_pattern = re.compile(
-        rf'^create\s+policy\s+(?P<policy>{_IDENTIFIER})\s+on\s+'
-        rf'{_QUALIFIED_TABLE}\s+(?P<body>[\s\S]+)$',
-        re.IGNORECASE,
-    )
-    drop_pattern = re.compile(
-        rf'^drop\s+policy(?:\s+if\s+exists)?\s+'
-        rf'(?P<policy>{_IDENTIFIER})\s+on\s+{_QUALIFIED_TABLE}'
-        r'(?:\s+(?:cascade|restrict))?$',
-        re.IGNORECASE,
-    )
     policies: dict[tuple[str, str], str] = {}
     for statement in _sql_statements(migration):
-        create_match = create_pattern.match(statement)
-        if (
-            create_match is not None
-            and _normalized_identifier(create_match.group("schema")) == "public"
-        ):
-            key = (
-                _normalized_identifier(create_match.group("table")),
-                _normalized_identifier(create_match.group("policy")),
-            )
-            policies[key] = create_match.group("body").strip().lower()
+        parsed = _policy_statement(statement)
+        if parsed is None:
+            continue
+        operation, schema, table, policy, remainder = parsed
+        if schema not in {None, "public"} or table not in PRIVATE_TABLES:
             continue
 
-        drop_match = drop_pattern.match(statement)
-        if (
-            drop_match is not None
-            and _normalized_identifier(drop_match.group("schema")) == "public"
-        ):
-            key = (
-                _normalized_identifier(drop_match.group("table")),
-                _normalized_identifier(drop_match.group("policy")),
+        key = (table, policy)
+        if operation == "create":
+            policies[key] = remainder.lower()
+        elif operation == "drop":
+            assert remainder.lower() in {"", "cascade", "restrict"}, (
+                f"unmodeled DROP POLICY action on private table {table}"
             )
             policies.pop(key, None)
 
@@ -308,20 +372,16 @@ def _assert_private_rls_contract(migration: str) -> None:
         rf'{_QUALIFIED_TABLE}\b',
         re.IGNORECASE,
     )
-    alter_policy = re.compile(
-        rf'^alter\s+policy\s+{_IDENTIFIER}\s+on\s+'
-        rf'{_QUALIFIED_TABLE}\b',
-        re.IGNORECASE,
-    )
     created_tables: set[str] = set()
     rls_enabled = {table: False for table in PRIVATE_TABLES}
 
     for statement in statements:
-        policy_match = alter_policy.match(statement)
+        policy_statement = _policy_statement(statement)
         if (
-            policy_match is not None
-            and _normalized_identifier(policy_match.group("schema")) == "public"
-            and _normalized_identifier(policy_match.group("table")) in PRIVATE_TABLES
+            policy_statement is not None
+            and policy_statement[0] == "alter"
+            and policy_statement[1] in {None, "public"}
+            and policy_statement[2] in PRIVATE_TABLES
         ):
             raise AssertionError(
                 "ALTER POLICY on a private table requires explicit audit support"
@@ -442,6 +502,17 @@ def test_policy_parser_handles_comments_quoted_identifiers_and_statement_boundar
         'create policy weak on public.ai_usage_counters for select using (true);',
         'alter policy "users manage own trips" on public.trips using (true);',
         'drop policy "users manage own trips" on public.trips;',
+        'create policy weak_unqualified on trips for select using (true);',
+        'drop policy "users manage own trips" on trips;',
+        'alter policy "users manage own trips" on trips using (true);',
+        (
+            'create policy weak_unicode on u&"public".u&"trips" '
+            'for select using (true);'
+        ),
+        (
+            "create policy weak_unicode_escape on u&\"tr!0069ps\" "
+            "uescape '!' for select using (true);"
+        ),
     ],
 )
 def test_final_rls_contract_rejects_later_security_regressions(later_migration):

@@ -231,3 +231,45 @@ Result: exit `0`, `342 passed`, one pre-existing Starlette/httpx deprecation war
 
 - The reader deliberately models only the table target, not every PostgreSQL `ALTER TABLE` action. Once a known private target is identified, only the single audited `ENABLE ROW LEVEL SECURITY` action is accepted; all other actions remain fail-closed.
 - Unicode-escaped identifiers are rejected rather than decoded, so a future legitimate migration using `U&"..."` for any `ALTER TABLE` target will require explicit parser support and tests.
+
+## 2026-08-08 scoped re-review fix round 4
+
+### Scope and implementation
+
+- Scope: close only the remaining CREATE/DROP/ALTER POLICY target-parser bypass; Segment E and all evaluation artifacts were untouched.
+- Root cause: policy state used regular expressions that required `schema.table`. PostgreSQL-valid unqualified private-table targets and `U&"..."` qualified identifiers therefore bypassed both final policy-state tracking and the fail-closed ALTER POLICY check.
+- Fix: parse policy operation, optional DROP `IF EXISTS`, quoted policy name, `ON`, and the table target with SQL tokens. Unqualified known private tables now resolve into the audited private-table set; ordinary quoted and safe ASCII `U&"..."` identifiers normalize consistently. Unsupported policy syntax, encoded Unicode contents, and custom `UESCAPE` clauses fail closed instead of being guessed.
+- The regression cases, parser change, and this report form one atomic scoped commit; its final SHA is recorded in the task handoff.
+
+### RED and GREEN evidence
+
+Required RED command:
+
+```powershell
+python -m pytest tests/integration/test_rls_contract.py::test_final_rls_contract_rejects_later_security_regressions -q
+```
+
+Result before the parser change: exit `1`, `4 failed, 13 passed`. The accepted bypasses were unqualified CREATE POLICY, unqualified DROP POLICY, unqualified ALTER POLICY, and CREATE POLICY on `u&"public".u&"trips"`. A same-scope custom-escape probe was separately observed RED as `1 failed, 17 passed` before `UESCAPE` was made fail-closed.
+
+Focused GREEN commands:
+
+```powershell
+python -m pytest tests/integration/test_rls_contract.py::test_final_rls_contract_rejects_later_security_regressions -q
+python -m pytest tests/integration/test_rls_contract.py -q
+```
+
+Results: exit `0`, respectively `18 passed` and `25 passed`, each with one pre-existing Starlette/httpx deprecation warning.
+
+Full regression command:
+
+```powershell
+$env:PYTHONPATH='D:\Users\Asus\Desktop\旅行助手\.worktrees\zero-cost-public-mvp\.venv\Lib\site-packages'
+& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest -q
+```
+
+Result: exit `0`, `347 passed`, one pre-existing Starlette/httpx deprecation warning, `38.01s`.
+
+### Remaining risk
+
+- The offline auditor deliberately supports only ASCII `U&"..."` identifiers without escape sequences. Any future migration requiring Unicode escapes must add explicit decoding semantics and focused contract tests first.
+- Unqualified known private-table policy targets are conservatively treated as `public` because the audited deployment search path includes `public`; policy targets for unrelated table names remain outside this private-table contract.
