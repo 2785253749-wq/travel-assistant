@@ -89,10 +89,17 @@ function Get-AssignedExpression {
             [void]$builder.Append($character)
             continue
         }
-        if ($character -in @([char]10, [char]13, [char]35)) {
-            break
+        if ($character -in @([char]10, [char]13) -or
+            ($character -eq [char]47 -and $index + 1 -lt $Content.Length -and $Content[$index + 1] -in @([char]47, [char]42))) {
+            $continuation = Get-LogicalContinuationStart -Content $Content -StartIndex $index
+            if ($continuation -lt 0) {
+                break
+            }
+            [void]$builder.Append(' ')
+            $index = $continuation - 1
+            continue
         }
-        if ($character -eq [char]47 -and $index + 1 -lt $Content.Length -and $Content[$index + 1] -eq [char]47) {
+        if ($character -eq [char]35) {
             break
         }
         if ($character -eq [char]123) {
@@ -114,6 +121,46 @@ function Get-AssignedExpression {
         [void]$builder.Append($character)
     }
     return $builder.ToString().Trim()
+}
+
+function Get-LogicalContinuationStart {
+    param(
+        [string]$Content,
+        [int]$StartIndex
+    )
+
+    $index = $StartIndex
+    while ($index -lt $Content.Length) {
+        if ($Content[$index] -in @([char]9, [char]10, [char]13, [char]32)) {
+            $index++
+            continue
+        }
+        if ($Content[$index] -eq [char]47 -and $index + 1 -lt $Content.Length) {
+            if ($Content[$index + 1] -eq [char]47) {
+                $index += 2
+                while ($index -lt $Content.Length -and $Content[$index] -notin @([char]10, [char]13)) {
+                    $index++
+                }
+                continue
+            }
+            if ($Content[$index + 1] -eq [char]42) {
+                $commentEnd = $Content.IndexOf('*/', $index + 2, [System.StringComparison]::Ordinal)
+                if ($commentEnd -lt 0) {
+                    return -1
+                }
+                $index = $commentEnd + 2
+                continue
+            }
+        }
+        if ($index + 1 -lt $Content.Length -and
+            (($Content[$index] -eq [char]124 -and $Content[$index + 1] -eq [char]124) -or
+             ($Content[$index] -eq [char]38 -and $Content[$index + 1] -eq [char]38) -or
+             ($Content[$index] -eq [char]63 -and $Content[$index + 1] -eq [char]63))) {
+            return $index
+        }
+        return -1
+    }
+    return -1
 }
 
 function Get-MatchingBraceIndex {

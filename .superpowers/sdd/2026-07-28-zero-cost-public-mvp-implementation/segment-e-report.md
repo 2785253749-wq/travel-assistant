@@ -127,3 +127,24 @@ Reviewed range: `508facd...8a13478`
 - Fixed 80-case offline evaluation: exit `0`; all accuracy/success metrics `1.0`, unsupported-fact rate `0.0`, no failed thresholds.
 
 The warning and post-push GitHub Actions risk are unchanged from round 1.
+
+## Independent-review fix round 3
+
+Date: 2026-08-08
+
+### Finding resolved
+
+- The assigned-expression reader no longer treats every newline or JavaScript line comment as an expression boundary. It skips whitespace and comments only to detect a continued logical operator (`||`, `&&`, or `??`); otherwise they remain safe trailing boundaries.
+- Consequently, a safe environment reference is accepted only when the full logical expression contains no continuation. A literal fallback on a later line, including one after a line comment, is read and rejected.
+- Existing single-line environment references, TypeScript declaration spans, raw-token detection, and CI workflow mutations remain covered by the focused suite. Evaluation cases, baseline, and thresholds are unchanged.
+
+### TDD and completion evidence
+
+- RED: two new multiline fallback regressions failed while the prior 46 focused tests passed.
+- GREEN: focused deployment/scanner suite `48 passed, 1 warning in 19.63s`.
+- Real tracked-repository scan: `Public repository check passed`, exit `0`.
+- Full Python suite: `379 passed, 1 warning in 49.10s`.
+- Browser JavaScript tests: `16 passed, 0 failed`.
+- Fixed 80-case offline evaluation: exit `0`; all accuracy/success metrics `1.0`, unsupported-fact rate `0.0`, no failed thresholds.
+
+The dependency warning and post-push GitHub Actions verification remain the only residual release risks.

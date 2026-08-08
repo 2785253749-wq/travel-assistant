@@ -211,6 +211,27 @@ def test_public_repo_check_rejects_javascript_environment_reference_with_literal
     assert "credential" in result.stdout.lower()
 
 
+@pytest.mark.parametrize(
+    "continuation",
+    [
+        '\n  || "live-secret"',
+        ' // safe reference\n  || "live-secret"',
+    ],
+)
+def test_public_repo_check_rejects_multiline_javascript_environment_fallback(
+    tmp_path: Path,
+    continuation: str,
+):
+    name = "DEEPSEEK_API" + "_KEY"
+    source = f"const config = {{ {name}: process.env.{name}{continuation} }};\n"
+    repo = _tracked_repo(tmp_path, "config/settings.js", source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
 def test_public_repo_check_rejects_placeholder_prefixed_secret(tmp_path: Path):
     name = "ANON_SESSION_SIGNING" + "_SECRET"
     repo = _tracked_repo(tmp_path, ".env.example", f"{name}=placeholder-live-production-secret\n")
