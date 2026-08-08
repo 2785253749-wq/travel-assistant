@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import shutil
 import subprocess
 from pathlib import Path
@@ -43,6 +44,33 @@ def _tracked_repo(tmp_path: Path, relative_path: str, content: str) -> Path:
     return repo
 
 
+def _assert_ci_workflow_contract(workflow: dict) -> None:
+    steps = workflow["jobs"]["test"]["steps"]
+    commands = [" ".join(str(step.get("run", "")).split()) for step in steps]
+    pytest_indices = [index for index, command in enumerate(commands) if command == "python -m pytest -q"]
+    evaluation_indices = [
+        index
+        for index, command in enumerate(commands)
+        if command
+        == "python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl --output build/evaluation"
+    ]
+    public_repo_indices = [
+        index for index, command in enumerate(commands) if command == "./scripts/verify_public_repo.ps1"
+    ]
+
+    assert workflow["on"] == ["push", "pull_request"]
+    assert workflow["jobs"]["test"]["runs-on"] == "ubuntu-latest"
+    assert any(step.get("uses") == "actions/setup-python@v5" and step["with"]["python-version"] == "3.13" for step in steps)
+    assert len(pytest_indices) == 1
+    assert len(evaluation_indices) == 1
+    assert len(public_repo_indices) == 1
+    public_repo_index = public_repo_indices[0]
+    public_repo_step = steps[public_repo_index]
+    assert public_repo_step.get("shell") == "pwsh"
+    assert public_repo_step.get("if") == "always()"
+    assert public_repo_index > max(pytest_indices[0], evaluation_indices[0])
+
+
 def test_render_uses_free_plan_port_and_platform_secrets():
     config = _load_yaml("render.yaml")
     service = config["services"][0]
@@ -69,23 +97,42 @@ def test_render_uses_free_plan_port_and_platform_secrets():
 
 def test_ci_runs_tests_offline_evaluation_and_public_repo_gate():
     workflow = _load_yaml(".github/workflows/ci.yml")
-    steps = workflow["jobs"]["test"]["steps"]
-    commands = "\n".join(str(step.get("run", "")) for step in steps)
-    public_repo_steps = [
-        step
-        for step in steps
-        if "./scripts/verify_public_repo.ps1" in str(step.get("run", ""))
-    ]
 
-    assert workflow["on"] == ["push", "pull_request"]
-    assert workflow["jobs"]["test"]["runs-on"] == "ubuntu-latest"
-    assert any(step.get("uses") == "actions/setup-python@v5" and step["with"]["python-version"] == "3.13" for step in steps)
-    assert "python -m pytest -q" in commands
-    assert "python -m tests.evaluation.runner" in commands
-    assert "--cases tests/evaluation/cases.jsonl" in commands
-    assert "./scripts/verify_public_repo.ps1" in commands
-    assert len(public_repo_steps) == 1
-    assert public_repo_steps[0].get("if") == "always()"
+    _assert_ci_workflow_contract(workflow)
+
+
+def test_ci_contract_rejects_a_removed_scanner_step():
+    workflow = copy.deepcopy(_load_yaml(".github/workflows/ci.yml"))
+    workflow["jobs"]["test"]["steps"].pop()
+
+    with pytest.raises(AssertionError):
+        _assert_ci_workflow_contract(workflow)
+
+
+def test_ci_contract_rejects_a_spoofed_scanner_command():
+    workflow = copy.deepcopy(_load_yaml(".github/workflows/ci.yml"))
+    workflow["jobs"]["test"]["steps"][-1]["run"] = "Write-Output ./scripts/verify_public_repo.ps1"
+
+    with pytest.raises(AssertionError):
+        _assert_ci_workflow_contract(workflow)
+
+
+def test_ci_contract_requires_scanner_to_run_after_failure():
+    workflow = copy.deepcopy(_load_yaml(".github/workflows/ci.yml"))
+    workflow["jobs"]["test"]["steps"][-1].pop("if")
+
+    with pytest.raises(AssertionError):
+        _assert_ci_workflow_contract(workflow)
+
+
+def test_ci_contract_rejects_scanner_before_the_evaluation_gate():
+    workflow = copy.deepcopy(_load_yaml(".github/workflows/ci.yml"))
+    steps = workflow["jobs"]["test"]["steps"]
+    scanner = steps.pop()
+    steps.insert(4, scanner)
+
+    with pytest.raises(AssertionError):
+        _assert_ci_workflow_contract(workflow)
 
 
 def test_public_repo_check_accepts_tracked_placeholders(tmp_path: Path):
@@ -126,6 +173,46 @@ def test_public_repo_check_accepts_typed_secret_setting_declarations(tmp_path: P
     declarations += "supabase_service" + "_key: SecretStr | None = None\n"
     declarations += "anon_session_signing" + "_secret: SecretStr | None = None\n"
     repo = _tracked_repo(tmp_path, "app/config.py", declarations)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Public repository check passed" in result.stdout
+
+
+def test_public_repo_check_rejects_javascript_property_secret_assignment(tmp_path: Path):
+    name = "ANON_SESSION_SIGNING" + "_SECRET"
+    repo = _tracked_repo(tmp_path, "config/settings.js", f'process.env.{name} = "real-secret";\n')
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
+def test_public_repo_check_accepts_javascript_environment_reference(tmp_path: Path):
+    name = "DEEPSEEK_API" + "_KEY"
+    repo = _tracked_repo(tmp_path, "config/settings.js", f"const config = {{ {name}: process.env.{name} }};\n")
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Public repository check passed" in result.stdout
+
+
+def test_public_repo_check_rejects_placeholder_prefixed_secret(tmp_path: Path):
+    name = "ANON_SESSION_SIGNING" + "_SECRET"
+    repo = _tracked_repo(tmp_path, ".env.example", f"{name}=placeholder-live-production-secret\n")
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
+def test_public_repo_check_accepts_typescript_secret_type_declaration(tmp_path: Path):
+    name = "DEEPSEEK_API" + "_KEY"
+    repo = _tracked_repo(tmp_path, "config/settings.ts", f"interface Config {{ {name}: string; }}\n")
 
     result = _run_public_repo_check(repo)
 

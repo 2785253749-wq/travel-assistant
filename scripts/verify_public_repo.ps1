@@ -8,10 +8,40 @@ function Test-PlaceholderValue {
         return $true
     }
 
+    $exactPlaceholders = @(
+        'example',
+        'placeholder',
+        'test-only-key',
+        'test-key',
+        'redacted',
+        'masked',
+        'your_deepseek_api_key_here',
+        'your_supabase_service_key_here',
+        'your_anon_session_signing_secret_here',
+        'replace_with_at_least_32_random_characters_in_production',
+        '<your_deepseek_api_key>',
+        '<your_supabase_service_key>',
+        '<your_anon_session_signing_secret>'
+    )
+
     return (
-        $normalized -match '^(?i:your_|replace_|replace-|example(?:$|[_-])|placeholder|test-only-key$|test-key$|redacted$|masked$|\*+$|<your_[a-z0-9_]+>)' -or
-        $normalized -match '^\$\{?[A-Z][A-Z0-9_]*\}?$' -or
-        $normalized -match '^%[A-Z][A-Z0-9_]*%$'
+        $exactPlaceholders -contains $normalized.ToLowerInvariant() -or
+        $normalized -match '^\*+$'
+    )
+}
+
+function Test-SafeReference {
+    param([string]$Value)
+
+    $normalized = $Value.Trim().Trim('"').Trim("'").Trim()
+    return (
+        $normalized -match '^\$[A-Z][A-Z0-9_]*$' -or
+        $normalized -match '^\$\{[A-Z][A-Z0-9_]*\}$' -or
+        $normalized -match '^%[A-Z][A-Z0-9_]*%$' -or
+        $normalized -match '^(?i:(?:process|import\.meta)\.env\.[A-Z][A-Z0-9_]*)$' -or
+        $normalized -match '^(?i:(?:process|import\.meta)\.env\[(?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\])$' -or
+        $normalized -match '^(?i:os\.environ\[(?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\])$' -or
+        $normalized -match '^(?i:(?:os\.getenv|Deno\.env\.get|System\.getenv)\((?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\))$'
     )
 }
 
@@ -24,8 +54,36 @@ function Get-SensitiveAssignments {
 
     $escapedName = [regex]::Escape($Name)
     $separator = if ($AllowColon) { '[:=]' } else { '=' }
-    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?[`"']?$escapedName[`"']?\s*$separator\s*(?<value>`"[^`"`r`n]*`"|'[^'`r`n]*'|[^\s,#;}]+)"
+    $receiver = '(?:(?:[A-Za-z_$][A-Za-z0-9_$]*\.)+|\$env:)?'
+    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>$receiver[`"']?$escapedName[`"']?)\??\s*(?<separator>$separator)\s*(?<value>`"[^`"`r`n]*`"|'[^'`r`n]*'|[^\s,#;}]+)"
     return [regex]::Matches($Content, $pattern)
+}
+
+function Test-TypeScriptTypeMember {
+    param(
+        [string]$Content,
+        [System.Text.RegularExpressions.Match]$Match,
+        [string]$Extension
+    )
+
+    if ($Extension -notin @('.ts', '.tsx') -or $Match.Groups['separator'].Value -ne ':') {
+        return $false
+    }
+
+    $keyIndex = $Match.Groups['key'].Index
+    $prefix = $Content.Substring(0, $keyIndex)
+    $declarationPattern = '(?im)\b(?:interface\s+[A-Za-z_$][A-Za-z0-9_$]*(?:<[^>{}]+>)?(?:\s+extends[^\{]+)?|type\s+[A-Za-z_$][A-Za-z0-9_$]*(?:<[^>{}]+>)?\s*=)\s*\{'
+    $declarations = [regex]::Matches($prefix, $declarationPattern)
+    for ($index = $declarations.Count - 1; $index -ge 0; $index--) {
+        $declaration = $declarations[$index]
+        $segment = $Content.Substring($declaration.Index, $keyIndex - $declaration.Index)
+        $openCount = ([regex]::Matches($segment, '\{')).Count
+        $closeCount = ([regex]::Matches($segment, '\}')).Count
+        if ($openCount -gt $closeCount) {
+            return $true
+        }
+    }
+    return $false
 }
 
 $gitStartInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -85,8 +143,9 @@ foreach ($file in $trackedFiles) {
         continue
     }
 
+    $extension = [System.IO.Path]::GetExtension($normalizedPath).ToLowerInvariant()
     $allowColonAssignments =
-        [System.IO.Path]::GetExtension($normalizedPath).ToLowerInvariant() -in
+        $extension -in
         @('.json', '.yaml', '.yml', '.toml', '.js', '.jsx', '.ts', '.tsx', '.ini', '.cfg', '.conf', '.properties')
     $sensitiveAssignments = @{}
     $sensitiveAssignments[("DEEPSEEK_API" + "_KEY")] = "DeepSeek API key"
@@ -94,7 +153,11 @@ foreach ($file in $trackedFiles) {
     $sensitiveAssignments[("ANON_SESSION_SIGNING" + "_SECRET")] = "anonymous session signing secret"
     foreach ($name in $sensitiveAssignments.Keys) {
         foreach ($match in (Get-SensitiveAssignments -Content $content -Name $name -AllowColon $allowColonAssignments)) {
-            if (-not (Test-PlaceholderValue $match.Groups["value"].Value)) {
+            if (Test-TypeScriptTypeMember -Content $content -Match $match -Extension $extension) {
+                continue
+            }
+            $value = $match.Groups["value"].Value
+            if (-not (Test-PlaceholderValue $value) -and -not (Test-SafeReference $value)) {
                 $violations.Add("Credential pattern ($($sensitiveAssignments[$name])): $normalizedPath")
                 break
             }

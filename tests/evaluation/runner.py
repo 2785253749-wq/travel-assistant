@@ -145,6 +145,9 @@ class OfflineExtractor:
     def __init__(self) -> None:
         self.last_invalid_fields: dict[str, int] = {}
 
+    def begin_message(self) -> None:
+        self.last_invalid_fields = {}
+
     def extract(self, message: str, profile: TravelProfile) -> ExtractionCandidate:
         extraction = extract_profile(message, profile, model_factory=model_factory)
         self.last_invalid_fields = extraction.invalid_fields
@@ -253,7 +256,7 @@ def run_case(case: EvaluationCase) -> Prediction:
     try:
         for index, message in enumerate(case.messages):
             evidence_provider.use_message(message)
-            extractor.last_invalid_fields = {}
+            extractor.begin_message()
             result = agent.run(message, trip=trip)
             if index < len(case.messages) - 1 and result.profile:
                 profile = TravelProfile.model_validate(result.profile)

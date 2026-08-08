@@ -63,7 +63,7 @@ The Python warning is the pre-existing Starlette `TestClient` / `httpx` deprecat
 - CI behavior is tested by locating the actual scanner step and asserting its parsed `if` value, rather than searching workflow text.
 - Evaluation state is cleared per raw message; no evaluation fixture, case answer, baseline, or threshold changed.
 
-No blocking issue was found in the Segment E diff.
+The initial self-review found no blocking issue; the later independent review findings and their resolution are recorded below.
 
 ## Residual risks
 
@@ -71,3 +71,35 @@ No blocking issue was found in the Segment E diff.
 - The 80-case evaluation is deterministic and offline, so it does not validate live provider availability or live response drift.
 - GitHub Actions itself was not executed locally; the workflow contract is covered by integration tests and must still pass after push.
 - The dependency deprecation warning should be handled in a later dependency-maintenance change, not in this segment.
+
+## Independent-review fix round 1
+
+Date: 2026-08-08
+
+Reviewed base: `508facd fix: harden public release gates`
+
+### Findings resolved
+
+- Replaced prefix-based placeholder exemptions with a complete, explicit placeholder allow-list. A value that merely begins with a placeholder word is now treated as a credential.
+- Extended assignment recognition to dotted receivers used by JavaScript and similar languages, while separating safe environment references from literal values.
+- Added TypeScript declaration awareness: colon-style members inside active `interface` and object-type declarations are not runtime credential assignments.
+- Replaced the CI text-presence assertion with a parsed workflow contract. It requires one exact PowerShell scanner invocation, `if: always()`, and placement after both the Python suite and offline evaluation.
+- Moved per-message invalid-field observation reset behind `OfflineExtractor.begin_message()`, keeping extractor state ownership inside the extractor.
+- Preserved the narrow reviewed-report path exception and all raw-token detectors. Evaluation cases, baseline, and thresholds were not changed.
+
+### TDD evidence
+
+The first focused run produced exactly six expected failures and 38 passes: scanner command spoofing, scanner reordering, dotted-property secret assignment, safe JavaScript environment reference, placeholder-prefix bypass, and TypeScript interface declaration. Removal of the scanner step and removal of `if: always()` were already rejected by the extracted contract.
+
+After the fixes, the same focused deployment/scanner suite passed: `44 passed, 1 warning in 16.93s`.
+
+### Fresh completion-gate evidence
+
+- Evaluation unit tests: `43 passed in 1.43s`.
+- Real tracked-repository scan: `Public repository check passed`, exit `0`.
+- Full Python suite: `375 passed, 1 warning in 45.69s`.
+- Browser JavaScript tests: `16 passed, 0 failed`.
+- Fixed 80-case offline evaluation: exit `0`; all accuracy/success metrics `1.0`, unsupported-fact rate `0.0`, no failed thresholds.
+- `git diff --check`: no whitespace errors before report update; re-run as part of the final commit gate.
+
+The single Python warning remains the pre-existing Starlette `TestClient` / `httpx` deprecation warning. GitHub Actions still requires its normal post-push run; local tests validate the workflow structure and controlled failure mutations.
