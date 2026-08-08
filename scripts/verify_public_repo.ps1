@@ -55,8 +55,130 @@ function Get-SensitiveAssignments {
     $escapedName = [regex]::Escape($Name)
     $separator = if ($AllowColon) { '[:=]' } else { '=' }
     $receiver = '(?:(?:[A-Za-z_$][A-Za-z0-9_$]*\.)+|\$env:)?'
-    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>$receiver[`"']?$escapedName[`"']?)\??\s*(?<separator>$separator)\s*(?<value>`"[^`"`r`n]*`"|'[^'`r`n]*'|[^\s,#;}]+)"
+    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>$receiver[`"']?$escapedName[`"']?)\??\s*(?<separator>$separator)\s*"
     return [regex]::Matches($Content, $pattern)
+}
+
+function Get-AssignedExpression {
+    param(
+        [string]$Content,
+        [int]$StartIndex
+    )
+
+    $builder = [System.Text.StringBuilder]::new()
+    $quote = $null
+    $braceDepth = 0
+    for ($index = $StartIndex; $index -lt $Content.Length; $index++) {
+        $character = $Content[$index]
+        if ($null -ne $quote) {
+            [void]$builder.Append($character)
+            if ($character -eq [char]92) {
+                if ($index + 1 -lt $Content.Length) {
+                    $index++
+                    [void]$builder.Append($Content[$index])
+                }
+            }
+            elseif ($character -eq $quote) {
+                $quote = $null
+            }
+            continue
+        }
+
+        if ($character -in @([char]34, [char]39, [char]96)) {
+            $quote = $character
+            [void]$builder.Append($character)
+            continue
+        }
+        if ($character -in @([char]10, [char]13, [char]35)) {
+            break
+        }
+        if ($character -eq [char]47 -and $index + 1 -lt $Content.Length -and $Content[$index + 1] -eq [char]47) {
+            break
+        }
+        if ($character -eq [char]123) {
+            $braceDepth++
+            [void]$builder.Append($character)
+            continue
+        }
+        if ($character -eq [char]125) {
+            if ($braceDepth -eq 0) {
+                break
+            }
+            $braceDepth--
+            [void]$builder.Append($character)
+            continue
+        }
+        if ($braceDepth -eq 0 -and $character -in @([char]44, [char]59)) {
+            break
+        }
+        [void]$builder.Append($character)
+    }
+    return $builder.ToString().Trim()
+}
+
+function Get-MatchingBraceIndex {
+    param(
+        [string]$Content,
+        [int]$OpenIndex
+    )
+
+    $depth = 0
+    $quote = $null
+    $inLineComment = $false
+    $inBlockComment = $false
+    for ($index = $OpenIndex; $index -lt $Content.Length; $index++) {
+        $character = $Content[$index]
+        $next = if ($index + 1 -lt $Content.Length) { $Content[$index + 1] } else { $null }
+
+        if ($inLineComment) {
+            if ($character -eq [char]10) {
+                $inLineComment = $false
+            }
+            continue
+        }
+        if ($inBlockComment) {
+            if ($character -eq [char]42 -and $next -eq [char]47) {
+                $inBlockComment = $false
+                $index++
+            }
+            continue
+        }
+        if ($null -ne $quote) {
+            if ($character -eq [char]92) {
+                $index++
+            }
+            elseif ($character -eq $quote) {
+                $quote = $null
+            }
+            continue
+        }
+
+        if ($character -eq [char]47 -and $next -eq [char]47) {
+            $inLineComment = $true
+            $index++
+            continue
+        }
+        if ($character -eq [char]47 -and $next -eq [char]42) {
+            $inBlockComment = $true
+            $index++
+            continue
+        }
+        if ($character -in @([char]34, [char]39, [char]96)) {
+            $quote = $character
+            continue
+        }
+        if ($character -eq [char]123) {
+            $depth++
+            continue
+        }
+        if ($character -eq [char]125) {
+            $depth--
+            if ($depth -eq 0) {
+                return $index
+            }
+        }
+    }
+    return -1
 }
 
 function Test-TypeScriptTypeMember {
@@ -71,15 +193,14 @@ function Test-TypeScriptTypeMember {
     }
 
     $keyIndex = $Match.Groups['key'].Index
-    $prefix = $Content.Substring(0, $keyIndex)
     $declarationPattern = '(?im)\b(?:interface\s+[A-Za-z_$][A-Za-z0-9_$]*(?:<[^>{}]+>)?(?:\s+extends[^\{]+)?|type\s+[A-Za-z_$][A-Za-z0-9_$]*(?:<[^>{}]+>)?\s*=)\s*\{'
-    $declarations = [regex]::Matches($prefix, $declarationPattern)
-    for ($index = $declarations.Count - 1; $index -ge 0; $index--) {
-        $declaration = $declarations[$index]
-        $segment = $Content.Substring($declaration.Index, $keyIndex - $declaration.Index)
-        $openCount = ([regex]::Matches($segment, '\{')).Count
-        $closeCount = ([regex]::Matches($segment, '\}')).Count
-        if ($openCount -gt $closeCount) {
+    foreach ($declaration in [regex]::Matches($Content, $declarationPattern)) {
+        $openIndex = $declaration.Index + $declaration.Length - 1
+        if ($openIndex -ge $keyIndex) {
+            continue
+        }
+        $closeIndex = Get-MatchingBraceIndex -Content $Content -OpenIndex $openIndex
+        if ($closeIndex -ge $keyIndex) {
             return $true
         }
     }
@@ -156,7 +277,8 @@ foreach ($file in $trackedFiles) {
             if (Test-TypeScriptTypeMember -Content $content -Match $match -Extension $extension) {
                 continue
             }
-            $value = $match.Groups["value"].Value
+            $valueStart = $match.Index + $match.Length
+            $value = Get-AssignedExpression -Content $content -StartIndex $valueStart
             if (-not (Test-PlaceholderValue $value) -and -not (Test-SafeReference $value)) {
                 $violations.Add("Credential pattern ($($sensitiveAssignments[$name])): $normalizedPath")
                 break

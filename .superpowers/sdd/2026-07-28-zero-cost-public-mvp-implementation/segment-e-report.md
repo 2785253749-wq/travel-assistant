@@ -103,3 +103,27 @@ After the fixes, the same focused deployment/scanner suite passed: `44 passed, 1
 - `git diff --check`: no whitespace errors before report update; re-run as part of the final commit gate.
 
 The single Python warning remains the pre-existing Starlette `TestClient` / `httpx` deprecation warning. GitHub Actions still requires its normal post-push run; local tests validate the workflow structure and controlled failure mutations.
+
+## Independent-review fix round 2
+
+Date: 2026-08-08
+
+Reviewed range: `508facd...8a13478`
+
+### Findings resolved
+
+- TypeScript declaration exemptions now use the declaration's actual balanced-brace span. A runtime object after a closed interface is scanned normally rather than inheriting the earlier type exemption.
+- Assignment matching now locates only the sensitive key and separator. A small expression scanner then reads the complete assigned expression through whitespace and quoted text until a real outer delimiter or comment.
+- A safe-reference exemption therefore applies only when the entire expression is one approved environment reference. Logical fallbacks or any trailing literal make the expression non-safe and are rejected.
+- All earlier scanner and CI mutation regressions remain in the focused suite. Evaluation cases, baseline, and thresholds remain unchanged.
+
+### TDD and completion evidence
+
+- RED: the first focused run had exactly the two new expected failures and 44 passes: a runtime literal following a TypeScript interface, and a safe environment reference followed by a literal fallback.
+- GREEN: focused deployment/scanner suite `46 passed, 1 warning in 18.58s`.
+- Real tracked-repository scan: `Public repository check passed`, exit `0`.
+- Full Python suite: `377 passed, 1 warning in 47.07s`.
+- Browser JavaScript tests: `16 passed, 0 failed`.
+- Fixed 80-case offline evaluation: exit `0`; all accuracy/success metrics `1.0`, unsupported-fact rate `0.0`, no failed thresholds.
+
+The warning and post-push GitHub Actions risk are unchanged from round 1.

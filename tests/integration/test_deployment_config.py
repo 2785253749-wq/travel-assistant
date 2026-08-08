@@ -200,6 +200,17 @@ def test_public_repo_check_accepts_javascript_environment_reference(tmp_path: Pa
     assert "Public repository check passed" in result.stdout
 
 
+def test_public_repo_check_rejects_javascript_environment_reference_with_literal_fallback(tmp_path: Path):
+    name = "DEEPSEEK_API" + "_KEY"
+    source = f'const config = {{ {name}: process.env.{name} || "live-secret" }};\n'
+    repo = _tracked_repo(tmp_path, "config/settings.js", source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
 def test_public_repo_check_rejects_placeholder_prefixed_secret(tmp_path: Path):
     name = "ANON_SESSION_SIGNING" + "_SECRET"
     repo = _tracked_repo(tmp_path, ".env.example", f"{name}=placeholder-live-production-secret\n")
@@ -218,6 +229,18 @@ def test_public_repo_check_accepts_typescript_secret_type_declaration(tmp_path: 
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Public repository check passed" in result.stdout
+
+
+def test_public_repo_check_rejects_runtime_secret_after_typescript_interface(tmp_path: Path):
+    name = "DEEPSEEK_API" + "_KEY"
+    source = f"interface Config {{ {name}: string; }}\n"
+    source += f'const config = {{ {name}: "live-secret" }};\n'
+    repo = _tracked_repo(tmp_path, "config/settings.ts", source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
 
 
 def test_public_repo_check_allows_only_reviewed_superpowers_reports(tmp_path: Path):
