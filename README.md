@@ -82,4 +82,6 @@ Render 与 Supabase 免费层不代表 DeepSeek 免费。任何真实 AI 请求�
 
 ## 公开仓库边界
 
-发布前必须运行 `scripts/verify_public_repo.ps1`。脚本只扫描 `git ls-files` 返回的已跟踪文件，并拒绝 `.env`、虚拟环境、Agent 本地配置、Python/pytest 缓存、数据库、日志、真实 DeepSeek/Supabase 服务密钥、GitHub token 和私钥头。仓库可公开 `.env.example` 占位符，但不能公开任何真实凭据。
+发布前必须运行 `scripts/verify_public_repo.ps1`。脚本只扫描 `git ls-files` 返回的已跟踪文件，并拒绝 `.env`、虚拟环境、编辑器/Agent 本地配置、工作树、依赖与构建产物、Python/pytest 缓存、数据库、日志、真实 DeepSeek/Supabase/会话签名密钥、GitHub token、裸 secret token 和私钥头；JSON、YAML、TOML、JavaScript 与 env 风格的敏感赋值都在扫描范围内。仓库可公开 `.env.example` 中的占位符与环境变量引用，但不能公开任何真实凭据。
+
+`.superpowers/` 默认属于本地工作元数据。公开仓库只允许 `.superpowers/sdd/<日期-任务>/<名称>-report.md` 这一种经过复核的工程报告路径，其他 `.superpowers` 内容一律由发布门禁拒绝；允许的报告仍会接受完整凭据扫描。

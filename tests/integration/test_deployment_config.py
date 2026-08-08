@@ -71,6 +71,11 @@ def test_ci_runs_tests_offline_evaluation_and_public_repo_gate():
     workflow = _load_yaml(".github/workflows/ci.yml")
     steps = workflow["jobs"]["test"]["steps"]
     commands = "\n".join(str(step.get("run", "")) for step in steps)
+    public_repo_steps = [
+        step
+        for step in steps
+        if "./scripts/verify_public_repo.ps1" in str(step.get("run", ""))
+    ]
 
     assert workflow["on"] == ["push", "pull_request"]
     assert workflow["jobs"]["test"]["runs-on"] == "ubuntu-latest"
@@ -79,6 +84,8 @@ def test_ci_runs_tests_offline_evaluation_and_public_repo_gate():
     assert "python -m tests.evaluation.runner" in commands
     assert "--cases tests/evaluation/cases.jsonl" in commands
     assert "./scripts/verify_public_repo.ps1" in commands
+    assert len(public_repo_steps) == 1
+    assert public_repo_steps[0].get("if") == "always()"
 
 
 def test_public_repo_check_accepts_tracked_placeholders(tmp_path: Path):
@@ -95,6 +102,43 @@ def test_public_repo_check_accepts_tracked_placeholders(tmp_path: Path):
 def test_public_repo_check_accepts_unicode_tracked_placeholder(tmp_path: Path):
     placeholder = "DEEPSEEK_API" + "_KEY=your_deepseek_api_key_here\n"
     repo = _tracked_repo(tmp_path, "资料/占位符.txt", placeholder)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Public repository check passed" in result.stdout
+
+
+def test_public_repo_check_accepts_multilanguage_placeholders(tmp_path: Path):
+    placeholder = "deepseek_api" + '_key: "${DEEPSEEK_API_KEY}"\n'
+    placeholder += 'supabase_service' + '_key: "<YOUR_SUPABASE_SERVICE_KEY>"\n'
+    placeholder += 'anon_session_signing' + '_secret: "redacted"\n'
+    repo = _tracked_repo(tmp_path, "config/settings.example.yaml", placeholder)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Public repository check passed" in result.stdout
+
+
+def test_public_repo_check_accepts_typed_secret_setting_declarations(tmp_path: Path):
+    declarations = "deepseek_api" + "_key: SecretStr | None = None\n"
+    declarations += "supabase_service" + "_key: SecretStr | None = None\n"
+    declarations += "anon_session_signing" + "_secret: SecretStr | None = None\n"
+    repo = _tracked_repo(tmp_path, "app/config.py", declarations)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Public repository check passed" in result.stdout
+
+
+def test_public_repo_check_allows_only_reviewed_superpowers_reports(tmp_path: Path):
+    repo = _tracked_repo(
+        tmp_path,
+        ".superpowers/sdd/2026-08-08-segment-e/task-1-report.md",
+        "# Reviewed public engineering report\n",
+    )
 
     result = _run_public_repo_check(repo)
 
@@ -120,6 +164,15 @@ def test_public_repo_check_scans_credentials_in_unicode_tracked_filename(tmp_pat
         ".pytest_cache/README.md",
         "app/__pycache__/module.pyc",
         ".agents/skills/local.md",
+        ".codex/config.toml",
+        ".claude/settings.local.json",
+        ".idea/workspace.xml",
+        ".vscode/settings.json",
+        ".worktrees/local/task.txt",
+        ".superpowers/cache/state.json",
+        "build/evaluation.json",
+        "dist/app.js",
+        "node_modules/package/index.js",
         "data/travel.sqlite3",
         "logs/app.log",
     ],
@@ -145,6 +198,31 @@ def test_public_repo_check_rejects_forbidden_tracked_paths(tmp_path: Path, relat
 )
 def test_public_repo_check_rejects_tracked_credentials(tmp_path: Path, secret: str):
     repo = _tracked_repo(tmp_path, "config.txt", secret + "\n")
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "secret"),
+    [
+        ("config/settings.json", '{"deepseek_api' + '_key":"live-production-value"}'),
+        ("config/settings.yaml", "supabase_service" + "_key: live-production-value"),
+        ("config/settings.toml", 'anon_session_signing' + '_secret = "live-production-value"'),
+        ("config/settings.js", 'const DEEPSEEK_API' + '_KEY = "live-production-value";'),
+        ("notes/deepseek-token.txt", "s" + "k-" + "A" * 32),
+        ("notes/supabase-token.txt", "s" + "b_secret_" + "A" * 32),
+        ("notes/legacy-supabase-jwt.txt", "e" + "yJ" + "A" * 24 + "." + "B" * 24 + "." + "C" * 24),
+    ],
+)
+def test_public_repo_check_rejects_multilanguage_and_raw_credentials(
+    tmp_path: Path,
+    relative_path: str,
+    secret: str,
+):
+    repo = _tracked_repo(tmp_path, relative_path, secret + "\n")
 
     result = _run_public_repo_check(repo)
 

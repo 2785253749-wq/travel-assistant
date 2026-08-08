@@ -4,7 +4,10 @@
 .venv/
 venv/
 .agents/
+.codex/
 .claude/
+.idea/
+.vscode/
 skills-lock.json
 __pycache__/
 .pytest_cache/

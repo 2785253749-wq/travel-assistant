@@ -190,6 +190,24 @@ def test_multiturn_modifications_extract_each_raw_message_in_thread_order(monkey
     }
 
 
+def test_invalid_field_observation_does_not_leak_into_a_later_unextracted_turn() -> None:
+    cases = {case.id: case for case in load_cases(Path(__file__).with_name("cases.jsonl"))}
+    case = EvaluationCase(
+        id="unit-invalid-field-reset",
+        category="unit",
+        messages=[cases["M005"].messages[0], cases["R001"].messages[0]],
+        expected_intent="plan_trip",
+        expected_fields={},
+        expected_action="refuse",
+        allowed_sources=[],
+    )
+
+    prediction = run_case(case)
+
+    assert prediction.action == "refuse"
+    assert "travelers" not in prediction.fields
+
+
 def test_all_multiturn_modifications_finish_from_message_fixtures_not_case_answers() -> None:
     cases = [
         case

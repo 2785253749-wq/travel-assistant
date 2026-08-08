@@ -12,7 +12,7 @@ python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl --output 
 powershell -ExecutionPolicy Bypass -File scripts/verify_public_repo.ps1
 ```
 
-最后一个命令必须输出 `Public repository check passed`。再用 `git status --short` 和 `git ls-files` 人工确认 `.env`、`.venv/`、`.agents/`、缓存、数据库、日志和真实密钥都没有被跟踪。
+最后一个命令必须输出 `Public repository check passed`。再用 `git status --short` 和 `git ls-files` 人工确认 `.env`、`.venv/`、`.agents/`、`.codex/`、`.claude/`、编辑器设置、工作树、依赖/构建产物、缓存、数据库、日志和真实密钥都没有被跟踪。`.superpowers/` 只有经过复核且符合 `.superpowers/sdd/<日期-任务>/<名称>-report.md` 的工程报告允许公开，其他内容必须保持未跟踪。
 
 ## 2. 创建 Supabase 免费项目
 

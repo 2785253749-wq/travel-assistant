@@ -253,6 +253,7 @@ def run_case(case: EvaluationCase) -> Prediction:
     try:
         for index, message in enumerate(case.messages):
             evidence_provider.use_message(message)
+            extractor.last_invalid_fields = {}
             result = agent.run(message, trip=trip)
             if index < len(case.messages) - 1 and result.profile:
                 profile = TravelProfile.model_validate(result.profile)
