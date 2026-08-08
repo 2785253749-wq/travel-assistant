@@ -169,3 +169,25 @@ Date: 2026-08-08
 - Fixed 80-case offline evaluation: exit `0`; 80 cases, overall/task/fallback success `1.0`, unsupported-fact rate `0.0`, and no failed thresholds.
 
 The single Python warning remains the pre-existing Starlette `TestClient` / `httpx` deprecation warning. GitHub Actions still requires its normal post-push run.
+
+## Independent-review fix round 5
+
+Date: 2026-08-08
+
+### Finding resolved
+
+- JavaScript continuation scanning now skips the complete .NET Unicode whitespace set plus BOM before deciding whether an approved environment reference continues into another expression.
+- LF, CR, Unicode line separator, and Unicode paragraph separator are all treated as JavaScript line terminators. A line comment therefore cannot hide a following concatenation or fallback behind either Unicode terminator.
+- Eight parameterized regressions cover form feed, vertical tab, NBSP, BOM, a block comment followed by NBSP, form feed before logical OR, NBSP before a ternary, and a line comment ending at the Unicode line separator. The existing complete single-reference case remains accepted.
+- The change is limited to the scanner and its integration regressions. CI semantics, TypeScript declaration spans, raw-token detection, evaluation cases, baseline, and thresholds are unchanged.
+
+### TDD and completion evidence
+
+- RED: all eight new regressions were incorrectly accepted by the previous scanner while the prior 56 focused cases passed. A single-case run confirmed the failure was the scanner returning success for a form-feed continuation.
+- GREEN: focused deployment/scanner suite `64 passed, 1 warning`.
+- Real tracked-repository scan: `Public repository check passed`, exit `0` before and after this report update.
+- Full Python suite: `395 passed, 1 warning in 61.37s`.
+- Browser JavaScript tests: `16 passed, 0 failed`.
+- Fixed 80-case offline evaluation: exit `0`; 80 cases, overall/task/fallback success `1.0`, unsupported-fact rate `0.0`, and no failed thresholds.
+
+The single Python warning remains the pre-existing Starlette `TestClient` / `httpx` deprecation warning. GitHub Actions still requires its normal post-push run.

@@ -98,7 +98,7 @@ function Get-AssignedExpression {
             [void]$builder.Append($character)
             continue
         }
-        if ($character -in @([char]10, [char]13) -or
+        if ($character -in @([char]10, [char]13, [char]8232, [char]8233) -or
             ($character -eq [char]47 -and $index + 1 -lt $Content.Length -and $Content[$index + 1] -in @([char]47, [char]42))) {
             $useJavaScriptContinuations = Test-JavaScriptSafeReference -Value $builder.ToString()
             $continuation = Get-ExpressionContinuationStart `
@@ -145,14 +145,15 @@ function Get-ExpressionContinuationStart {
 
     $index = $StartIndex
     while ($index -lt $Content.Length) {
-        if ($Content[$index] -in @([char]9, [char]10, [char]13, [char]32)) {
+        if ([char]::IsWhiteSpace($Content[$index]) -or $Content[$index] -eq [char]65279) {
             $index++
             continue
         }
         if ($Content[$index] -eq [char]47 -and $index + 1 -lt $Content.Length) {
             if ($Content[$index + 1] -eq [char]47) {
                 $index += 2
-                while ($index -lt $Content.Length -and $Content[$index] -notin @([char]10, [char]13)) {
+                while ($index -lt $Content.Length -and
+                    $Content[$index] -notin @([char]10, [char]13, [char]8232, [char]8233)) {
                     $index++
                 }
                 continue

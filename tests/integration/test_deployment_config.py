@@ -253,6 +253,23 @@ def test_public_repo_check_rejects_javascript_environment_reference_with_literal
         '\n  + "live-secret"',
         ' // safe reference\n  + "live-secret"',
         '\n  ? process.env.DEEPSEEK_API_KEY : "live-secret"',
+        pytest.param('\n  \f + "live-secret"', id="form-feed-before-concatenation"),
+        pytest.param('\n  \v + "live-secret"', id="vertical-tab-before-concatenation"),
+        pytest.param('\n  \u00a0 + "live-secret"', id="nbsp-before-concatenation"),
+        pytest.param('\n  \ufeff + "live-secret"', id="bom-before-concatenation"),
+        pytest.param(
+            '\n  /* safe reference */\u00a0 + "live-secret"',
+            id="block-comment-and-nbsp-before-concatenation",
+        ),
+        pytest.param('\n  \f || "live-secret"', id="form-feed-before-logical-or"),
+        pytest.param(
+            '\n  \u00a0 ? process.env.DEEPSEEK_API_KEY : "live-secret"',
+            id="nbsp-before-ternary",
+        ),
+        pytest.param(
+            ' // safe reference\u2028 + "live-secret"',
+            id="line-separator-ends-line-comment",
+        ),
     ],
 )
 def test_public_repo_check_rejects_multiline_javascript_environment_expression_continuation(
