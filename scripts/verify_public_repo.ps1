@@ -54,6 +54,49 @@ function Test-SafeReference {
     )
 }
 
+function Test-DefaultIgnorableCodePoint {
+    param([int]$CodePoint)
+
+    return (
+        $CodePoint -eq 0x00AD -or
+        $CodePoint -eq 0x034F -or
+        $CodePoint -eq 0x061C -or
+        ($CodePoint -ge 0x115F -and $CodePoint -le 0x1160) -or
+        ($CodePoint -ge 0x17B4 -and $CodePoint -le 0x17B5) -or
+        ($CodePoint -ge 0x180B -and $CodePoint -le 0x180F) -or
+        ($CodePoint -ge 0x200B -and $CodePoint -le 0x200F) -or
+        ($CodePoint -ge 0x202A -and $CodePoint -le 0x202E) -or
+        ($CodePoint -ge 0x2060 -and $CodePoint -le 0x206F) -or
+        $CodePoint -eq 0x3164 -or
+        ($CodePoint -ge 0xFE00 -and $CodePoint -le 0xFE0F) -or
+        $CodePoint -eq 0xFEFF -or
+        $CodePoint -eq 0xFFA0 -or
+        ($CodePoint -ge 0xFFF0 -and $CodePoint -le 0xFFF8) -or
+        ($CodePoint -ge 0x1BCA0 -and $CodePoint -le 0x1BCA3) -or
+        ($CodePoint -ge 0x1D173 -and $CodePoint -le 0x1D17A) -or
+        ($CodePoint -ge 0xE0000 -and $CodePoint -le 0xE0FFF)
+    )
+}
+
+function Get-SecurityNormalizedPath {
+    param([string]$Path)
+
+    $compatibilityNormalized = $Path.Replace('\', '/').Normalize(
+        [System.Text.NormalizationForm]::FormKC
+    )
+    $builder = [System.Text.StringBuilder]::new()
+    for ($index = 0; $index -lt $compatibilityNormalized.Length; $index++) {
+        $codePoint = [char]::ConvertToUtf32($compatibilityNormalized, $index)
+        if ([char]::IsHighSurrogate($compatibilityNormalized[$index])) {
+            $index++
+        }
+        if (-not (Test-DefaultIgnorableCodePoint -CodePoint $codePoint)) {
+            [void]$builder.Append([char]::ConvertFromUtf32($codePoint))
+        }
+    }
+    return $builder.ToString()
+}
+
 function Get-SensitiveAssignments {
     param(
         [string]$Content,
@@ -64,7 +107,10 @@ function Get-SensitiveAssignments {
     $escapedName = [regex]::Escape($Name)
     $separator = if ($AllowColon) { '[:=]' } else { '=' }
     $receiver = '(?:(?:[A-Za-z_$][A-Za-z0-9_$]*\.)+|\$env:)?'
-    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>$receiver[`"']?$escapedName[`"']?)\??\s*(?<separator>$separator)\s*"
+    $directKey = "$receiver[`"']?$escapedName[`"']?"
+    $propertyPath = '(?:[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*|\s*\[\s*[`"''][A-Za-z_$][A-Za-z0-9_$]*[`"'']\s*\])*)'
+    $computedKey = "$propertyPath\s*\[\s*[`"']$escapedName[`"']\s*\]"
+    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>(?:$computedKey|$directKey))\??\s*(?<separator>$separator)\s*"
     return [regex]::Matches($Content, $pattern)
 }
 
@@ -317,7 +363,8 @@ $trackedFiles = $trackedOutput -split [char]0 | Where-Object { $_.Length -gt 0 }
 $violations = [System.Collections.Generic.List[string]]::new()
 
 foreach ($file in $trackedFiles) {
-    $normalizedPath = $file.Replace('\', '/')
+    $displayPath = $file.Replace('\', '/')
+    $normalizedPath = Get-SecurityNormalizedPath -Path $file
     $allowedSuperpowersReport =
         $normalizedPath -match '^\.superpowers/sdd/\d{4}-\d{2}-\d{2}-[a-z0-9-]+/[a-z0-9-]+-report\.md$'
     $forbiddenPath =
@@ -330,7 +377,7 @@ foreach ($file in $trackedFiles) {
         ($normalizedPath -match '\.(pyc|pyo|db|sqlite|sqlite3|log|key|p12|pfx)$')
 
     if ($forbiddenPath) {
-        $violations.Add("Forbidden tracked path: $normalizedPath")
+        $violations.Add("Forbidden tracked path: $displayPath")
         continue
     }
 
@@ -342,7 +389,7 @@ foreach ($file in $trackedFiles) {
         $content = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $file))
     }
     catch {
-        $violations.Add("Unreadable tracked file: $normalizedPath")
+        $violations.Add("Unreadable tracked file: $displayPath")
         continue
     }
 
@@ -362,31 +409,31 @@ foreach ($file in $trackedFiles) {
             $valueStart = $match.Index + $match.Length
             $value = Get-AssignedExpression -Content $content -StartIndex $valueStart
             if (-not (Test-PlaceholderValue $value) -and -not (Test-SafeReference $value)) {
-                $violations.Add("Credential pattern ($($sensitiveAssignments[$name])): $normalizedPath")
+                $violations.Add("Credential pattern ($($sensitiveAssignments[$name])): $displayPath")
                 break
             }
         }
     }
 
     if ($content -match '(?<![A-Za-z0-9_])[s][k]-[A-Za-z0-9_-]{20,}') {
-        $violations.Add("Credential pattern (raw secret token): $normalizedPath")
+        $violations.Add("Credential pattern (raw secret token): $displayPath")
     }
 
     if ($content -match '(?<![A-Za-z0-9_])[s][b]_secret_[A-Za-z0-9_-]{20,}') {
-        $violations.Add("Credential pattern (Supabase secret token): $normalizedPath")
+        $violations.Add("Credential pattern (Supabase secret token): $displayPath")
     }
 
     if ($content -match '(?<![A-Za-z0-9_-])[e][y][J][A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?![A-Za-z0-9_-])') {
-        $violations.Add("Credential pattern (raw JWT): $normalizedPath")
+        $violations.Add("Credential pattern (raw JWT): $displayPath")
     }
 
     if ($content -match '(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{20,}' -or
         $content -match '(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{20,}') {
-        $violations.Add("Credential pattern (GitHub token): $normalizedPath")
+        $violations.Add("Credential pattern (GitHub token): $displayPath")
     }
 
     if ($content -match '-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----') {
-        $violations.Add("Credential pattern (private key): $normalizedPath")
+        $violations.Add("Credential pattern (private key): $displayPath")
     }
 }
 

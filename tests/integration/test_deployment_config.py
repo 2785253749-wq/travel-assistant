@@ -222,6 +222,26 @@ def test_public_repo_check_rejects_javascript_property_secret_assignment(tmp_pat
     assert "credential" in result.stdout.lower()
 
 
+@pytest.mark.parametrize(
+    "left_hand_side",
+    [
+        'process.env["ANON_SESSION_SIGNING_SECRET"]',
+        "process.env['ANON_SESSION_SIGNING_SECRET']",
+        'config["ANON_SESSION_SIGNING_SECRET"]',
+    ],
+)
+def test_public_repo_check_rejects_javascript_computed_property_secret_assignment(
+    tmp_path: Path,
+    left_hand_side: str,
+):
+    repo = _tracked_repo(tmp_path, "config/settings.js", f'{left_hand_side} = "real-secret";\n')
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
 def test_public_repo_check_accepts_javascript_environment_reference(tmp_path: Path):
     name = "DEEPSEEK_API" + "_KEY"
     repo = _tracked_repo(tmp_path, "config/settings.js", f"const config = {{ {name}: process.env.{name} }};\n")
@@ -369,6 +389,28 @@ def test_public_repo_check_rejects_forbidden_tracked_paths(tmp_path: Path, relat
 
     assert result.returncode != 0
     assert relative_path in result.stdout.replace("\\", "/")
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        ".env\u200b",
+        ".e\u200dnv",
+        ".\ufeffenv",
+        ".ｅｎｖ",
+        ".venv\ufe0f/pyvenv.cfg",
+    ],
+)
+def test_public_repo_check_rejects_unicode_disguised_forbidden_paths(
+    tmp_path: Path,
+    relative_path: str,
+):
+    repo = _tracked_repo(tmp_path, relative_path, "local-only\n")
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "forbidden tracked path" in result.stdout.lower()
 
 
 @pytest.mark.parametrize(

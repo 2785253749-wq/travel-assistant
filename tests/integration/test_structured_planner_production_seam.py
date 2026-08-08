@@ -135,7 +135,7 @@ def _run_production_planner(monkeypatch: pytest.MonkeyPatch, candidates: list[ob
     return agent.run("规划行程", trip=None), chat_model
 
 
-def test_production_model_seam_canonicalizes_malicious_display_fields_before_schema_validation(monkeypatch):
+def test_production_model_seam_sanitizes_malicious_display_fields_before_schema_validation(monkeypatch):
     candidate = _valid_candidate()
     candidate.pop("title")
     candidate["notes"] = {"claim": "Hotel cost is CNY 399"}
@@ -153,7 +153,9 @@ def test_production_model_seam_canonicalizes_malicious_display_fields_before_sch
 
     assert result.stage == "planned"
     assert result.error_code is None
-    itinerary = json.loads(result.reply)
+    assert result.itinerary is not None
+    assert not result.reply.lstrip().startswith("{")
+    itinerary = result.itinerary.model_dump(mode="json")
     assert itinerary["title"] == "杭州 | 2-day itinerary"
     assert itinerary["notes"] == []
     assert [
@@ -165,8 +167,8 @@ def test_production_model_seam_canonicalizes_malicious_display_fields_before_sch
         ("Day 1 afternoon", []),
         ("Day 1 evening", []),
         ("Day 2 morning", []),
-        ("Day 2 afternoon", []),
-        ("Day 2 evening", []),
+        ("Market", []),
+        ("Return", []),
     ]
     assert len(chat_model.messages) == 1
 

@@ -1,21 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from urllib.parse import urlencode, urlparse, urlunparse
 
-from app.schemas import TravelProfile
+from app.schemas import BookingLinks, TravelProfile
 
 
 _ALLOWED_BOOKING_HOSTS = frozenset({"www.12306.cn", "www.ctrip.com"})
 DISCLAIMER = "价格和库存以第三方平台为准；链接仅用于搜索跳转，不代表已确认的价格或库存。"
-
-
-@dataclass(frozen=True)
-class BookingLinks:
-    train: str
-    hotel: str
-    flight: str
-    disclaimer: str = DISCLAIMER
 
 
 class BookingLinkBuilder:
@@ -39,6 +30,7 @@ class BookingLinkBuilder:
             flight=_search_url("https://www.ctrip.com/flights", {
                 "from": values["origin"], "to": values["destination"], "depart": values["start_date"], "adult": values["travelers"],
             }),
+            disclaimer=DISCLAIMER,
         )
 
 

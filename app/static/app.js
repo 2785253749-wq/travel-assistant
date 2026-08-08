@@ -251,6 +251,14 @@
       appendTextBlock(budget, "p", "以上为预算估算，不是实时价格、库存或余票。", "help-text");
       container.append(budget);
     }
+    if (Array.isArray(itinerary && itinerary.notes) && itinerary.notes.length) {
+      const notes = document.createElement("section");
+      appendTextBlock(notes, "h3", "行程提醒");
+      const list = document.createElement("ul");
+      for (const note of itinerary.notes) appendTextBlock(list, "li", note);
+      notes.append(list);
+      container.append(notes);
+    }
     const days = document.createElement("div");
     days.className = "itinerary-days";
     for (const day of Array.isArray(itinerary && itinerary.days) ? itinerary.days : []) {
@@ -263,12 +271,41 @@
         if (!activity) continue;
         const titleText = `${slot}: ${activity.title || "待确认"} (${activity.start_time || ""}-${activity.end_time || ""})`;
         const item = appendTextBlock(slots, "li", titleText);
+        if (Array.isArray(activity.notes)) {
+          for (const note of activity.notes) appendTextBlock(item, "p", note, "activity-note");
+        }
         renderSources(item, activity.citations);
       }
       card.append(slots);
       days.append(card);
     }
     if (days.childNodes.length) container.append(days);
+    if (Array.isArray(itinerary && itinerary.assumptions) && itinerary.assumptions.length) {
+      const assumptions = document.createElement("section");
+      appendTextBlock(assumptions, "h3", "规划假设与待确认项");
+      const list = document.createElement("ul");
+      for (const assumption of itinerary.assumptions) {
+        appendTextBlock(list, "li", assumption && assumption.description ? assumption.description : "待确认");
+      }
+      assumptions.append(list);
+      container.append(assumptions);
+    }
+    const bookingLinks = itinerary && itinerary.booking_links;
+    if (bookingLinks && typeof bookingLinks === "object") {
+      const booking = document.createElement("section");
+      appendTextBlock(booking, "h3", "第三方搜索入口");
+      const list = document.createElement("ul");
+      for (const [field, label] of [["train", "火车"], ["hotel", "酒店"], ["flight", "航班"]]) {
+        const link = safeExternalLink(bookingLinks[field], label);
+        if (!link) continue;
+        const item = document.createElement("li");
+        item.append(link);
+        list.append(item);
+      }
+      if (list.childNodes.length) booking.append(list);
+      if (bookingLinks.disclaimer) appendTextBlock(booking, "p", bookingLinks.disclaimer, "help-text");
+      if (booking.childNodes.length) container.append(booking);
+    }
     renderSources(container, itinerary && itinerary.citations);
     return container;
   }

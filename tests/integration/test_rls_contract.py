@@ -566,3 +566,28 @@ def test_cross_user_trip_references_are_rejected_by_composite_foreign_key(child_
 
     with pytest.raises(sqlite3.IntegrityError):
         database.execute("insert into child values ('trip-a', 'user-b')")
+
+
+def test_planned_trip_and_both_messages_share_one_owner_scoped_database_transaction():
+    migration = _migration()
+    function = re.search(
+        r"create\s+function\s+public\.persist_planned_chat\s*\([\s\S]*?"
+        r"security\s+invoker[\s\S]*?as\s+\$\$(?P<body>[\s\S]*?)\$\$",
+        migration,
+    )
+
+    assert function is not None
+    body = function.group("body")
+    assert "auth.uid()" in body
+    assert "insert into public.trips" in body
+    assert "update public.trips" in body
+    assert body.count("insert into public.conversation_messages") == 2
+    assert "raise exception" in body
+    assert re.search(
+        r"revoke\s+all\s+on\s+function\s+public\.persist_planned_chat",
+        migration,
+    )
+    assert re.search(
+        r"grant\s+execute\s+on\s+function\s+public\.persist_planned_chat[\s\S]*?to\s+authenticated",
+        migration,
+    )

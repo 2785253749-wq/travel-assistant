@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -52,6 +53,37 @@ class InMemoryTripRepository:
             return
         message.created_at = message.created_at or datetime.now(UTC)
         self.messages.append(message)
+
+    def persist_planned_chat(
+        self,
+        trip: Trip,
+        messages: tuple[ConversationMessage, ConversationMessage],
+        *,
+        create: bool,
+    ) -> Trip:
+        """Apply the trip and its final conversation pair as one locked state change."""
+        if len(messages) != 2 or tuple(message.role for message in messages) != ("user", "assistant"):
+            raise ValueError("planned chat requires one user and one assistant message")
+        if any(message.user_id != trip.user_id or message.trip_id != trip.id for message in messages):
+            raise ValueError("planned chat ownership does not match")
+        current = self.trips.get(trip.id)
+        if create:
+            if current is not None:
+                raise ValueError("trip already exists")
+        elif current is None or current.user_id != trip.user_id:
+            raise ValueError("trip not found")
+
+        now = datetime.now(UTC)
+        stored_trip = deepcopy(trip)
+        stored_trip.created_at = (current.created_at if current is not None else trip.created_at) or now
+        stored_trip.updated_at = now
+        stored_messages = [deepcopy(message) for message in messages]
+        for message in stored_messages:
+            message.created_at = message.created_at or now
+
+        self.trips[stored_trip.id] = stored_trip
+        self.messages.extend(stored_messages)
+        return deepcopy(stored_trip)
 
     def create_share_link(self, share_link: ShareLink) -> ShareLink:
         share_link.created_at = share_link.created_at or datetime.now(UTC)
@@ -121,6 +153,42 @@ class SupabaseTripRepository:
 
     def append_message(self, message: ConversationMessage) -> None:
         self._client.table("conversation_messages").insert({"id": str(message.id), "user_id": str(message.user_id), "trip_id": str(message.trip_id), "role": message.role, "content": message.content}).execute()
+
+    def persist_planned_chat(
+        self,
+        trip: Trip,
+        messages: tuple[ConversationMessage, ConversationMessage],
+        *,
+        create: bool,
+    ) -> Trip:
+        if len(messages) != 2 or tuple(message.role for message in messages) != ("user", "assistant"):
+            raise ValueError("planned chat requires one user and one assistant message")
+        user_message, assistant_message = messages
+        if any(message.user_id != trip.user_id or message.trip_id != trip.id for message in messages):
+            raise ValueError("planned chat ownership does not match")
+        response = self._client.rpc(
+            "persist_planned_chat",
+            {
+                "p_create": create,
+                "p_trip_id": str(trip.id),
+                "p_title": validate_trip_title(trip.title),
+                "p_profile": trip.profile.model_dump(mode="json"),
+                "p_itinerary": (
+                    trip.itinerary.model_dump(mode="json")
+                    if trip.itinerary is not None
+                    else None
+                ),
+                "p_user_message_id": str(user_message.id),
+                "p_user_message": user_message.content,
+                "p_assistant_message_id": str(assistant_message.id),
+                "p_assistant_message": assistant_message.content,
+            },
+        ).execute()
+        data = response.data
+        row = data[0] if isinstance(data, list) else data
+        if not isinstance(row, dict):
+            raise RuntimeError("planned chat transaction returned no trip")
+        return self._trip_from_row(row)
 
     def create_share_link(self, share_link: ShareLink) -> ShareLink:
         row = self._one(self._client.table("share_links").insert({"id": str(share_link.id), "user_id": str(share_link.user_id), "trip_id": str(share_link.trip_id), "token_hash": share_link.token_hash, "expires_at": share_link.expires_at.isoformat()}).execute())

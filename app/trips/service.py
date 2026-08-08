@@ -104,6 +104,59 @@ class TripService:
             raise AppError("MESSAGE_INVALID", "Invalid message role")
         self._repository.append_message(ConversationMessage(user_id=user_id, trip_id=trip_id, role=role, content=content))
 
+    def persist_planned_chat(
+        self,
+        user_id: UUID,
+        trip: Trip | None,
+        profile: TravelProfile,
+        itinerary: Itinerary,
+        user_message: str,
+        assistant_message: str,
+    ) -> Trip:
+        """Persist a validated plan and its final conversation pair atomically."""
+        profile_copy = TravelProfile.model_validate(profile.model_dump(mode="json"))
+        itinerary_copy = Itinerary.model_validate(itinerary.model_dump(mode="json"))
+        create = trip is None
+        if trip is None:
+            planned = Trip(
+                user_id=user_id,
+                title=destination_trip_title(profile_copy.destination),
+                profile=profile_copy,
+                status="planned",
+                itinerary=itinerary_copy,
+            )
+        else:
+            stored = self.get_trip(user_id, trip.id)
+            planned = Trip(
+                id=stored.id,
+                user_id=user_id,
+                title=stored.title,
+                profile=profile_copy,
+                status="planned",
+                itinerary=itinerary_copy,
+                created_at=stored.created_at,
+                updated_at=stored.updated_at,
+            )
+        messages = (
+            ConversationMessage(
+                user_id=user_id,
+                trip_id=planned.id,
+                role="user",
+                content=user_message,
+            ),
+            ConversationMessage(
+                user_id=user_id,
+                trip_id=planned.id,
+                role="assistant",
+                content=assistant_message,
+            ),
+        )
+        return self._repository.persist_planned_chat(
+            planned,
+            messages,
+            create=create,
+        )
+
     def create_share_link(self, user_id: UUID, trip_id: UUID, expires_in_days: int = 30) -> str:
         self.get_trip(user_id, trip_id)
         if not 1 <= expires_in_days <= 365:

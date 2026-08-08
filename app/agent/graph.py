@@ -261,7 +261,8 @@ class ModelStructuredPlanner:
         response = get_model_gateway(model).invoke([
             SystemMessage(content=(
                 "Generate only one raw JSON object matching the supplied JSON Schema. "
-                "Claims require evidence_id; never supply source metadata."
+                "Use concise, readable Chinese titles and advisory notes. Put every external fact in facts with "
+                "an evidence_id; never put live prices, availability, opening hours, or source metadata in display text."
             )),
             HumanMessage(content=json.dumps({
                 "json_schema": Itinerary.model_json_schema(),
@@ -386,9 +387,10 @@ class SafeTravelAgent:
             )
             fetched = self._evidence_provider.fetch(profile)
             provider_results = getattr(fetched, "results", fetched)
+            booking_links = getattr(fetched, "booking_links", None)
             warnings = list(getattr(fetched, "warnings", ()))
             if not hasattr(self._planner, "invoke") and hasattr(self._planner, "plan"):
-                from app.agent.planning import PlanValidationError
+                from app.agent.planning import PlanValidationError, render_itinerary_markdown
 
                 try:
                     itinerary = self._planner.plan(profile, provider_results)
@@ -400,9 +402,10 @@ class SafeTravelAgent:
                         error_code="PLAN_VALIDATION_FAILED",
                         warnings=warnings,
                     )
+                itinerary = _attach_booking_links(itinerary, booking_links)
                 citations = _itinerary_citations(itinerary)
                 return ChatResult(
-                    itinerary.model_dump_json(),
+                    render_itinerary_markdown(itinerary),
                     "planned",
                     profile.model_dump(),
                     sources=[citation.model_dump(mode="json") for citation in citations],
@@ -473,7 +476,7 @@ class SafeTravelAgent:
             if not evidence:
                 result = self._unverified_framework(profile)
             elif not hasattr(self._planner, "invoke") and hasattr(self._planner, "plan"):
-                from app.agent.planning import PlanValidationError
+                from app.agent.planning import PlanValidationError, render_itinerary_markdown
                 try:
                     itinerary = self._planner.plan(profile, evidence)
                 except PlanValidationError:
@@ -484,8 +487,9 @@ class SafeTravelAgent:
                 else:
                     citations = _itinerary_citations(itinerary)
                     result = ChatResult(
-                        itinerary.model_dump_json(), "planned", profile.model_dump(),
+                        render_itinerary_markdown(itinerary), "planned", profile.model_dump(),
                         sources=[citation.model_dump(mode="json") for citation in citations],
+                        itinerary=itinerary,
                     )
             else:
                 result = self._verify_plan(self._planner.invoke(profile, evidence), evidence, profile)
@@ -616,3 +620,17 @@ def _itinerary_citations(itinerary: Any) -> list[Any]:
         for activity in (day.morning, day.afternoon, day.evening):
             citations.extend(activity.citations)
     return citations
+
+
+def _attach_booking_links(itinerary: Itinerary, booking_links: object | None) -> Itinerary:
+    if booking_links is None:
+        return itinerary
+    from app.schemas import BookingLinks
+
+    if isinstance(booking_links, BookingLinks):
+        validated = booking_links
+    elif hasattr(booking_links, "model_dump"):
+        validated = BookingLinks.model_validate(booking_links.model_dump())
+    else:
+        validated = BookingLinks.model_validate(vars(booking_links))
+    return itinerary.model_copy(update={"booking_links": validated}, deep=True)

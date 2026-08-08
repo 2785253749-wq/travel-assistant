@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 from pydantic import Field, TypeAdapter
 
-from app.schemas import Itinerary, TravelProfile
+from app.schemas import CHAT_REPLY_MAX_LENGTH, Itinerary, TravelProfile
 
 
 TRIP_TITLE_MAX_LENGTH = 100
@@ -14,6 +14,11 @@ TripTitle = Annotated[
     Field(min_length=1, max_length=TRIP_TITLE_MAX_LENGTH),
 ]
 _TRIP_TITLE_ADAPTER = TypeAdapter(TripTitle)
+MessageContent = Annotated[
+    str,
+    Field(min_length=1, max_length=CHAT_REPLY_MAX_LENGTH),
+]
+_MESSAGE_CONTENT_ADAPTER = TypeAdapter(MessageContent)
 
 
 def validate_trip_title(value: object) -> str:
@@ -58,6 +63,9 @@ class ConversationMessage:
     content: str
     id: UUID = field(default_factory=uuid4)
     created_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        self.content = _MESSAGE_CONTENT_ADAPTER.validate_python(self.content)
 
 
 @dataclass

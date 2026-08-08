@@ -1,5 +1,6 @@
 from unittest.mock import Mock
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -13,8 +14,10 @@ from app.agent.graph import (
 )
 from app.agent.intent import IntentResult
 from app.agent.safety import assess_message
-from app.schemas import TravelProfile
+from app.schemas import Itinerary, TravelProfile
 from app.agent.planning import PlanValidationError, Planner as StructuredPlanner
+from app.providers.aggregate import ProviderBundle
+from app.providers.booking_links import BookingLinkBuilder
 
 
 class StubClassifier:
@@ -580,3 +583,135 @@ def test_agent_uses_structured_planner_repair_and_fails_closed_after_second_erro
 
     failed = make_agent(profile=profile, planner=StructuredPlanner(lambda *_: {"invalid": True}, now=lambda: now), evidence_provider=evidence).run("plan", trip=None)
     assert failed.error_code == "PLAN_VALIDATION_FAILED"
+
+
+def test_confirmed_structured_plan_returns_readable_summary_and_server_booking_links():
+    profile = TravelProfile(
+        origin="上海",
+        destination="成都",
+        start_date="2026-10-01",
+        end_date="2026-10-02",
+        travelers=2,
+        budget_cny=5000,
+    )
+    itinerary = Itinerary.model_validate_json(
+        Path("tests/fixtures/task7_itinerary.json").read_text(encoding="utf-8")
+    )
+    itinerary.title = "成都慢游两日计划"
+    itinerary.days[0].morning.title = "人民公园与茶馆体验"
+
+    class StructuredPlanner:
+        def plan(self, _profile, _provider_results):
+            return itinerary
+
+    class BundledProviders:
+        def fetch(self, requested_profile):
+            return ProviderBundle(
+                results=(),
+                booking_links=BookingLinkBuilder().build(requested_profile),
+            )
+
+    result = make_agent(
+        profile=profile,
+        planner=StructuredPlanner(),
+        evidence_provider=BundledProviders(),
+    ).plan_confirmed(profile, trip=None, user_id=None, message="确认")
+
+    assert result.stage == "planned"
+    assert result.itinerary is not None
+    assert result.reply.startswith("# 成都慢游两日计划")
+    assert "人民公园与茶馆体验" in result.reply
+    assert not result.reply.lstrip().startswith("{")
+    assert len(result.reply) <= 4000
+    assert result.itinerary.booking_links is not None
+    assert result.itinerary.booking_links.train.startswith("https://www.12306.cn/")
+    assert "第三方平台" in result.itinerary.booking_links.disclaimer
+
+
+def test_legal_seven_day_itinerary_reply_stays_within_message_storage_limit():
+    profile = TravelProfile(
+        origin="上海",
+        destination="成都",
+        start_date="2026-10-01",
+        end_date="2026-10-07",
+        travelers=2,
+        budget_cny=7000,
+    )
+    days = []
+    for offset in range(7):
+        day = date(2026, 10, 1) + timedelta(days=offset)
+        days.append(
+            {
+                "date": day.isoformat(),
+                "morning": {
+                    "title": "早晨慢行" * 50,
+                    "start_time": "08:00",
+                    "end_time": "10:00",
+                    "notes": ["按体力灵活调整路线。" * 20] * 20,
+                },
+                "afternoon": {
+                    "title": "午后探索" * 50,
+                    "start_time": "12:00",
+                    "end_time": "15:00",
+                    "notes": ["预留休息与用餐时间。" * 20] * 20,
+                },
+                "evening": {
+                    "title": "傍晚散步" * 50,
+                    "start_time": "17:00",
+                    "end_time": "20:00",
+                    "notes": ["根据当天状态提前结束。" * 20] * 20,
+                },
+            }
+        )
+    itinerary = Itinerary.model_validate(
+        {
+            "title": "成都七日慢游计划",
+            "start_date": "2026-10-01",
+            "end_date": "2026-10-07",
+            "days": days,
+            "budget": {
+                "transport": 1500,
+                "hotel": 2500,
+                "food": 1500,
+                "tickets": 500,
+                "reserve": 700,
+                "other": 300,
+                "total": 7000,
+                "currency": "CNY",
+                "traveler_basis": "trip_total",
+                "traveler_count": 2,
+                "trip_total": 7000,
+                "estimate": {
+                    "low": 6500,
+                    "point": 7000,
+                    "high": 7500,
+                    "currency": "CNY",
+                    "basis": "trip_total",
+                    "assumption_id": "budget-1",
+                },
+            },
+            "notes": ["总体节奏以舒适为主。" * 20] * 40,
+            "assumptions": [
+                {
+                    "assumption_id": "budget-1",
+                    "category": "budget",
+                    "description": "按已确认总预算分配。",
+                }
+            ],
+        }
+    )
+
+    class StructuredPlanner:
+        def plan(self, _profile, _provider_results):
+            return itinerary
+
+    result = make_agent(
+        profile=profile,
+        planner=StructuredPlanner(),
+        evidence_provider=StubEvidenceProvider(),
+    ).plan_confirmed(profile, trip=None, user_id=None, message="确认")
+
+    assert result.stage == "planned"
+    assert result.itinerary == itinerary
+    assert 0 < len(result.reply) <= 4000
+    assert result.reply.startswith("# 成都七日慢游计划")

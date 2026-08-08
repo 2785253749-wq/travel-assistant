@@ -359,6 +359,40 @@ test("Task 7 activity citations render canonical freshness and reject malicious 
   assert.equal(links.some((link) => link.href.includes("evil.example") || link.href.includes("user@") || link.href.includes(":444") || link.href.includes("unknown.example")), false);
 });
 
+test("readable itinerary renders notes facts assumptions and server booking search links", async () => {
+  const root = path.resolve(__dirname, "..", "..");
+  const itinerary = JSON.parse(fs.readFileSync(path.join(root, "tests", "fixtures", "task7_itinerary.json"), "utf8"));
+  itinerary.title = "成都慢游两日计划";
+  itinerary.notes = ["每天保留机动时间，按体力调整。"];
+  itinerary.days[0].morning.title = "人民公园与茶馆体验";
+  itinerary.days[0].morning.notes = ["优先步行，途中安排休息。"];
+  itinerary.booking_links = {
+    train: "https://www.12306.cn/index/index.html?fromStation=%E4%B8%8A%E6%B5%B7&toStation=%E6%88%90%E9%83%BD",
+    hotel: "https://www.ctrip.com/hotels/list?city=%E6%88%90%E9%83%BD",
+    flight: "https://www.ctrip.com/flights?from=%E4%B8%8A%E6%B5%B7&to=%E6%88%90%E9%83%BD",
+    disclaimer: "价格和库存以第三方平台为准；链接仅用于搜索跳转。",
+  };
+  const harness = createHarness({ hash: "#share=opaque", fetch: async () => jsonResponse(200, {
+    id: "trip-1", title: itinerary.title, status: "planned", profile: {}, itinerary, updated_at: null,
+  }) });
+
+  await settle();
+
+  const content = harness.elements.get("trip-content");
+  const links = descendants(content).filter((node) => node.tagName === "A");
+  const bookingHosts = links
+    .map((link) => new URL(link.href).hostname)
+    .filter((hostname) => hostname === "www.12306.cn" || hostname === "www.ctrip.com");
+  assert.match(content.textContent, /人民公园与茶馆体验/);
+  assert.match(content.textContent, /优先步行，途中安排休息/);
+  assert.match(content.textContent, /成都 2026-10-01 的最高气温为 24°C/);
+  assert.match(content.textContent, /按已确认总预算分配/);
+  assert.match(content.textContent, /价格和库存以第三方平台为准/);
+  assert.deepEqual(bookingHosts, [
+    "www.12306.cn", "www.ctrip.com", "www.ctrip.com",
+  ]);
+});
+
 test("provider warning without canonical citation time says the update time is unknown", async () => {
   const harness = createHarness({ fetch: async () => jsonResponse(200, {
     reply: "基础框架", stage: "collecting", profile: {}, warnings: ["WEATHER_TIMEOUT"],

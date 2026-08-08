@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
@@ -18,6 +19,7 @@ ProfileDate = Annotated[str, Field(max_length=32)]
 ProfileListItem = Annotated[str, Field(max_length=500)]
 DisplayNote = Annotated[str, Field(max_length=500)]
 WarningText = Annotated[str, Field(max_length=500)]
+CHAT_REPLY_MAX_LENGTH = 4000
 
 class TravelProfile(StrictSchema):
     origin: ProfileLocation | None = None
@@ -61,7 +63,7 @@ class ChatRequest(StrictSchema):
     trip_id: UUID | None = None
 
 class ChatResponse(StrictSchema):
-    reply: str
+    reply: str = Field(min_length=1, max_length=CHAT_REPLY_MAX_LENGTH)
     stage: Literal["collecting", "confirming", "planned"]
     profile: TravelProfile
     itinerary: Itinerary | None = None
@@ -195,6 +197,36 @@ class FactClaim(StrictSchema):
     evidence_id: str = Field(min_length=1, max_length=200)
 
 
+class BookingLinks(StrictSchema):
+    train: str = Field(min_length=8, max_length=2048, pattern=r"^https://")
+    hotel: str = Field(min_length=8, max_length=2048, pattern=r"^https://")
+    flight: str = Field(min_length=8, max_length=2048, pattern=r"^https://")
+    disclaimer: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _uses_fixed_search_hosts(self) -> "BookingLinks":
+        expected_hosts = {
+            "train": "www.12306.cn",
+            "hotel": "www.ctrip.com",
+            "flight": "www.ctrip.com",
+        }
+        for field_name, expected_host in expected_hosts.items():
+            parsed = urlparse(getattr(self, field_name))
+            try:
+                explicit_port = parsed.port is not None
+            except ValueError:
+                explicit_port = True
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname != expected_host
+                or parsed.username is not None
+                or parsed.password is not None
+                or explicit_port
+            ):
+                raise ValueError("booking links must use fixed allowlisted hosts")
+        return self
+
+
 class Itinerary(StrictSchema):
     title: str = Field(min_length=1, max_length=300)
     start_date: date
@@ -204,6 +236,7 @@ class Itinerary(StrictSchema):
     notes: list[DisplayNote] = Field(default_factory=list, max_length=40)
     assumptions: list[PlanningAssumption] = Field(min_length=1, max_length=40)
     citations: list[SourceCitation] = Field(default_factory=list, max_length=100)
+    booking_links: BookingLinks | None = None
 
     @model_validator(mode="after")
     def _days_cover_the_itinerary_range(self) -> "Itinerary":

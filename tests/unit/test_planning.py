@@ -97,8 +97,23 @@ def test_unverified_price_is_rejected() -> None:
     itinerary = itinerary_factory().model_copy(update={"notes": ["Hotel live price is CNY 399 per night."]})
 
     assert {issue.code for issue in validate_itinerary(itinerary, profile_factory(), [])} == {
-        "NON_CANONICAL_DISPLAY_TEXT"
+        "UNSOURCED_DISPLAY_FACT"
     }
+
+
+def test_planner_preserves_safe_readable_titles_and_notes() -> None:
+    candidate = itinerary_factory().model_dump(mode="json")
+    candidate["title"] = "杭州慢游两日计划"
+    candidate["notes"] = ["每天保留机动时间，按体力调整。"]
+    candidate["days"][0]["morning"]["title"] = "西湖沿岸慢行"
+    candidate["days"][0]["morning"]["notes"] = ["优先步行，途中安排休息。"]
+
+    planned = Planner(lambda *_: candidate).plan(profile_factory(), [])
+
+    assert planned.title == "杭州慢游两日计划"
+    assert planned.notes == ["每天保留机动时间，按体力调整。"]
+    assert planned.days[0].morning.title == "西湖沿岸慢行"
+    assert planned.days[0].morning.notes == ["优先步行，途中安排休息。"]
 
 
 def test_citations_must_reference_trusted_evidence_and_disclose_freshness() -> None:
@@ -198,7 +213,8 @@ def test_activity_facts_cannot_authorize_another_activity_or_title() -> None:
         ItineraryDay(date=date(2026, 8, 1), morning=Activity(title="Hotel planning", start_time="09:00", end_time="11:00", facts=[FactClaim(text=hotel.fact, evidence_id="hotel-1")]), afternoon=Activity(title="Restaurant", start_time="13:00", end_time="15:00"), evening=Activity(title="Dinner", start_time="18:00", end_time="20:00")), itinerary_factory().days[1],
     ])
     planned = Planner(lambda *_: candidate.model_dump(mode="json"), now=lambda: now).plan(profile_factory(), [hotel, restaurant])
-    assert planned.days[0].afternoon.title == "Day 1 afternoon"
+    assert planned.days[0].morning.title == "Hotel planning"
+    assert planned.days[0].afternoon.title == "Restaurant"
     assert planned.days[0].afternoon.citations == []
 
 
@@ -228,7 +244,7 @@ def test_estimate_range_must_reference_one_unique_assumption() -> None:
 
 
 @pytest.mark.parametrize("field, value", [("title", "Hotel price is CNY 399."), ("notes", ["Attraction opens at 09:00."])])
-def test_top_level_noncanonical_text_is_rejected_even_when_activity_has_evidence(field: str, value: object) -> None:
+def test_top_level_variable_facts_are_rejected_even_when_activity_has_evidence(field: str, value: object) -> None:
     now = datetime(2026, 7, 2, tzinfo=timezone.utc)
     evidence = TrustedEvidence("place-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)
     values = itinerary_factory(days=[
@@ -238,7 +254,7 @@ def test_top_level_noncanonical_text_is_rejected_even_when_activity_has_evidence
     itinerary = Itinerary.model_validate(values)
 
     assert {issue.code for issue in validate_itinerary(itinerary, profile_factory(), [evidence], now=lambda: now)} == {
-        "NON_CANONICAL_DISPLAY_TEXT"
+        "UNSOURCED_DISPLAY_FACT"
     }
 
 
@@ -273,7 +289,7 @@ def test_direct_validation_rejects_model_copy_display_text_injection(display_tex
     injected = itinerary_factory().model_copy(update={"title": display_text})
 
     assert {issue.code for issue in validate_itinerary(injected, profile_factory(), [])} == {
-        "NON_CANONICAL_DISPLAY_TEXT"
+        "UNSOURCED_DISPLAY_FACT"
     }
 
 
@@ -300,16 +316,18 @@ def test_direct_validation_rejects_model_construct_display_text_injection(displa
     itinerary.days[0] = itinerary.days[0].model_copy(update={"morning": injected_activity})
 
     assert {issue.code for issue in validate_itinerary(itinerary, profile_factory(), [])} == {
-        "NON_CANONICAL_DISPLAY_TEXT"
+        "UNSOURCED_DISPLAY_FACT"
     }
 
 
-def test_planner_replaces_all_model_authored_display_text_with_canonical_templates() -> None:
+def test_planner_replaces_unsafe_display_text_but_preserves_safe_readable_text() -> None:
     candidate = itinerary_factory().model_dump(mode="json")
     candidate["title"] = "Hotel cost is CNY 399"
     candidate["notes"] = ["All rooms are sold out"]
     candidate["days"][0]["morning"]["title"] = "酒店费用是人民币399元"
     candidate["days"][0]["morning"]["notes"] = ["所有房间均已售罄"]
+    candidate["days"][0]["afternoon"]["title"] = "西湖周边漫步"
+    candidate["days"][0]["afternoon"]["notes"] = ["按体力灵活调整路线。"]
 
     planned = Planner(lambda *_: candidate).plan(profile_factory(), [])
 
@@ -317,7 +335,8 @@ def test_planner_replaces_all_model_authored_display_text_with_canonical_templat
     assert planned.notes == []
     assert planned.days[0].morning.title == "Day 1 morning"
     assert planned.days[0].morning.notes == []
-    assert planned.days[0].afternoon.title == "Day 1 afternoon"
+    assert planned.days[0].afternoon.title == "西湖周边漫步"
+    assert planned.days[0].afternoon.notes == ["按体力灵活调整路线。"]
     assert planned.days[1].evening.title == "Day 2 evening"
     assert validate_itinerary(planned, profile_factory(), []) == []
 

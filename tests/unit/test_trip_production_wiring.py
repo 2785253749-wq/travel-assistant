@@ -9,8 +9,8 @@ from pydantic import ValidationError
 from app.api.auth import AuthenticatedUser
 from app.core.config import get_settings
 from app.infrastructure.repositories import InMemoryTripRepository, SupabaseTripRepository
-from app.schemas import TravelProfile
-from app.trips.models import ShareLink, Trip
+from app.schemas import Itinerary, TravelProfile
+from app.trips.models import ConversationMessage, ShareLink, Trip
 
 
 USER_A = UUID("11111111-1111-1111-1111-111111111111")
@@ -251,3 +251,77 @@ def test_public_share_repository_calls_only_restricted_rpc():
 
     assert result == {"id": "trip"}
     assert client.calls == [("get_shared_trip_by_token_hash", {"p_token_hash": "hashed-token"})]
+
+
+def test_supabase_planned_chat_uses_one_atomic_rpc_instead_of_table_writes():
+    trip_id = uuid4()
+    itinerary = Itinerary.model_validate_json(
+        Path("tests/fixtures/task7_itinerary.json").read_text(encoding="utf-8")
+    )
+    profile = TravelProfile(
+        origin="上海",
+        destination="成都",
+        start_date="2026-10-01",
+        end_date="2026-10-02",
+        travelers=2,
+        budget_cny=5000,
+    )
+    trip = Trip(
+        id=trip_id,
+        user_id=USER_A,
+        title="成都 trip",
+        profile=profile,
+        status="planned",
+        itinerary=itinerary,
+    )
+    user_message = ConversationMessage(
+        user_id=USER_A,
+        trip_id=trip_id,
+        role="user",
+        content="请规划成都行程",
+    )
+    assistant_message = ConversationMessage(
+        user_id=USER_A,
+        trip_id=trip_id,
+        role="assistant",
+        content="# 成都行程\n\n可读摘要",
+    )
+    row = {
+        "id": str(trip_id),
+        "user_id": str(USER_A),
+        "title": trip.title,
+        "status": "planned",
+        "profile": profile.model_dump(mode="json"),
+        "itinerary": itinerary.model_dump(mode="json"),
+    }
+
+    class RpcCall:
+        def execute(self):
+            return type("Response", (), {"data": [row]})()
+
+    class RpcOnlyClient:
+        def __init__(self):
+            self.calls = []
+
+        def rpc(self, name, params):
+            self.calls.append((name, params))
+            return RpcCall()
+
+        def table(self, _name):
+            raise AssertionError("planned chat persistence must use one transaction RPC")
+
+    client = RpcOnlyClient()
+    stored = SupabaseTripRepository(client).persist_planned_chat(
+        trip,
+        (user_message, assistant_message),
+        create=True,
+    )
+
+    assert stored.id == trip_id
+    assert len(client.calls) == 1
+    name, params = client.calls[0]
+    assert name == "persist_planned_chat"
+    assert params["p_create"] is True
+    assert params["p_trip_id"] == str(trip_id)
+    assert params["p_user_message"] == "请规划成都行程"
+    assert params["p_assistant_message"] == "# 成都行程\n\n可读摘要"

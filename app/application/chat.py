@@ -22,6 +22,15 @@ class TripOperations(Protocol):
     def append_message(
         self, user_id: UUID, trip_id: UUID, *, role: str, content: str
     ) -> None: ...
+    def persist_planned_chat(
+        self,
+        user_id: UUID,
+        trip: Trip | None,
+        profile: TravelProfile,
+        itinerary: object,
+        user_message: str,
+        assistant_message: str,
+    ) -> Trip: ...
 
 
 @dataclass(frozen=True)
@@ -138,6 +147,23 @@ class TravelChatApplication:
         if result.stage != "planned" or result.itinerary is None:
             reservation.rollback()
             return result
+        if user_id is not None:
+            if self._trip_service is None:
+                reservation.rollback()
+                raise RuntimeError("authenticated chat requires trip persistence")
+            try:
+                trip = self._trip_service.persist_planned_chat(
+                    user_id,
+                    trip,
+                    pending.profile,
+                    result.itinerary,
+                    pending.user_message,
+                    result.reply,
+                )
+            except Exception:
+                reservation.rollback()
+                raise
+            result.trip_id = trip.id
         reservation.commit(max(usage.input_tokens, usage.calls), usage.output_tokens)
         logging.getLogger("app.model").info(
             "model_usage",
@@ -147,26 +173,6 @@ class TravelChatApplication:
                 model_output_tokens=usage.output_tokens,
             ),
         )
-
-        if user_id is not None:
-            if self._trip_service is None:
-                raise RuntimeError("authenticated chat requires trip persistence")
-            if trip is None:
-                trip = self._trip_service.create_trip(user_id, pending.profile)
-            trip = self._trip_service.update_trip(
-                user_id,
-                trip.id,
-                profile=pending.profile,
-                status="planned",
-                itinerary=result.itinerary,
-            )
-            self._trip_service.append_message(
-                user_id, trip.id, role="user", content=pending.user_message
-            )
-            self._trip_service.append_message(
-                user_id, trip.id, role="assistant", content=result.reply
-            )
-            result.trip_id = trip.id
         return result
 
     def _load_trip(self, user_id: UUID | None, trip_id: UUID | None) -> Trip | None:

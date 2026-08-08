@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from pydantic import ValidationError
 
 from app.agent.graph import TrustedEvidence
 from app.providers.base import ProviderResult
-from app.schemas import Itinerary, SourceCitation, TravelProfile
+from app.schemas import CHAT_REPLY_MAX_LENGTH, Itinerary, SourceCitation, TravelProfile
 
 
 _TRUSTED_SOURCE_TYPES = {"official", "government", "trusted_provider"}
@@ -51,11 +52,11 @@ def validate_itinerary(
     elif itinerary.start_date != profile_start or itinerary.end_date != profile_end:
         issues.append(PlanIssue("PROFILE_DATE_MISMATCH", "days", "Itinerary dates must match the profile."))
 
-    if not _has_canonical_display_text(itinerary, profile):
+    if not _has_safe_display_text(itinerary, profile):
         issues.append(PlanIssue(
-            "NON_CANONICAL_DISPLAY_TEXT",
+            "UNSOURCED_DISPLAY_FACT",
             "itinerary",
-            "Display text must match server-generated templates.",
+            "Display text may contain recommendations, not unverified variable facts.",
         ))
 
     if itinerary.budget.traveler_count != profile.travelers:
@@ -224,16 +225,52 @@ def _canonical_activity_title(day_number: int, slot: str) -> str:
     return f"Day {day_number} {slot}"
 
 
+_DEFINITIVE_VARIABLE_FACT = re.compile(
+    r"(?:\b(?:available|availability|sold\s+out|opens?|closes?|inventory)\b|"
+    r"(?:可订|有房|售罄|库存|余票|营业|开放时间|闭馆))",
+    re.IGNORECASE,
+)
+_NUMERIC_PRICE_FACT = re.compile(
+    r"(?:\b(?:price|cost|fare)\b|(?:价格|票价|费用)).{0,40}(?:\d|cny|rmb|人民币|元)",
+    re.IGNORECASE,
+)
+
+
+def _safe_display_text(value: object, *, max_length: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized or len(normalized) > max_length:
+        return None
+    if _DEFINITIVE_VARIABLE_FACT.search(normalized) or _NUMERIC_PRICE_FACT.search(normalized):
+        return None
+    return normalized
+
+
+def _safe_display_notes(value: object) -> list[str]:
+    if not isinstance(value, list) or len(value) > 40:
+        return []
+    notes: list[str] = []
+    for raw_note in value:
+        note = _safe_display_text(raw_note, max_length=500)
+        if note is None:
+            return []
+        notes.append(note)
+    return notes
+
+
 def _canonicalize_display_payload(payload: Mapping[object, object], profile: TravelProfile) -> dict[object, object]:
-    """Replace only untrusted display fields before public-schema validation."""
+    """Keep readable recommendations while replacing unsafe or malformed display fields."""
     title = _canonical_itinerary_title(profile)
     raw_days = payload.get("days")
     if title is None or not isinstance(raw_days, list):
         raise ValueError("itinerary days must be a JSON array")
 
     canonical = dict(payload)
-    canonical["title"] = title
-    canonical["notes"] = []
+    canonical["title"] = _safe_display_text(payload.get("title"), max_length=300) or title
+    canonical["notes"] = _safe_display_notes(payload.get("notes", []))
+    # Booking links are server-owned and are attached only after validation.
+    canonical["booking_links"] = None
     days: list[dict[object, object]] = []
     for day_number, raw_day in enumerate(raw_days, start=1):
         if not isinstance(raw_day, Mapping):
@@ -244,8 +281,11 @@ def _canonicalize_display_payload(payload: Mapping[object, object], profile: Tra
             if not isinstance(raw_activity, Mapping):
                 raise ValueError("each itinerary activity must be a JSON object")
             activity = dict(raw_activity)
-            activity["title"] = _canonical_activity_title(day_number, slot)
-            activity["notes"] = []
+            activity["title"] = (
+                _safe_display_text(raw_activity.get("title"), max_length=300)
+                or _canonical_activity_title(day_number, slot)
+            )
+            activity["notes"] = _safe_display_notes(raw_activity.get("notes", []))
             day[slot] = activity
         days.append(day)
     canonical["days"] = days
@@ -254,26 +294,30 @@ def _canonicalize_display_payload(payload: Mapping[object, object], profile: Tra
 
 def _normalize_display_text(itinerary: Itinerary, profile: TravelProfile) -> None:
     title = _canonical_itinerary_title(profile)
-    if title is not None:
-        itinerary.title = title
-    itinerary.notes = []
+    itinerary.title = _safe_display_text(itinerary.title, max_length=300) or title or "Trip itinerary"
+    itinerary.notes = _safe_display_notes(itinerary.notes)
+    itinerary.booking_links = None
     for day_number, day in enumerate(itinerary.days, start=1):
         for slot in _ACTIVITY_SLOTS:
             activity = getattr(day, slot)
-            activity.title = _canonical_activity_title(day_number, slot)
-            activity.notes = []
+            activity.title = (
+                _safe_display_text(activity.title, max_length=300)
+                or _canonical_activity_title(day_number, slot)
+            )
+            activity.notes = _safe_display_notes(activity.notes)
 
 
-def _has_canonical_display_text(itinerary: Itinerary, profile: TravelProfile) -> bool:
-    expected_title = _canonical_itinerary_title(profile)
-    if expected_title is None or itinerary.title != expected_title or itinerary.notes != []:
+def _has_safe_display_text(itinerary: Itinerary, profile: TravelProfile) -> bool:
+    if _canonical_itinerary_title(profile) is None:
         return False
     try:
+        values = [itinerary.title, *itinerary.notes]
+        for day in itinerary.days:
+            for activity in (day.morning, day.afternoon, day.evening):
+                values.extend((activity.title, *activity.notes))
         return all(
-            activity.title == _canonical_activity_title(day_number, slot) and activity.notes == []
-            for day_number, day in enumerate(itinerary.days, start=1)
-            for slot in _ACTIVITY_SLOTS
-            for activity in (getattr(day, slot),)
+            _safe_display_text(value, max_length=500) is not None
+            for value in values
         )
     except (AttributeError, TypeError):
         return False
@@ -306,3 +350,66 @@ def _normalize_claims(itinerary: Itinerary, registry: Mapping[str, TrustedEviden
         ))
     itinerary.citations = []
     return itinerary, []
+
+
+def render_itinerary_markdown(
+    itinerary: Itinerary,
+    *,
+    max_length: int = CHAT_REPLY_MAX_LENGTH,
+) -> str:
+    """Create a readable, storage-safe summary while the full plan stays structured."""
+
+    def clipped(value: object, limit: int) -> str:
+        text = " ".join(str(value).split())
+        return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+    lines = [
+        f"# {clipped(itinerary.title, 120)}",
+        "",
+        f"日期：{itinerary.start_date.isoformat()} 至 {itinerary.end_date.isoformat()}",
+    ]
+    slot_labels = {"morning": "上午", "afternoon": "下午", "evening": "晚上"}
+    for day in itinerary.days:
+        lines.extend(("", f"## {day.date.isoformat()}"))
+        for slot in _ACTIVITY_SLOTS:
+            activity = getattr(day, slot)
+            lines.append(
+                f"- {slot_labels[slot]} {activity.start_time}–{activity.end_time}："
+                f"{clipped(activity.title, 90)}"
+            )
+
+    budget = itinerary.budget
+    lines.extend(
+        (
+            "",
+            "## 预算估算",
+            f"- 行程合计：{budget.trip_total} {budget.currency}（{budget.traveler_count} 人）",
+            "- 该预算为规划估算，不是实时价格或库存。",
+        )
+    )
+    if itinerary.assumptions:
+        lines.extend(("", "## 规划假设"))
+        for assumption in itinerary.assumptions[:4]:
+            lines.append(f"- {clipped(assumption.description, 120)}")
+    if itinerary.notes:
+        lines.extend(("", "## 提醒"))
+        for note in itinerary.notes[:3]:
+            lines.append(f"- {clipped(note, 120)}")
+    if itinerary.booking_links is not None:
+        links = itinerary.booking_links
+        lines.extend(
+            (
+                "",
+                "## 第三方搜索入口",
+                f"- 火车：{links.train}",
+                f"- 酒店：{links.hotel}",
+                f"- 航班：{links.flight}",
+                f"- {clipped(links.disclaimer, 200)}",
+            )
+        )
+
+    summary = "\n".join(lines).strip()
+    truncation = "\n\n…完整活动说明、事实来源与待确认项请查看结构化行程卡。"
+    if len(summary) > max_length:
+        summary = summary[: max_length - len(truncation)].rstrip() + truncation
+    return summary

@@ -121,3 +121,54 @@ def test_server_validated_itinerary_can_be_persisted_and_copied_without_aliasing
     assert copied.itinerary == itinerary
     assert copied.itinerary is not planned.itinerary
     assert copied.title == f"{planned.title} (copy)"
+
+
+def test_planned_chat_is_saved_as_one_atomic_repository_operation(service, repository):
+    profile = TravelProfile(
+        origin="上海",
+        destination="成都",
+        start_date="2026-10-01",
+        end_date="2026-10-02",
+        travelers=2,
+        budget_cny=5000,
+    )
+    itinerary = Itinerary.model_validate_json(
+        Path("tests/fixtures/task7_itinerary.json").read_text(encoding="utf-8")
+    )
+
+    planned = service.persist_planned_chat(
+        USER_A,
+        None,
+        profile,
+        itinerary,
+        "请规划成都行程",
+        "# 成都行程\n\n可读摘要",
+    )
+
+    assert planned.status == "planned"
+    assert planned.itinerary == itinerary
+    assert [(message.role, message.content) for message in repository.messages] == [
+        ("user", "请规划成都行程"),
+        ("assistant", "# 成都行程\n\n可读摘要"),
+    ]
+
+
+def test_invalid_planned_chat_message_cannot_partially_create_or_update_trip(service, repository, trip):
+    itinerary = Itinerary.model_validate_json(
+        Path("tests/fixtures/task7_itinerary.json").read_text(encoding="utf-8")
+    )
+    original = trip.status, trip.itinerary
+
+    with pytest.raises(ValidationError):
+        service.persist_planned_chat(
+            USER_A,
+            trip,
+            trip.profile,
+            itinerary,
+            "user message",
+            "x" * 4001,
+        )
+
+    stored = service.get_trip(USER_A, trip.id)
+    assert (stored.status, stored.itinerary) == original
+    assert repository.messages == []

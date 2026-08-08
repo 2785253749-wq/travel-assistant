@@ -456,7 +456,11 @@ def _observe_database_failure(message: str) -> ScenarioObservation:
 
 def _structured_output(result: ChatResult) -> tuple[bool, bool, list[str]]:
     try:
-        itinerary = Itinerary.model_validate_json(result.reply)
+        itinerary = (
+            Itinerary.model_validate(result.itinerary)
+            if result.itinerary is not None
+            else Itinerary.model_validate_json(result.reply)
+        )
     except Exception:
         return False, False, []
     citations = [citation.evidence_id for citation in itinerary.citations]
@@ -481,7 +485,11 @@ def _unsupported_fact_count(result: ChatResult) -> int:
     if result.error_code in {"UNVERIFIABLE_REALTIME_REQUEST", "OUT_OF_SCOPE", "HIGH_STAKES_ADVICE"}:
         return 0
     try:
-        itinerary = Itinerary.model_validate_json(result.reply)
+        itinerary = (
+            Itinerary.model_validate(result.itinerary)
+            if result.itinerary is not None
+            else Itinerary.model_validate_json(result.reply)
+        )
     except Exception:
         text = result.reply.lower()
         return int(any(marker in text for marker in ("实时价格", "余票", "库存", "price is", "sold out")) and not result.sources)
