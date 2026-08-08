@@ -148,3 +148,24 @@ Date: 2026-08-08
 - Fixed 80-case offline evaluation: exit `0`; all accuracy/success metrics `1.0`, unsupported-fact rate `0.0`, no failed thresholds.
 
 The dependency warning and post-push GitHub Actions verification remain the only residual release risks.
+
+## Independent-review fix round 4
+
+Date: 2026-08-08
+
+### Finding resolved
+
+- The assigned-expression reader now treats JavaScript/TypeScript continuation punctuators and keyword operators as expression continuations after a safe JavaScript environment reference. Multiline concatenation, concatenation after a line comment, and ternary fallback expressions can no longer be truncated into an apparently safe reference.
+- Continuation detection is selected from the expression itself rather than the tracked file extension. JavaScript snippets inside reviewed engineering reports receive the same protection as source files, while YAML list syntax and PowerShell invocations after complete non-JavaScript assignments remain valid boundaries.
+- A safe-reference exemption still applies only when the complete assigned expression is exactly one approved environment reference. Existing logical fallback, object-property, TypeScript declaration-span, raw-token, and CI workflow checks remain covered. Evaluation cases, baseline, and thresholds are unchanged.
+
+### TDD and completion evidence
+
+- RED: the requested multiline concatenation, commented concatenation, and ternary fallback cases failed while the prior logical-OR cases passed. Controlled reproductions also captured two real-repository false positives and one fenced JavaScript report bypass before their fixes.
+- GREEN: focused deployment/scanner suite `56 passed, 1 warning in 22.52s`.
+- Real tracked-repository scan: `Public repository check passed`, exit `0` before this report update; the report is scanned again in the final commit gate.
+- Full Python suite: `387 passed, 1 warning in 50.67s`.
+- Browser JavaScript tests: `16 passed, 0 failed`.
+- Fixed 80-case offline evaluation: exit `0`; 80 cases, overall/task/fallback success `1.0`, unsupported-fact rate `0.0`, and no failed thresholds.
+
+The single Python warning remains the pre-existing Starlette `TestClient` / `httpx` deprecation warning. GitHub Actions still requires its normal post-push run.

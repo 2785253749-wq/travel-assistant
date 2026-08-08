@@ -30,6 +30,16 @@ function Test-PlaceholderValue {
     )
 }
 
+function Test-JavaScriptSafeReference {
+    param([string]$Value)
+
+    $normalized = $Value.Trim().Trim('"').Trim("'").Trim()
+    return (
+        $normalized -match '^(?i:(?:process|import\.meta)\.env\.[A-Z][A-Z0-9_]*)$' -or
+        $normalized -match '^(?i:(?:process|import\.meta)\.env\[(?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\])$'
+    )
+}
+
 function Test-SafeReference {
     param([string]$Value)
 
@@ -38,8 +48,7 @@ function Test-SafeReference {
         $normalized -match '^\$[A-Z][A-Z0-9_]*$' -or
         $normalized -match '^\$\{[A-Z][A-Z0-9_]*\}$' -or
         $normalized -match '^%[A-Z][A-Z0-9_]*%$' -or
-        $normalized -match '^(?i:(?:process|import\.meta)\.env\.[A-Z][A-Z0-9_]*)$' -or
-        $normalized -match '^(?i:(?:process|import\.meta)\.env\[(?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\])$' -or
+        (Test-JavaScriptSafeReference -Value $normalized) -or
         $normalized -match '^(?i:os\.environ\[(?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\])$' -or
         $normalized -match '^(?i:(?:os\.getenv|Deno\.env\.get|System\.getenv)\((?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\))$'
     )
@@ -91,7 +100,11 @@ function Get-AssignedExpression {
         }
         if ($character -in @([char]10, [char]13) -or
             ($character -eq [char]47 -and $index + 1 -lt $Content.Length -and $Content[$index + 1] -in @([char]47, [char]42))) {
-            $continuation = Get-LogicalContinuationStart -Content $Content -StartIndex $index
+            $useJavaScriptContinuations = Test-JavaScriptSafeReference -Value $builder.ToString()
+            $continuation = Get-ExpressionContinuationStart `
+                -Content $Content `
+                -StartIndex $index `
+                -UseJavaScriptContinuations $useJavaScriptContinuations
             if ($continuation -lt 0) {
                 break
             }
@@ -123,10 +136,11 @@ function Get-AssignedExpression {
     return $builder.ToString().Trim()
 }
 
-function Get-LogicalContinuationStart {
+function Get-ExpressionContinuationStart {
     param(
         [string]$Content,
-        [int]$StartIndex
+        [int]$StartIndex,
+        [bool]$UseJavaScriptContinuations
     )
 
     $index = $StartIndex
@@ -156,6 +170,26 @@ function Get-LogicalContinuationStart {
             (($Content[$index] -eq [char]124 -and $Content[$index + 1] -eq [char]124) -or
              ($Content[$index] -eq [char]38 -and $Content[$index + 1] -eq [char]38) -or
              ($Content[$index] -eq [char]63 -and $Content[$index + 1] -eq [char]63))) {
+            return $index
+        }
+        if (-not $UseJavaScriptContinuations) {
+            return -1
+        }
+        $continuationPunctuators = @(
+            [char]37, [char]38, [char]40, [char]42, [char]43, [char]45,
+            [char]46, [char]47, [char]60, [char]61, [char]62, [char]63,
+            [char]91, [char]94, [char]96, [char]124
+        )
+        if ($Content[$index] -in $continuationPunctuators) {
+            return $index
+        }
+        if ($Content[$index] -eq [char]33 -and
+            $index + 1 -lt $Content.Length -and
+            $Content[$index + 1] -eq [char]61) {
+            return $index
+        }
+        $remaining = $Content.Substring($index)
+        if ($remaining -match '^(?i:(?:in|instanceof|as|satisfies))\b') {
             return $index
         }
         return -1

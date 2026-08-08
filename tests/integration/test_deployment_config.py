@@ -168,6 +168,38 @@ def test_public_repo_check_accepts_multilanguage_placeholders(tmp_path: Path):
     assert "Public repository check passed" in result.stdout
 
 
+def test_public_repo_check_accepts_yaml_placeholder_before_next_list_item(tmp_path: Path):
+    name = "DEEPSEEK_API" + "_KEY"
+    repo = _tracked_repo(tmp_path, "config/workflow.yml", f"{name}: test-only-key\n- name: next step\n")
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Public repository check passed" in result.stdout
+
+
+def test_public_repo_check_accepts_powershell_safe_reference_before_invocation(tmp_path: Path):
+    name = "DEEPSEEK_API" + "_KEY"
+    source = f"$env:{name}=${name}\n& 'python.exe' -m pytest\n"
+    repo = _tracked_repo(tmp_path, "docs/report.md", source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Public repository check passed" in result.stdout
+
+
+def test_public_repo_check_rejects_javascript_expression_in_review_report(tmp_path: Path):
+    name = "DEEPSEEK_API" + "_KEY"
+    source = f'```javascript\nconst {name} = process.env.{name}\n  + "live-secret"\n```\n'
+    repo = _tracked_repo(tmp_path, "docs/report.md", source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
 def test_public_repo_check_accepts_typed_secret_setting_declarations(tmp_path: Path):
     declarations = "deepseek_api" + "_key: SecretStr | None = None\n"
     declarations += "supabase_service" + "_key: SecretStr | None = None\n"
@@ -216,9 +248,14 @@ def test_public_repo_check_rejects_javascript_environment_reference_with_literal
     [
         '\n  || "live-secret"',
         ' // safe reference\n  || "live-secret"',
+        '\n  && "live-secret"',
+        '\n  ?? "live-secret"',
+        '\n  + "live-secret"',
+        ' // safe reference\n  + "live-secret"',
+        '\n  ? process.env.DEEPSEEK_API_KEY : "live-secret"',
     ],
 )
-def test_public_repo_check_rejects_multiline_javascript_environment_fallback(
+def test_public_repo_check_rejects_multiline_javascript_environment_expression_continuation(
     tmp_path: Path,
     continuation: str,
 ):
