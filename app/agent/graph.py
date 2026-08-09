@@ -498,7 +498,16 @@ class SafeTravelAgent:
                         )
                     else:
                         itinerary = self._planner.plan(profile, provider_results)
-                except PlanValidationError:
+                except PlanValidationError as exc:
+                    logging.getLogger("app.agent").warning(
+                        "plan_validation_failed",
+                        extra=operational_context(
+                            error_code=exc.code,
+                            validation_codes=",".join(
+                                sorted({issue.code for issue in exc.issues})
+                            ),
+                        ),
+                    )
                     return ChatResult(
                         "Unable to safely validate this itinerary; please try again.",
                         "collecting",
