@@ -206,6 +206,8 @@ def api_chat(
         )
 
     with log_subject(safe_log_subject):
+        # Keep only the component boundary, never exception text or request content.
+        failure_stage = "application"
         try:
             try:
                 result = chat(
@@ -228,6 +230,7 @@ def api_chat(
                         trip_saved=False,
                     ),
                 )
+                failure_stage = "response"
                 return _json_chat_response(
                     response,
                     reply="AI provider is temporarily unavailable.",
@@ -245,6 +248,7 @@ def api_chat(
                         trip_saved=False,
                     ),
                 )
+                failure_stage = "response"
                 return _json_chat_response(
                     response,
                     reply=result.reply,
@@ -261,6 +265,7 @@ def api_chat(
                     trip_saved=result.persisted_this_request,
                 ),
             )
+            failure_stage = "response"
             return _json_chat_response(
                 response,
                 reply=result.reply,
@@ -293,6 +298,7 @@ def api_chat(
                     trip_saved=False,
                 ),
             )
+            failure_stage = "response"
             return _json_chat_response(
                 response,
                 reply="AI provider is temporarily unavailable.",
@@ -312,7 +318,11 @@ def api_chat(
             )
             logging.getLogger("app.api.chat").warning(
                 "chat_request_failed",
-                extra=operational_context(error_code="CHAT_UNAVAILABLE", exception_type=type(exc).__name__),
+                extra=operational_context(
+                    error_code="CHAT_UNAVAILABLE",
+                    exception_type=type(exc).__name__,
+                    failure_stage=failure_stage,
+                ),
             )
             raise HTTPException(
                 status_code=503,
