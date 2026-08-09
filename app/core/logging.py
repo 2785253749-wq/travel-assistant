@@ -40,6 +40,7 @@ _OPERATIONAL_FIELDS = (
     "db_status",
     "error_code",
     "exception_type",
+    "failure_stage",
 )
 
 

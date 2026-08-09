@@ -116,6 +116,29 @@ def test_chat_api_logs_only_stable_error_metadata(monkeypatch, caplog):
     assert "jwt-secret" not in caplog.text
 
 
+def test_chat_api_logs_the_safe_failure_boundary_for_an_application_key_error(monkeypatch, caplog):
+    """Production diagnostics distinguish an application failure from response encoding."""
+    from app.main import app
+    from app.api import chat as chat_api
+
+    monkeypatch.setattr(
+        chat_api,
+        "chat",
+        lambda *args, **kwargs: (_ for _ in ()).throw(KeyError("unlogged-private-key")),
+    )
+
+    with caplog.at_level("INFO", logger="app.api.chat"):
+        response = TestClient(app).post(
+            "/api/chat", json={"message": "plan", "thread_id": "key-error-boundary"}
+        )
+
+    assert response.status_code == 503
+    record = next(record for record in caplog.records if record.message == "chat_request_failed")
+    assert record.exception_type == "KeyError"
+    assert record.failure_stage == "application"
+    assert "unlogged-private-key" not in caplog.text
+
+
 @pytest.mark.parametrize(
     ("error_kind", "expected_status"),
     [("provider", 200), ("application", 503)],
