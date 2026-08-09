@@ -41,6 +41,7 @@ _OPERATIONAL_FIELDS = (
     "error_code",
     "exception_type",
     "failure_stage",
+    "validation_codes",
 )
 
 

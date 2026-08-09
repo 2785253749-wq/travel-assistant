@@ -797,6 +797,31 @@ def test_agent_uses_structured_planner_repair_and_fails_closed_after_second_erro
     assert failed.error_code == "PLAN_VALIDATION_FAILED"
 
 
+def test_confirmed_plan_logs_only_stable_validation_codes(caplog):
+    """Production logs identify the rejected rule without retaining model output."""
+    profile = TravelProfile(
+        origin="北京", destination="杭州", start_date="2026-10-01",
+        end_date="2026-10-02", travelers=2, budget_cny=3000,
+    )
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    provider = StubEvidenceProvider([
+        TrustedEvidence("ev-1", "West Lake is in Hangzhou.", "https://provider.example/place", "trusted_provider", now)
+    ])
+    agent = make_agent(
+        profile=profile,
+        planner=StructuredPlanner(lambda *_: {"invalid": True}, now=lambda: now),
+        evidence_provider=provider,
+    )
+
+    with caplog.at_level("WARNING", logger="app.agent"):
+        result = agent.plan_confirmed(profile, None, None, "plan")
+
+    assert result.error_code == "PLAN_VALIDATION_FAILED"
+    record = next(record for record in caplog.records if record.message == "plan_validation_failed")
+    assert record.validation_codes == "SCHEMA_INVALID"
+    assert "invalid" not in caplog.text
+
+
 def test_confirmed_structured_plan_returns_readable_summary_and_server_booking_links():
     profile = TravelProfile(
         origin="上海",
