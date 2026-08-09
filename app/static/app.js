@@ -25,6 +25,7 @@
     authHelp: $("auth-help"), status: $("status-message"), providerNotice: $("provider-notice"),
     providerUpdatedAt: $("provider-updated-at"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
+    assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantClose: $("assistant-close"),
     profileCard: $("profile-confirmation"), profileFields: $("profile-fields"), confirm: $("confirm-profile-button"),
     edit: $("edit-profile-button"), tripView: $("trip-view"), tripTitle: $("trip-title"),
     tripContent: $("trip-content"), tripActions: $("trip-actions"), save: $("save-trip-button"),
@@ -60,6 +61,18 @@
     state.busy = busy;
     for (const control of document.querySelectorAll("button,input,textarea")) control.disabled = busy;
     elements.progress.textContent = busy ? message || "正在处理，请稍候。" : "";
+  }
+
+  function openAssistant() {
+    elements.assistantPanel.hidden = false;
+    elements.assistantToggle.setAttribute("aria-expanded", "true");
+    elements.message.focus();
+  }
+
+  function closeAssistant() {
+    elements.assistantPanel.hidden = true;
+    elements.assistantToggle.setAttribute("aria-expanded", "false");
+    elements.assistantToggle.focus();
   }
 
   function clearChildren(node) {
@@ -772,6 +785,8 @@
       const trip = await requestJson("/api/shared/resolve", { method: "POST", body: { token } });
       renderTrip(trip, { public: true });
       elements.messages.closest("section").hidden = true;
+      elements.assistantPanel.hidden = true;
+      elements.assistantToggle.hidden = true;
       elements.history.hidden = true;
       setStatus("这是只读分享视图，不包含账户信息或聊天记录。", false);
     } catch (error) { showError(error); } finally { setBusy(false); }
@@ -801,6 +816,11 @@
   }
 
   elements.chatForm.addEventListener("submit", sendMessage);
+  elements.assistantToggle.addEventListener("click", openAssistant);
+  elements.assistantClose.addEventListener("click", () => { if (!state.busy) closeAssistant(); });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !state.busy && !elements.assistantPanel.hidden) closeAssistant();
+  });
   elements.confirm.addEventListener("click", confirmProfile);
   elements.edit.addEventListener("click", editProfile);
   elements.authForm.addEventListener("submit", (event) => { event.preventDefault(); authRequest("signin"); });
