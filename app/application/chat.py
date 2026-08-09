@@ -8,10 +8,11 @@ from typing import Callable, Protocol
 from uuid import UUID
 
 from app.agent.graph import ChatResult, SafeTravelAgent
+from app.agent.intent import Intent
 from app.core.errors import AppError
 from app.core.logging import operational_context
 from app.core.usage import ProviderUnavailable, UsageGuard, model_usage_scope
-from app.schemas import TravelProfile
+from app.schemas import Itinerary, TravelProfile
 from app.trips.models import Trip
 
 
@@ -27,7 +28,7 @@ class TripOperations(Protocol):
         user_id: UUID,
         trip: Trip | None,
         profile: TravelProfile,
-        itinerary: object,
+        itinerary: Itinerary,
         user_message: str,
         assistant_message: str,
     ) -> Trip: ...
@@ -37,6 +38,7 @@ class TripOperations(Protocol):
 class PendingConfirmation:
     profile: TravelProfile
     user_message: str
+    intent: Intent = "plan_trip"
 
 
 class ConfirmationStore:
@@ -62,16 +64,52 @@ class ConfirmationStore:
         trip_id: UUID | None,
         profile: TravelProfile,
         user_message: str,
+        intent: Intent = "plan_trip",
     ) -> None:
         key = self._key(subject, thread_id, trip_id)
         value = PendingConfirmation(
-            TravelProfile.model_validate(profile.model_dump()), user_message
+            TravelProfile.model_validate(profile.model_dump()), user_message, intent
         )
         with self._lock:
             self._entries[key] = value
             self._entries.move_to_end(key)
             while len(self._entries) > self._max_entries:
                 self._entries.popitem(last=False)
+
+    def discard(self, subject: str, thread_id: str, trip_id: UUID | None) -> None:
+        key = self._key(subject, thread_id, trip_id)
+        with self._lock:
+            self._entries.pop(key, None)
+
+    def take(
+        self, subject: str, thread_id: str, trip_id: UUID | None
+    ) -> PendingConfirmation | None:
+        """Atomically claim a pending confirmation so it cannot be replayed."""
+        key = self._key(subject, thread_id, trip_id)
+        with self._lock:
+            return self._entries.pop(key, None)
+
+    def restore_if_absent(
+        self,
+        subject: str,
+        thread_id: str,
+        trip_id: UUID | None,
+        pending: PendingConfirmation,
+    ) -> bool:
+        """Restore a failed claim without overwriting newer collected details."""
+        key = self._key(subject, thread_id, trip_id)
+        with self._lock:
+            if key in self._entries:
+                return False
+            self._entries[key] = PendingConfirmation(
+                TravelProfile.model_validate(pending.profile.model_dump()),
+                pending.user_message,
+                pending.intent,
+            )
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
+            return True
 
     @staticmethod
     def _key(subject: str, thread_id: str, trip_id: UUID | None) -> tuple[str, str, str]:
@@ -107,14 +145,17 @@ class TravelChatApplication:
         previous = self._confirmation_store.get(subject, thread_id, trip_id)
         initial = previous.profile if previous is not None else (trip.profile if trip else TravelProfile())
         result = self._agent_factory(initial).collect(message, trip)
-        if result.profile:
+        if result.profile and result.stage != "planned":
             self._confirmation_store.put(
                 subject,
                 thread_id,
                 trip_id,
                 TravelProfile.model_validate(result.profile),
                 message,
+                result.intent or "plan_trip",
             )
+        elif result.stage == "planned":
+            self._confirmation_store.discard(subject, thread_id, trip_id)
         result.trip_id = trip_id
         return result
 
@@ -129,28 +170,66 @@ class TravelChatApplication:
         message: str,
     ) -> ChatResult:
         trip = self._load_trip(user_id, trip_id)
-        pending = self._confirmation_store.get(subject, thread_id, trip_id)
+        pending = self._confirmation_store.take(subject, thread_id, trip_id)
         if pending is None:
-            if trip is None:
-                raise AppError("CONFIRMATION_REQUIRED", "Collect and confirm trip details first")
-            pending = PendingConfirmation(trip.profile, message)
+            raise AppError("CONFIRMATION_REQUIRED", "Collect and confirm trip details first")
 
-        reservation = self._usage_guard.reserve(quota_subject or subject)
+        def restore_pending() -> None:
+            self._confirmation_store.restore_if_absent(
+                subject, thread_id, trip_id, pending
+            )
+
+        def attach_pending_intent(error: Exception) -> None:
+            """Carry the claimed business intent through API fallback logging."""
+            try:
+                error.intent = pending.intent  # type: ignore[attr-defined]
+            except (AttributeError, TypeError):
+                pass
+
+        try:
+            reservation = self._usage_guard.reserve(quota_subject or subject)
+        except Exception as exc:
+            attach_pending_intent(exc)
+            restore_pending()
+            raise
+        usage = None
         try:
             with model_usage_scope() as usage:
                 result = self._agent_factory(pending.profile).plan_confirmed(
-                    pending.profile, trip, user_id, pending.user_message
+                    pending.profile,
+                    trip,
+                    user_id,
+                    pending.user_message,
+                    intent=pending.intent,
                 )
-        except Exception:
-            reservation.rollback()
+        except Exception as exc:
+            attach_pending_intent(exc)
+            try:
+                if usage is not None and usage.calls:
+                    self._commit_usage(reservation, usage)
+                else:
+                    reservation.rollback()
+            finally:
+                restore_pending()
             raise
         if result.stage != "planned" or result.itinerary is None:
-            reservation.rollback()
+            try:
+                if usage.calls:
+                    self._commit_usage(reservation, usage)
+                else:
+                    reservation.rollback()
+            finally:
+                restore_pending()
             return result
         if user_id is not None:
             if self._trip_service is None:
-                reservation.rollback()
-                raise RuntimeError("authenticated chat requires trip persistence")
+                error = RuntimeError("authenticated chat requires trip persistence")
+                attach_pending_intent(error)
+                try:
+                    reservation.rollback()
+                finally:
+                    restore_pending()
+                raise error
             try:
                 trip = self._trip_service.persist_planned_chat(
                     user_id,
@@ -160,20 +239,55 @@ class TravelChatApplication:
                     pending.user_message,
                     result.reply,
                 )
-            except Exception:
-                reservation.rollback()
+            except Exception as exc:
+                attach_pending_intent(exc)
+                try:
+                    if usage.calls:
+                        self._commit_usage(reservation, usage)
+                    else:
+                        reservation.rollback()
+                finally:
+                    restore_pending()
                 raise
             result.trip_id = trip.id
-        reservation.commit(max(usage.input_tokens, usage.calls), usage.output_tokens)
+            result.persisted_this_request = True
+        self._commit_usage(reservation, usage)
+        return result
+
+    @staticmethod
+    def _commit_usage(reservation: object, usage: object) -> None:
+        estimate = getattr(reservation, "estimate_cost_micros", lambda *_: 0)(
+            usage.input_tokens, usage.output_tokens
+        )
+        try:
+            reservation.commit(
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.calls,
+            )
+        except Exception as exc:
+            logging.getLogger("app.model").error(
+                "model_usage_commit_failed",
+                extra=operational_context(
+                    model_calls=usage.calls,
+                    model_input_tokens=usage.input_tokens,
+                    model_output_tokens=usage.output_tokens,
+                    estimated_cost_micros=estimate,
+                    error_code="USAGE_ACCOUNTING_UNAVAILABLE",
+                    exception_type=type(exc).__name__,
+                ),
+            )
+            return
         logging.getLogger("app.model").info(
             "model_usage",
             extra=operational_context(
                 model_calls=usage.calls,
                 model_input_tokens=usage.input_tokens,
                 model_output_tokens=usage.output_tokens,
+                estimated_cost_micros=estimate,
+                cost_estimate_configured=estimate > 0,
             ),
         )
-        return result
 
     def _load_trip(self, user_id: UUID | None, trip_id: UUID | None) -> Trip | None:
         if trip_id is None:

@@ -377,8 +377,25 @@
       const body = { message, thread_id: state.threadId, action: "collect" };
       if (tripId) body.trip_id = tripId;
       const response = await requestJson("/api/chat", { method: "POST", body });
-      if (response.stage !== "planned") addMessage(response.reply, "assistant");
       showProviderNotice(response.warnings, null);
+      if (response.stage === "planned" && response.itinerary && typeof response.itinerary === "object") {
+        addMessage(response.reply, "assistant");
+        state.profile = response.profile || state.profile || {};
+        state.pendingResult = {
+          reply: response.reply, profile: state.profile, itinerary: response.itinerary,
+          trip_id: response.trip_id || tripId,
+        };
+        renderTrip({
+          id: state.pendingResult.trip_id,
+          title: response.itinerary.title || "行程建议",
+          status: "planned",
+          profile: state.profile,
+          itinerary: response.itinerary,
+        });
+        setStatus("已根据保存的行程给出解释。", false);
+        return;
+      }
+      addMessage(response.reply, "assistant");
       state.pendingResult = {
         reply: response.reply, profile: response.profile || {}, itinerary: null,
         trip_id: response.trip_id || tripId,

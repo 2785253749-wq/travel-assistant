@@ -308,6 +308,38 @@ test("planning starts only after an explicit confirmation and never prints itine
   assert.doesNotMatch(harness.elements.get("chat-messages").textContent, /成都两日行程|\"days\"/);
 });
 
+test("an explain response reuses the saved itinerary and renders its grounded explanation immediately", async () => {
+  const itinerary = {
+    title: "成都慢游两日计划",
+    days: [{
+      date: "2026-10-01",
+      morning: { title: "人民公园与茶馆体验", start_time: "09:00", end_time: "11:00", notes: [], citations: [] },
+    }],
+    citations: [],
+  };
+  const harness = createHarness({ fetch: async (call) => {
+    assert.equal(call.url, "/api/chat");
+    assert.equal(JSON.parse(call.options.body).action, "collect");
+    return jsonResponse(200, {
+      reply: "推荐人民公园是为了匹配你已确认的慢节奏偏好。",
+      stage: "planned",
+      profile: { destination: "成都" },
+      itinerary,
+      trip_id: "trip-1",
+    });
+  } });
+  await settle();
+
+  harness.elements.get("message-input").value = "为什么推荐人民公园？";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  assert.match(harness.elements.get("chat-messages").textContent, /推荐人民公园是为了匹配/);
+  assert.match(harness.elements.get("trip-content").textContent, /人民公园与茶馆体验/);
+  assert.equal(harness.elements.get("trip-view").hidden, false);
+  assert.equal(harness.document.body.dataset.appState, "planned");
+});
+
 test("Task 7 activity citations render canonical freshness and reject malicious links", async () => {
   const root = path.resolve(__dirname, "..", "..");
   const itinerary = JSON.parse(fs.readFileSync(path.join(root, "tests", "fixtures", "task7_itinerary.json"), "utf8"));

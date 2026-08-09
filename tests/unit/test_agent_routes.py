@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -8,16 +9,24 @@ from app.agent.graph import (
     ChatSessionStore,
     PlanClaim,
     PlanningResult,
+    RuleIntentClassifier,
     SafeTravelAgent,
     TrustedEvidence,
     chat,
 )
 from app.agent.intent import IntentResult
 from app.agent.safety import assess_message
-from app.schemas import Itinerary, TravelProfile
+from app.schemas import (
+    CHAT_REPLY_MAX_LENGTH,
+    FactClaim,
+    Itinerary,
+    SourceCitation,
+    TravelProfile,
+)
 from app.agent.planning import PlanValidationError, Planner as StructuredPlanner
 from app.providers.aggregate import ProviderBundle
 from app.providers.booking_links import BookingLinkBuilder
+from app.trips.models import Trip
 
 
 class StubClassifier:
@@ -74,7 +83,165 @@ def test_modify_without_trip_routes_to_creation():
     result = make_agent(intent="modify_trip").run("把第二天改成西湖", trip=None)
 
     assert result.stage == "collecting"
+    assert result.intent == "modify_trip"
     assert "先告诉我" in result.reply
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("把第二天改成西湖", "modify_trip"),
+        ("把酒店偏好换成地铁附近", "modify_trip"),
+        ("上次那个杭州行程，第二天换西湖", "modify_trip"),
+        ("the second day不要太赶", "modify_trip"),
+        ("为什么推荐人民公园", "explain_trip"),
+        ("explain this itinerary", "explain_trip"),
+    ],
+)
+def test_production_rule_classifier_distinguishes_modify_and_explain(message, expected):
+    assert RuleIntentClassifier().classify(message, has_trip=True).intent == expected
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("你好", "smalltalk"),
+        ("hello", "smalltalk"),
+        ("帮我写一份公司裁员方案", "unsupported"),
+        ("write my Java homework", "unsupported"),
+        ("从上海到杭州玩三天", "plan_trip"),
+    ],
+)
+def test_production_rule_classifier_reaches_all_five_intents(message, expected):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == expected
+
+
+def test_explain_uses_only_existing_itinerary_without_provider_or_model_calls():
+    profile = TravelProfile(
+        origin="上海",
+        destination="成都",
+        start_date="2026-10-01",
+        end_date="2026-10-02",
+        travelers=2,
+        budget_cny=5000,
+    )
+    itinerary = Itinerary.model_validate_json(
+        Path("tests/fixtures/task7_itinerary.json").read_text(encoding="utf-8")
+    )
+    itinerary.days[0].morning.title = "人民公园与茶馆体验"
+    trip = Trip(
+        user_id=UUID("11111111-1111-1111-1111-111111111111"),
+        title="成都 trip",
+        profile=profile,
+        status="planned",
+        itinerary=itinerary,
+    )
+    planner = Mock()
+    providers = Mock()
+    agent = SafeTravelAgent(
+        classifier=RuleIntentClassifier(),
+        extractor=StubExtractor(),
+        planner=planner,
+        evidence_provider=providers,
+        initial_profile=profile,
+    )
+
+    result = agent.collect("为什么推荐人民公园？", trip)
+
+    assert result.stage == "planned"
+    assert result.intent == "explain_trip"
+    assert result.itinerary == itinerary
+    assert "人民公园与茶馆体验" in result.reply
+    assert "成都 2026-10-01 的最高气温为 24°C" in result.reply
+    assert result.sources
+    planner.plan.assert_not_called()
+    planner.invoke.assert_not_called()
+    providers.fetch.assert_not_called()
+
+
+def test_modify_instruction_with_a_secret_is_rejected_before_confirmation():
+    profile = TravelProfile(
+        origin="上海",
+        destination="成都",
+        start_date="2026-10-01",
+        end_date="2026-10-02",
+        travelers=2,
+        budget_cny=5000,
+    )
+    trip = Trip(
+        user_id=UUID("11111111-1111-1111-1111-111111111111"),
+        title="成都 trip",
+        profile=profile,
+        status="planned",
+    )
+    planner = Mock()
+    agent = SafeTravelAgent(
+        classifier=RuleIntentClassifier(),
+        extractor=StubExtractor(),
+        planner=planner,
+        evidence_provider=StubEvidenceProvider(),
+        initial_profile=profile,
+    )
+
+    result = agent.collect("把第二天改成 api_key=do-not-send", trip)
+
+    assert result.stage == "collecting"
+    assert result.error_code == "SENSITIVE_INPUT_REJECTED"
+    assert result.intent == "modify_trip"
+    planner.plan.assert_not_called()
+    planner.invoke.assert_not_called()
+
+
+def test_explain_reply_is_bounded_for_a_maximum_legal_fact_payload():
+    profile = TravelProfile(
+        origin="上海",
+        destination="成都",
+        start_date="2026-10-01",
+        end_date="2026-10-02",
+        travelers=2,
+        budget_cny=5000,
+    )
+    itinerary = Itinerary.model_validate_json(
+        Path("tests/fixtures/task7_itinerary.json").read_text(encoding="utf-8")
+    )
+    facts = []
+    citations = []
+    for index in range(20):
+        text = f"已核实事实{index}:" + ("景" * 980)
+        evidence_id = f"large-explain-{index}"
+        facts.append(FactClaim(text=text, evidence_id=evidence_id))
+        citations.append(
+            SourceCitation(
+                evidence_id=evidence_id,
+                source_url=f"https://example.com/source-{index}",
+                source_type="official",
+                fetched_at=datetime(2026, 8, 9, tzinfo=timezone.utc),
+                freshness="reference only",
+                fact=text,
+            )
+        )
+    itinerary.days[0].morning.facts = facts
+    itinerary.days[0].morning.citations = citations
+    trip = Trip(
+        user_id=UUID("11111111-1111-1111-1111-111111111111"),
+        title="成都 trip",
+        profile=profile,
+        status="planned",
+        itinerary=itinerary,
+    )
+    agent = SafeTravelAgent(
+        classifier=RuleIntentClassifier(),
+        extractor=StubExtractor(),
+        planner=Mock(),
+        evidence_provider=Mock(),
+        initial_profile=profile,
+    )
+
+    result = agent.collect("为什么这样安排第一天？", trip)
+
+    assert result.stage == "planned"
+    assert 0 < len(result.reply) <= CHAT_REPLY_MAX_LENGTH
+    assert result.reply.endswith("完整事实与来源请查看结构化行程卡。")
 
 
 def test_invalid_profile_is_collected_without_calling_planner():
@@ -152,6 +319,7 @@ def test_agent_error_does_not_expose_internal_details():
     ).run("规划行程", trip=None)
 
     assert result.error_code == "AGENT_UNAVAILABLE"
+    assert result.intent == "plan_trip"
     assert "secret" not in result.reply
 
 
@@ -166,6 +334,7 @@ def test_explicit_foreign_destination_is_refused_after_plan_intent():
     ).run("北京出发去东京玩3天", trip=None)
 
     assert result.error_code == "OUT_OF_SCOPE"
+    assert result.intent == "plan_trip"
     planner.invoke.assert_not_called()
 
 

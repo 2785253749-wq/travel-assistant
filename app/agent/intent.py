@@ -24,7 +24,8 @@ def intent_model() -> ChatDeepSeek:
         api_key=settings.deepseek_api_key.get_secret_value(),
         api_base=str(settings.deepseek_api_base),
         temperature=0,
-        max_retries=2,
+        # Paid attempts must cross ModelGateway so usage accounting sees each one.
+        max_retries=0,
     )
 
 

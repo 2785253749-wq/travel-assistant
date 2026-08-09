@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
 import time
@@ -30,6 +31,12 @@ _OPERATIONAL_FIELDS = (
     "model_calls",
     "model_input_tokens",
     "model_output_tokens",
+    "estimated_cost_micros",
+    "cost_estimate_configured",
+    "stage",
+    "trip_saved",
+    "db_operation",
+    "db_status",
     "error_code",
     "exception_type",
 )
@@ -94,6 +101,56 @@ def log_subject(subject: str) -> Iterator[None]:
         _SUBJECT.reset(token)
 
 
+@contextmanager
+def correlation_context(request_id: str, subject: str | None = None) -> Iterator[None]:
+    """Bind correlation fields for non-HTTP operations and deterministic tests."""
+    if not _SAFE_REQUEST_ID.fullmatch(request_id):
+        raise ValueError("invalid request id")
+    request_token = _REQUEST_ID.set(request_id)
+    subject_token = _SUBJECT.set(subject)
+    try:
+        yield
+    finally:
+        _SUBJECT.reset(subject_token)
+        _REQUEST_ID.reset(request_token)
+
+
+def hashed_log_subject(kind: str, value: object) -> str:
+    """Create a stable log-only subject without exposing an owner or share key."""
+    digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+    return f"{kind}-digest:{digest}"
+
+
+@contextmanager
+def database_operation(
+    operation: str, *, subject: str | None = None
+) -> Iterator[None]:
+    """Emit one safe, request-correlated result for a database operation."""
+    try:
+        yield
+    except Exception as exc:
+        fields = {
+            "db_operation": operation,
+            "db_status": "failure",
+            "exception_type": type(exc).__name__,
+        }
+        if subject is not None and _SUBJECT.get() is None:
+            fields["subject"] = subject
+        logging.getLogger("app.database").warning(
+            "database_result",
+            extra=operational_context(**fields),
+        )
+        raise
+    else:
+        fields = {"db_operation": operation, "db_status": "success"}
+        if subject is not None and _SUBJECT.get() is None:
+            fields["subject"] = subject
+        logging.getLogger("app.database").info(
+            "database_result",
+            extra=operational_context(**fields),
+        )
+
+
 def request_log_path(request: Request) -> str:
     route = request.scope.get("route")
     template = getattr(route, "path", None)
@@ -139,6 +196,7 @@ async def request_context(
         logging.getLogger("app.request").info(
             "request_complete",
             extra=operational_context(
+                intent=getattr(request.state, "log_intent", None),
                 method=request.method,
                 path=request_log_path(request),
                 status_code=status_code,

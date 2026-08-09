@@ -1,12 +1,112 @@
 from __future__ import annotations
 
 from collections import deque
+import hmac
+import ipaddress
+import logging
+import secrets
 
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.core.config import get_settings
+from app.core.logging import operational_context
+from app.core.rate_limit import request_rate_limiter
+
 
 MAX_REQUEST_BODY_BYTES = 64 * 1024
+_DEVELOPMENT_NETWORK_SECRET = secrets.token_bytes(32)
+
+
+def _network_signing_secret() -> bytes:
+    configured = get_settings().anon_session_signing_secret
+    if configured is not None:
+        return configured.get_secret_value().encode("utf-8")
+    return _DEVELOPMENT_NETWORK_SECRET
+
+
+def _network_digest(network: str) -> str:
+    return hmac.digest(
+        _network_signing_secret(),
+        b"network-rate-limit-v1\0" + network.encode("ascii"),
+        "sha256",
+    ).hex()
+
+
+class ChatNetworkRateLimitMiddleware:
+    """Charge the trusted network bucket before any authentication provider call."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(
+        self, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        if (
+            scope["type"] != "http"
+            or scope.get("method") != "POST"
+            or scope.get("path") != "/api/chat"
+        ):
+            await self._app(scope, receive, send)
+            return
+
+        network = normalized_client_network(scope)
+        network_digest = _network_digest(network)
+        network_subject = "network-digest:" + network_digest
+        state = scope.setdefault("state", {})
+        if isinstance(state, dict):
+            state["network_subject"] = network_subject
+            state["log_subject"] = network_subject
+            state["log_intent"] = "not_evaluated"
+        if request_rate_limiter.allow(
+            (("ip:" + network_digest, get_settings().request_ip_per_minute),)
+        ):
+            await self._app(scope, receive, send)
+            return
+
+        logging.getLogger("app.api.chat").warning(
+            "request_rate_limited",
+            extra=operational_context(
+                subject=network_subject,
+                intent="not_evaluated",
+                stage="rejected",
+                error_code="REQUEST_RATE_LIMITED",
+            ),
+        )
+        request_id = _request_id(scope)
+        await JSONResponse(
+            status_code=429,
+            content={
+                "detail": {
+                    "code": "REQUEST_RATE_LIMITED",
+                    "message": "Too many requests; please retry later",
+                },
+                "request_id": request_id,
+            },
+            headers={"X-Request-ID": request_id},
+        )(scope, receive, send)
+
+
+def normalized_client_network(scope: Scope) -> str:
+    source = get_settings().trusted_client_ip_header
+    if source == "cf-connecting-ip":
+        values = [
+            value.decode("latin-1")
+            for name, value in scope.get("headers", [])
+            if name.lower() == b"cf-connecting-ip"
+        ]
+        if len(values) != 1 or "," in values[0]:
+            return "unavailable"
+        candidate = values[0].strip()
+    else:
+        client = scope.get("client")
+        candidate = str(client[0]) if client else "unavailable"
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        return "unavailable"
+    prefix_length = 32 if address.version == 4 else 64
+    return str(ipaddress.ip_network(f"{address}/{prefix_length}", strict=False))
 
 
 class RequestBodyLimitMiddleware:

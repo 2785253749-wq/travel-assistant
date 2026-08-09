@@ -25,7 +25,7 @@ Corrected RED command:
 
 ```powershell
 $env:PYTHONPATH=(Resolve-Path '.venv\Lib\site-packages').Path
-& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest tests/integration/test_deployment_config.py -q
+python -m pytest tests/integration/test_deployment_config.py -q
 ```
 
 Result: exit `1`, `14 failed`, one pre-existing Starlette/httpx deprecation warning. The two configuration tests failed because `render.yaml` and `.github/workflows/ci.yml` did not exist. The 12 scanner cases failed because `scripts/verify_public_repo.ps1` did not exist. These are the intended missing-feature failures.
@@ -82,7 +82,7 @@ Command, with the same environment values used by CI:
 ```powershell
 $env:APP_ENV='test'
 $env:DEEPSEEK_API_KEY='test-only-key'
-& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest -q
+python -m pytest -q
 ```
 
 Result: exit `0`, `289 passed`, one pre-existing Starlette/httpx deprecation warning.
@@ -90,7 +90,7 @@ Result: exit `0`, `289 passed`, one pre-existing Starlette/httpx deprecation war
 ### Independent 80-case evaluation gate
 
 ```powershell
-& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl --output build/evaluation
+python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl --output build/evaluation
 ```
 
 Result: exit `0`; `total_cases: 80`; every positive metric and `overall` are `1.0`; `unsupported_fact_rate` is `0.0`; `failures`, `failed_thresholds` and `known_failures` are empty. The single `agent_failed` log line is the evaluator's intentional E010 database-fallback observation.
@@ -155,7 +155,7 @@ RED command:
 
 ```powershell
 $env:PYTHONPATH=(Resolve-Path '.venv\Lib\site-packages').Path
-& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest tests/integration/test_deployment_config.py -q -k 'unicode_tracked or encrypted'
+python -m pytest tests/integration/test_deployment_config.py -q -k 'unicode_tracked or encrypted'
 ```
 
 RED result: exit `1`, `3 failed, 14 deselected`. The harmless Unicode file

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import logging
 from pathlib import Path
 from uuid import UUID, uuid4
 import secrets
@@ -89,7 +90,7 @@ def test_same_verified_token_does_not_reuse_jwt_scoped_client(monkeypatch):
     _clear_service_state(service_module)
 
 
-def test_supabase_repository_isolates_legacy_invalid_trip_rows_on_reads():
+def test_supabase_repository_isolates_legacy_invalid_trip_rows_on_reads(caplog):
     valid_id = uuid4()
     invalid_row = {
         "id": str(uuid4()),
@@ -141,19 +142,24 @@ def test_supabase_repository_isolates_legacy_invalid_trip_rows_on_reads():
             assert name == "trips"
             return Query(self.rows)
 
-    listed = SupabaseTripRepository(
-        FakeClient([invalid_row, invalid_title_row, valid_row])
-    ).list_for_user(USER_A)
-    fetched = SupabaseTripRepository(FakeClient([invalid_row])).get(
-        USER_A, UUID(invalid_row["id"])
-    )
-    title_fetched = SupabaseTripRepository(FakeClient([invalid_title_row])).get(
-        USER_A, UUID(invalid_title_row["id"])
-    )
+    with caplog.at_level(logging.INFO, logger="app.database"):
+        listed = SupabaseTripRepository(
+            FakeClient([invalid_row, invalid_title_row, valid_row])
+        ).list_for_user(USER_A)
+        fetched = SupabaseTripRepository(FakeClient([invalid_row])).get(
+            USER_A, UUID(invalid_row["id"])
+        )
+        title_fetched = SupabaseTripRepository(FakeClient([invalid_title_row])).get(
+            USER_A, UUID(invalid_title_row["id"])
+        )
 
     assert [trip.id for trip in listed] == [valid_id]
     assert fetched is None
     assert title_fetched is None
+    records = [record for record in caplog.records if record.message == "database_result"]
+    assert records
+    assert all(record.subject.startswith("user-digest:") for record in records)
+    assert str(USER_A) not in caplog.text
 
 
 def test_supabase_repository_rejects_invalid_title_before_insert():
@@ -179,6 +185,37 @@ def test_supabase_repository_rejects_invalid_title_before_insert():
         SupabaseTripRepository(FakeClient()).create(trip)
 
     assert inserted_rows == []
+
+
+def test_supabase_repository_logs_correlated_database_result_without_identifiers(caplog):
+    from app.core.logging import correlation_context
+
+    class Query:
+        def select(self, _columns):
+            return self
+
+        def eq(self, _field, _value):
+            return self
+
+        def execute(self):
+            return type("Response", (), {"data": []})()
+
+    class Client:
+        def table(self, _name):
+            return Query()
+
+    with correlation_context("req-db-trip", "user-digest:test"), caplog.at_level(
+        logging.INFO, logger="app.database"
+    ):
+        result = SupabaseTripRepository(Client()).get(USER_A, uuid4())
+
+    assert result is None
+    record = next(record for record in caplog.records if record.message == "database_result")
+    assert record.request_id == "req-db-trip"
+    assert record.subject == "user-digest:test"
+    assert record.db_operation == "trip.get"
+    assert record.db_status == "success"
+    assert str(USER_A) not in caplog.text
 
 
 def test_supabase_repository_maps_created_share_link():
@@ -228,7 +265,7 @@ def test_supabase_repository_maps_created_share_link():
     assert stored.expires_at == expires_at
 
 
-def test_public_share_repository_calls_only_restricted_rpc():
+def test_public_share_repository_calls_only_restricted_rpc(caplog):
     from app.infrastructure.repositories import SupabasePublicShareRepository
 
     class RpcCall:
@@ -247,10 +284,14 @@ def test_public_share_repository_calls_only_restricted_rpc():
             raise AssertionError("public sharing must not query a base table")
 
     client = RpcOnlyClient()
-    result = SupabasePublicShareRepository(client).get_shared_trip("hashed-token")
+    with caplog.at_level(logging.INFO, logger="app.database"):
+        result = SupabasePublicShareRepository(client).get_shared_trip("hashed-token")
 
     assert result == {"id": "trip"}
     assert client.calls == [("get_shared_trip_by_token_hash", {"p_token_hash": "hashed-token"})]
+    record = next(record for record in caplog.records if record.message == "database_result")
+    assert record.subject.startswith("share-digest:")
+    assert "hashed-token" not in caplog.text
 
 
 def test_supabase_planned_chat_uses_one_atomic_rpc_instead_of_table_writes():

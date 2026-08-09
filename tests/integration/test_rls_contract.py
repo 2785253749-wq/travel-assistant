@@ -14,8 +14,19 @@ OWNER_SCOPED_TABLES = (
     "share_links",
     "ai_usage",
 )
-SERVICE_ROLE_TABLES = ("ai_usage_counters", "ai_usage_reservations")
+SERVICE_ROLE_TABLES = (
+    "ai_usage_counters",
+    "ai_usage_reservations",
+    "ai_model_cost_counters",
+)
 PRIVATE_TABLES = OWNER_SCOPED_TABLES + SERVICE_ROLE_TABLES
+AUDITED_PRIVATE_TABLE_ALTERS = {
+    (
+        "ai_usage_reservations",
+        "add column if not exists reserved_model_calls integer not null "
+        "default 1 check (reserved_model_calls between 1 and 2)",
+    ),
+}
 
 
 def _migration() -> str:
@@ -401,10 +412,12 @@ def _assert_private_rls_contract(migration: str) -> None:
         if table not in rls_enabled or schema not in {None, "public"}:
             continue
         actions = re.sub(r"\s+", " ", raw_actions).strip().lower()
-        assert actions == "enable row level security", (
+        if actions == "enable row level security":
+            rls_enabled[table] = True
+            continue
+        assert (table, actions) in AUDITED_PRIVATE_TABLE_ALTERS, (
             f"unmodeled or unsafe ALTER TABLE on private table {table}"
         )
-        rls_enabled[table] = True
 
     for table in PRIVATE_TABLES:
         assert table in created_tables
@@ -446,10 +459,23 @@ def test_contract_loader_includes_every_sorted_migration():
     first = "create table if not exists public.ai_usage_counters"
     second = "create or replace function public.get_shared_trip_by_token_hash"
     third = "drop function if exists public.reserve_ai_usage"
+    fourth = "add column if not exists reserved_model_calls"
     assert first in migration
     assert second in migration
     assert third in migration
+    assert fourth in migration
     assert migration.index(first) < migration.index(second) < migration.index(third)
+    assert migration.index(third) < migration.index(fourth)
+
+
+def test_rls_contract_accepts_the_audited_model_call_reservation_column():
+    migration = _migration() + """
+    alter table public.ai_usage_reservations
+      add column if not exists reserved_model_calls integer not null default 1
+      check (reserved_model_calls between 1 and 2);
+    """
+
+    _assert_private_rls_contract(migration)
 
 
 def test_policy_parser_handles_comments_quoted_identifiers_and_statement_boundaries():

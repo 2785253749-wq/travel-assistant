@@ -17,7 +17,7 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_public_repo.ps1
 ## 2. 创建 Supabase 免费项目
 
 1. 打开 [Supabase Dashboard](https://supabase.com/dashboard)，创建项目并妥善保存数据库密码。
-2. 在 SQL Editor 按文件名顺序执行 `supabase/migrations/` 下的迁移：先 `001_initial.sql`，再两个 `002_*.sql`，最后 `003_ai_usage_reservation_protocol.sql`。
+2. 在 SQL Editor 严格按文件名顺序执行 `supabase/migrations/` 下的全部迁移（当前为 `001` 至 `006`）；不得跳过原子行程保存、模型成本计量与模型调用槽迁移。
 3. 在 Project Settings / API 中记录 Project URL、anon key 和 service-role key。
 4. 不要把 service-role key 放入浏览器代码、提交记录、截图或 CI 日志。它只用于 Render 服务端 Secret。
 5. 使用匿名会话实际验证 RLS：自己的行程可读写，其他会话的私有行程不可读；公开分享只通过迁移提供的受控 RPC 访问。
@@ -36,6 +36,11 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_public_repo.ps1
 | `SUPABASE_SERVICE_KEY` | Supabase service-role key，仅后端 |
 | `ANON_SESSION_SIGNING_SECRET` | 32 个随机字节的 URL-safe base64，无 `=` 填充 |
 | `DEEPSEEK_API_KEY` | 仅在决定启用 AI 后填写的 DeepSeek key |
+| `AI_INPUT_COST_MICROS_PER_MILLION_TOKENS` | 按当前供应商账单维护的每百万输入 token 微元费率；`0` 表示不估算金额 |
+| `AI_OUTPUT_COST_MICROS_PER_MILLION_TOKENS` | 按当前供应商账单维护的每百万输出 token 微元费率；`0` 表示不估算金额 |
+| `REQUEST_ANONYMOUS_PER_MINUTE` | 匿名网络每分钟聊天请求上限 |
+| `REQUEST_AUTHENTICATED_PER_MINUTE` | 登录用户每分钟聊天请求上限 |
+| `REQUEST_IP_PER_MINUTE` | 可信客户端网络前缀每分钟聊天请求上限 |
 
 可用 PowerShell 生成会话签名密钥，但只把输出粘贴到 Render Secret，不要保存到仓库：
 
@@ -51,7 +56,7 @@ $bytes = New-Object byte[] 32
 
 如果迁移到其他平台，先确认其入口无法被绕过、可信客户端地址头会由代理覆盖，随后再显式选择对应模式；当前未配置的平台默认忽略所有转发头并使用 socket peer。不要仅凭“代理跳数”信任 `X-Forwarded-For`。
 
-登录用户额度按已验证的用户 UUID 计算；匿名网络额度和全局额度同时保留。共享网络可能共用匿名额度，这是防止低成本 Cookie 轮换绕过的明确取舍。Render 启动命令关闭 Uvicorn 原始 access log，改用应用的结构化请求日志。浏览器把 bearer 分享令牌保留在 URL fragment（fragment 不会发送到服务器），再通过固定的 `POST /api/shared/resolve` 请求体解析；令牌不会进入应用、Uvicorn 或 Render 平台的请求路径日志。
+登录用户额度按已验证的用户 UUID 计算；匿名网络额度和全局额度同时保留。每日 AI 额度统计实际模型 invoke 次数，而不是聊天请求数；每次规划在开始前原子预留首次调用和一次 repair 共 `2` 个槽，结算时按实际调用数记账并释放未使用槽。共享网络可能共用匿名额度，这是防止低成本 Cookie 轮换绕过的明确取舍。Render 启动命令关闭 Uvicorn 原始 access log，改用应用的结构化请求日志。浏览器把 bearer 分享令牌保留在 URL fragment（fragment 不会发送到服务器），再通过固定的 `POST /api/shared/resolve` 请求体解析；令牌不会进入应用、Uvicorn 或 Render 平台的请求路径日志。
 
 ## 4. 先关闭 AI 做首次冒烟测试
 
@@ -59,7 +64,7 @@ $bytes = New-Object byte[] 32
 
 1. `GET https://<service>.onrender.com/health` 返回 `{"status":"ok"}`。
 2. 首页、静态 CSS 与 JavaScript 可加载，浏览器源代码中没有服务端密钥。
-3. 匿名会话能创建、读取、修改自己的行程，不能访问其他会话的私有行程。
+3. 匿名用户只能使用未持久化的对话规划；只有登录用户可创建、读取、修改自己的私有行程，并必须验证另一个登录用户无法访问该行程。
 4. 公开分享只暴露允许的行程字段。
 5. Render 日志没有凭据，也没有完整用户输入等敏感内容。
 
@@ -83,6 +88,8 @@ Render 与 Supabase 使用免费计划时，DeepSeek API 调用仍可能计费�
 
 关闭 AI 不会删除已保存行程；静态页面、认证、RLS 和非 AI CRUD 仍可单独验证。
 
+请求速率限制在当前 `render.yaml` 的单进程 Web 服务内以原子内存桶执行，并分别约束匿名网络、登录用户和客户端网络前缀。若将服务扩展到多个进程或多个实例，发布前必须把这些分钟级桶迁移到共享存储；每日 AI 模型调用额度由 Supabase RPC 在同一日期锁下原子预留最坏 `2` 个槽，并在结算实际调用数后释放余量，模型调用/token/成本估算也跨进程保存。成本金额是按上述可配置费率计算的估算值，最终费用以供应商账单为准。
+
 ## 7. 发布与回滚清单
 
 - CI 的 pytest、独立 80 条评测和公开仓库扫描全部通过。
@@ -93,3 +100,11 @@ Render 与 Supabase 使用免费计划时，DeepSeek API 调用仍可能计费�
 - 回滚时在 Render 选择上一个健康 deploy；数据库迁移不要直接回滚，先制定兼容迁移。
 
 公开发布 `v0.1.0` 时，应在发布说明中写明冷启动、免费层配额、DeepSeek 可能计费，以及不支持实时预订、价格/库存保证和高风险建议。
+
+## 8. 当前发布证据状态
+
+当前仓库只包含可复现的部署配置和验证步骤，**不包含已验证的公开 URL、Render deploy ID、线上 smoke 输出或 `v0.1.0` tag**。这些外部证据在实际完成 Render/Supabase 部署前均为 `BLOCKED`，不得把 `https://<service>.onrender.com` 占位符、离线 `TestClient` 结果或本地 Git 提交描述为线上证据。
+
+逐项证据状态记录在 [release-evidence.md](release-evidence.md)，当前保持 `BLOCKED`。
+
+解除阻塞后，发布记录至少要写入：公开 HTTPS URL、对应 commit SHA、Render deploy ID、已执行的迁移编号、线上 `/health` 响应时间与核心登录/规划/修改/解释/RLS smoke 结果；随后才可创建并推送 `v0.1.0` tag。

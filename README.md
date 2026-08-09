@@ -1,6 +1,6 @@
 # 旅行助手
 
-一个面向国内自由行的公开 MVP：用户通过多轮对话补全目的地、日期、人数和预算，系统生成带预算结构与来源引用的行程草案，并保存到 Supabase。后端采用 FastAPI 与 LangGraph，规划模型可使用 DeepSeek。
+一个面向国内自由行的公开 MVP：用户通过多轮对话补全目的地、日期、人数和预算，系统生成带预算结构与来源引用的行程草案，并保存到 Supabase。后端采用 FastAPI 与显式的确定性工作流，规划模型可使用 DeepSeek。
 
 ## 垂直场景
 
@@ -13,7 +13,7 @@
 ```text
 Browser
   -> FastAPI routes and static UI
-     -> SafeTravelAgent / LangGraph
+     -> SafeTravelAgent / deterministic workflow
         -> deterministic safety, intent and profile extraction
         -> DeepSeek structured planning (optional and rate-limited)
         -> free weather/place evidence providers
@@ -52,8 +52,13 @@ uvicorn app.main:app --reload
 | `SUPABASE_SERVICE_KEY` | 生产必需 | 仅服务端使用，绝不能暴露到前端或仓库 |
 | `ANON_SESSION_SIGNING_SECRET` | 生产必需 | 至少 32 字节随机值的 URL-safe base64（无填充） |
 | `AI_ENABLED` | 否 | `true`；设为 `false` 可立即停用 AI 调用 |
-| `AI_USER_DAILY_LIMIT` | 否 | 单用户每日 AI 额度，默认 `5` |
-| `AI_GLOBAL_DAILY_LIMIT` | 否 | 全局每日 AI 额度，默认 `100` |
+| `AI_USER_DAILY_LIMIT` | 否 | 单用户每日实际模型调用次数上限，默认 `5`；每次规划先预留首次调用和 repair 共 `2` 个槽，按实际调用数结算 |
+| `AI_GLOBAL_DAILY_LIMIT` | 否 | 全局每日实际模型调用次数上限，默认 `100`；预留与结算均由 Supabase 原子执行 |
+| `REQUEST_ANONYMOUS_PER_MINUTE` | 否 | 匿名网络每分钟聊天请求上限，默认 `30` |
+| `REQUEST_AUTHENTICATED_PER_MINUTE` | 否 | 登录用户每分钟聊天请求上限，默认 `120` |
+| `REQUEST_IP_PER_MINUTE` | 否 | 单一可信网络前缀每分钟聊天请求上限，默认 `180` |
+| `AI_INPUT_COST_MICROS_PER_MILLION_TOKENS` | 否 | 每百万输入 token 的微元费率；默认 `0` 表示仅记录调用与 token，不输出金额估算 |
+| `AI_OUTPUT_COST_MICROS_PER_MILLION_TOKENS` | 否 | 每百万输出 token 的微元费率；默认 `0`；应按供应商当前账单价格人工维护 |
 
 ## 测试与发布门禁
 
@@ -63,7 +68,7 @@ python -m tests.evaluation.runner --cases tests/evaluation/cases.jsonl --output 
 powershell -ExecutionPolicy Bypass -File scripts/verify_public_repo.ps1
 ```
 
-固定离线评测包含 80 条用例：20 条完整规划、20 条缺失或矛盾需求、15 条拒绝场景、15 条自然语言变体和 10 条供应商/模型/额度异常。发布门禁检查意图准确率、槽位 micro-F1、澄清召回率、拒绝精确率与召回率、结构和预算有效率、引用覆盖率与有效率、不受支持事实率、任务成功率和降级成功率。评测使用固定 fixture，不调用网络或付费模型；阈值见 `tests/evaluation/baseline.json`。
+固定离线评测包含 80 条用例：20 条完整规划、20 条缺失或矛盾需求、15 条拒绝场景、15 条自然语言变体和 10 条供应商/模型/额度异常。发布门禁检查意图准确率、槽位 micro-F1、澄清召回率、拒绝精确率与召回率、结构和预算有效率、引用覆盖率与有效率、不受支持事实率、任务成功率和降级成功率。80 条门禁明确标记为组件 fixture，不调用网络或付费模型；报告另含生产规则与应用编排的 plan/save/modify/explain/reopen 离线流程、P50/P95 和零调用成本口径，不能冒充线上模型基准。阈值见 `tests/evaluation/baseline.json`，详细口径见 `docs/evaluation/README.md`。
 
 CI 对每次 push 和 pull request 运行完整 pytest、独立的 80 条离线评测以及公开仓库敏感信息扫描，并保存评测报告为构建产物。
 

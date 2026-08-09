@@ -1,7 +1,10 @@
+import hashlib
 import json
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from uuid import UUID
 
@@ -94,7 +97,7 @@ def test_chat_api_logs_only_stable_error_metadata(monkeypatch, caplog):
     from app.api import chat as chat_api
 
     monkeypatch.setattr(chat_api, "chat", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("Bearer jwt-secret")))
-    with caplog.at_level("WARNING", logger="app.api.chat"):
+    with caplog.at_level("INFO", logger="app.api.chat"):
         response = TestClient(app).post(
             "/api/chat", headers={"X-Request-ID": "req-agent-failure"},
             json={"message": "从北京出发", "thread_id": "thread-1"}
@@ -105,8 +108,107 @@ def test_chat_api_logs_only_stable_error_metadata(monkeypatch, caplog):
     assert record.error_code == "CHAT_UNAVAILABLE"
     assert record.exception_type == "RuntimeError"
     assert record.request_id == "req-agent-failure"
+    result_record = next(
+        item for item in caplog.records if item.message == "chat_result"
+    )
+    assert result_record.intent == "plan_trip"
     assert response.json()["request_id"] == "req-agent-failure"
     assert "jwt-secret" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("error_kind", "expected_status"),
+    [("provider", 200), ("application", 503)],
+)
+def test_chat_api_fallback_logs_keep_a_reconstructable_intent(
+    monkeypatch, caplog, error_kind, expected_status
+):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.core.errors import AppError
+    from app.core.usage import ProviderUnavailable
+
+    error = (
+        ProviderUnavailable()
+        if error_kind == "provider"
+        else AppError("AI_DISABLED", "disabled")
+    )
+    monkeypatch.setattr(
+        chat_api,
+        "chat",
+        lambda *args, **kwargs: (_ for _ in ()).throw(error),
+    )
+    request_id = f"req-{error_kind}-intent"
+
+    with caplog.at_level(logging.INFO, logger="app.api.chat"):
+        response = TestClient(app).post(
+            "/api/chat",
+            headers={"X-Request-ID": request_id},
+            json={"message": "规划杭州行程", "thread_id": "error-intent"},
+        )
+
+    record = next(
+        item
+        for item in caplog.records
+        if item.message == "chat_result" and item.request_id == request_id
+    )
+    assert response.status_code == expected_status
+    assert record.intent == "plan_trip"
+
+
+def test_chat_api_logs_real_incomplete_collection_result_with_request_id(caplog):
+    from app.main import app
+
+    with caplog.at_level(logging.INFO, logger="app.api.chat"):
+        response = TestClient(app).post(
+            "/api/chat",
+            headers={"X-Request-ID": "req-business-result"},
+            json={"message": "从上海出发", "thread_id": "result-log"},
+        )
+
+    assert response.status_code == 200
+    record = next(record for record in caplog.records if record.message == "chat_result")
+    assert record.request_id == "req-business-result"
+    assert record.stage == "collecting"
+    assert record.intent == "plan_trip"
+    assert record.error_code == "PROFILE_INCOMPLETE"
+    assert record.trip_saved is False
+
+
+def test_chat_result_log_distinguishes_existing_trip_from_this_request_save(
+    monkeypatch, caplog
+):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+
+    monkeypatch.setattr(
+        chat_api,
+        "chat",
+        lambda *args, **kwargs: ChatResult(
+            "Saved trip explanation",
+            "planned",
+            {},
+            trip_id=UUID("11111111-1111-4111-8111-111111111111"),
+            intent="explain_trip",
+            persisted_this_request=False,
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.api.chat"):
+        response = TestClient(app).post(
+            "/api/chat",
+            headers={"X-Request-ID": "req-existing-trip"},
+            json={"message": "Explain it", "thread_id": "result-log-existing"},
+        )
+
+    assert response.status_code == 200
+    record = next(
+        record
+        for record in caplog.records
+        if record.message == "chat_result" and record.request_id == "req-existing-trip"
+    )
+    assert record.trip_saved is False
 
 
 def test_anonymous_session_cookie_scopes_same_thread_per_client(monkeypatch):
@@ -141,6 +243,131 @@ def test_anonymous_session_cookie_scopes_same_thread_per_client(monkeypatch):
     assert second_a.json()["profile"]["destination"] == "杭州"
     assert "set-cookie" not in second_a.headers
     assert len({scope for scope, _ in profiles}) == 2
+
+
+def test_anonymous_cookie_secure_flag_comes_from_validated_settings(monkeypatch):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+
+    monkeypatch.setenv("APP_ENV", "development")
+    settings = SimpleNamespace(
+        app_env="production",
+        trusted_client_ip_header="none",
+        request_ip_per_minute=300,
+        request_anonymous_per_minute=120,
+        request_authenticated_per_minute=240,
+    )
+    setattr(settings, "anon_session_signing" + "_secret", None)
+    monkeypatch.setattr(chat_api, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        chat_api,
+        "chat",
+        lambda *args, **kwargs: ChatResult("ok", "collecting", {}),
+    )
+    monkeypatch.setattr(chat_api, "_session_signing_secret", lambda: b"test-only")
+
+    response = TestClient(app).post(
+        "/api/chat", json={"message": "hello", "thread_id": "secure-cookie"}
+    )
+
+    assert response.status_code == 200
+    assert "Secure" in response.headers["set-cookie"]
+
+
+def test_anonymous_collect_requests_are_rate_limited_before_ai_usage(monkeypatch):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+    from app.core.config import get_settings
+
+    calls = []
+    monkeypatch.setenv("REQUEST_ANONYMOUS_PER_MINUTE", "1")
+    monkeypatch.setenv("REQUEST_IP_PER_MINUTE", "10")
+    get_settings.cache_clear()
+    chat_api._request_rate_limiter.clear()
+    monkeypatch.setattr(
+        chat_api,
+        "chat",
+        lambda *args, **kwargs: calls.append(1) or ChatResult("ok", "collecting", {}),
+    )
+    client = TestClient(app, client=("203.0.113.77", 51000))
+
+    first = client.post(
+        "/api/chat", json={"message": "first", "thread_id": "rate-limit"}
+    )
+    second = client.post(
+        "/api/chat", json={"message": "second", "thread_id": "rate-limit"}
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.json()["detail"]["code"] == "REQUEST_RATE_LIMITED"
+    assert calls == [1]
+    chat_api._request_rate_limiter.clear()
+    get_settings.cache_clear()
+
+
+def test_authenticated_and_ip_rate_buckets_are_independently_enforced(monkeypatch):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.core import http as http_module
+    from app.agent.graph import ChatResult
+    from app.api.auth import AuthenticatedUser, get_optional_current_user
+
+    user_one = AuthenticatedUser(
+        UUID("11111111-1111-4111-8111-111111111111"),
+        "one@example.test",
+        "verified-one",
+    )
+    user_two = AuthenticatedUser(
+        UUID("22222222-2222-4222-8222-222222222222"),
+        "two@example.test",
+        "verified-two",
+    )
+    settings = SimpleNamespace(
+        app_env="development",
+        trusted_client_ip_header="none",
+        request_ip_per_minute=10,
+        request_anonymous_per_minute=1,
+        request_authenticated_per_minute=2,
+    )
+    setattr(settings, "anon_session_signing" + "_secret", None)
+    monkeypatch.setattr(chat_api, "get_settings", lambda: settings)
+    monkeypatch.setattr(http_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        chat_api,
+        "chat",
+        lambda *args, **kwargs: ChatResult("ok", "collecting", {}),
+    )
+    chat_api._request_rate_limiter.clear()
+    app.dependency_overrides[get_optional_current_user] = lambda: user_one
+    client = TestClient(app, client=("203.0.113.88", 51000))
+    try:
+        statuses = [
+            client.post(
+                "/api/chat",
+                json={"message": str(index), "thread_id": "auth-rate"},
+            ).status_code
+            for index in range(3)
+        ]
+        assert statuses == [200, 200, 429]
+
+        chat_api._request_rate_limiter.clear()
+        settings.request_authenticated_per_minute = 10
+        settings.request_ip_per_minute = 1
+        first = client.post(
+            "/api/chat", json={"message": "one", "thread_id": "ip-rate"}
+        )
+        app.dependency_overrides[get_optional_current_user] = lambda: user_two
+        second = client.post(
+            "/api/chat", json={"message": "two", "thread_id": "ip-rate"}
+        )
+        assert first.status_code == 200
+        assert second.status_code == 429
+    finally:
+        app.dependency_overrides.clear()
+        chat_api._request_rate_limiter.clear()
 
 
 def test_anonymous_quota_subject_survives_cookie_deletion_and_ignores_spoofed_forwarding(monkeypatch):
@@ -362,6 +589,116 @@ def test_invalid_bearer_is_not_downgraded_to_anonymous(monkeypatch):
     assert response.json()["detail"]["code"] == "AUTH_INVALID"
 
 
+def test_invalid_bearer_flood_is_network_limited_before_authentication(
+    monkeypatch, caplog
+):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.api.auth import get_supabase_auth_gateway_factory
+    from app.core.config import get_settings
+    from app.infrastructure.supabase import InvalidAuthToken
+
+    calls = []
+
+    class InvalidGateway:
+        def get_user(self, access_token):
+            calls.append(access_token)
+            raise InvalidAuthToken("invalid raw bearer")
+
+    monkeypatch.setenv("REQUEST_IP_PER_MINUTE", "1")
+    get_settings.cache_clear()
+    chat_api._request_rate_limiter.clear()
+    app.dependency_overrides[get_supabase_auth_gateway_factory] = (
+        lambda: lambda: InvalidGateway()
+    )
+    client = TestClient(app, client=("203.0.113.155", 51000))
+    try:
+        with caplog.at_level(logging.INFO):
+            first = client.post(
+                "/api/chat",
+                headers={
+                    "Authorization": "Bearer invalid-one",
+                    "X-Request-ID": "req-network-first",
+                },
+                json={"message": "first", "thread_id": "invalid-flood"},
+            )
+            second = client.post(
+                "/api/chat",
+                headers={
+                    "Authorization": "Bearer invalid-two",
+                    "X-Request-ID": "req-network-limited",
+                },
+                json={"message": "second", "thread_id": "invalid-flood"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+        chat_api._request_rate_limiter.clear()
+        get_settings.cache_clear()
+
+    assert first.status_code == 401
+    assert second.status_code == 429
+    assert second.headers["X-Request-ID"] == "req-network-limited"
+    assert second.json()["request_id"] == "req-network-limited"
+    assert second.json()["detail"]["code"] == "REQUEST_RATE_LIMITED"
+    assert calls == ["invalid-one"]
+    limited = next(
+        record
+        for record in caplog.records
+        if record.message == "request_rate_limited"
+        and getattr(record, "request_id", None) == "req-network-limited"
+    )
+    completed = next(
+        record
+        for record in caplog.records
+        if record.message == "request_complete"
+        and getattr(record, "request_id", None) == "req-network-limited"
+    )
+    assert limited.subject == completed.subject
+    assert limited.intent == "not_evaluated"
+    assert completed.intent == "not_evaluated"
+    assert limited.subject.startswith("network-digest:")
+    assert limited.subject != "network-digest:" + hashlib.sha256(
+        b"203.0.113.155/32"
+    ).hexdigest()
+    assert "203.0.113.155" not in caplog.text
+
+
+def test_anonymous_network_minute_limit_survives_cookie_rotation(monkeypatch):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("REQUEST_ANONYMOUS_PER_MINUTE", "1")
+    monkeypatch.setenv("REQUEST_IP_PER_MINUTE", "10")
+    get_settings.cache_clear()
+    chat_api._request_rate_limiter.clear()
+    monkeypatch.setattr(
+        chat_api,
+        "chat",
+        lambda *args, **kwargs: ChatResult("ok", "collecting", {}),
+    )
+    client = TestClient(app, client=("203.0.113.166", 51000))
+    try:
+        first = client.post(
+            "/api/chat", json={"message": "first", "thread_id": "session-rate"}
+        )
+        same_session = client.post(
+            "/api/chat", json={"message": "second", "thread_id": "session-rate"}
+        )
+        client.cookies.clear()
+        new_session = client.post(
+            "/api/chat", json={"message": "third", "thread_id": "session-rate"}
+        )
+    finally:
+        chat_api._request_rate_limiter.clear()
+        get_settings.cache_clear()
+
+    assert first.status_code == 200
+    assert same_session.status_code == 429
+    assert new_session.status_code == 429
+
+
 def test_complete_profile_stops_at_confirmation_without_reserving_or_planning(monkeypatch):
     """Removing the server confirmation branch must spend AI quota before consent."""
     from app.main import app
@@ -547,9 +884,11 @@ def test_http_production_path_plans_persists_reopens_modifies_and_degrades(monke
             _planned_candidate(budget=3200, evidence_id=evidence_id, fact=fact),
         ]
     )
+    planning_requests = []
 
     class PlanningModel:
         def invoke(self, messages):
+            planning_requests.append(json.loads(messages[1].content))
             return SimpleNamespace(
                 content=json.dumps(next(candidates)),
                 usage_metadata={"input_tokens": 7, "output_tokens": 11},
@@ -627,12 +966,31 @@ def test_http_production_path_plans_persists_reopens_modifies_and_degrades(monke
         assert replanned.json()["trip_id"] == first["trip_id"]
         assert replanned.json()["itinerary"]["budget"]["trip_total"] == 3200
         assert client.get(f"/api/trips/{first['trip_id']}").json()["itinerary"]["budget"]["trip_total"] == 3200
+        assert planning_requests[1]["existing_itinerary"]["budget"]["trip_total"] == 3000
+        assert planning_requests[1]["modification_request"] == "\u9884\u7b97\u6539\u4e3a3200\u5143"
         assert provider_calls == [
             ("weather", "\u676d\u5dde"),
             ("places", "\u676d\u5dde"),
             ("weather", "\u676d\u5dde"),
             ("places", "\u676d\u5dde"),
         ]
+
+        explained = client.post(
+            "/api/chat",
+            json={
+                "message": "\u4e3a\u4ec0\u4e48\u8fd9\u6837\u5b89\u6392\u7b2c\u4e00\u5929\uff1f",
+                "thread_id": "journey-1",
+                "trip_id": first["trip_id"],
+                "action": "collect",
+            },
+        )
+        assert explained.status_code == 200
+        assert explained.json()["stage"] == "planned"
+        assert explained.json()["trip_id"] == first["trip_id"]
+        assert explained.json()["itinerary"] == replanned.json()["itinerary"]
+        assert "\u4ee5\u4e0b\u89e3\u91ca\u53ea\u4f9d\u636e" in explained.json()["reply"]
+        assert len(planning_requests) == 2
+        assert len(provider_calls) == 4
     finally:
         app.dependency_overrides.clear()
         repository.trips.clear()

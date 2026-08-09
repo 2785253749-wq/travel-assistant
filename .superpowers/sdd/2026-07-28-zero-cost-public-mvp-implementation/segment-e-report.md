@@ -14,7 +14,7 @@ Base commit: `4a78f8a test: parse private policy targets`
 
 ## Fresh completion-gate evidence
 
-All commands ran from `D:\Users\Asus\Desktop\旅行助手\.worktrees\zero-cost-public-mvp` on 2026-08-08.
+All commands ran from the repository root on 2026-08-08.
 
 1. Deployment and scanner integration tests
 

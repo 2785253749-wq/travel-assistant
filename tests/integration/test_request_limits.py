@@ -5,6 +5,48 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import http as http_module
+from app.core.rate_limit import RequestRateLimiter
+
+
+def test_request_rate_limiter_bounds_keys_and_reclaims_expired_buckets():
+    now = [0.0]
+    limiter = RequestRateLimiter(max_buckets=2, clock=lambda: now[0])
+
+    assert limiter.allow((("subject:a", 10),)) is True
+    assert limiter.allow((("subject:b", 10),)) is True
+    assert limiter.allow((("subject:c", 10),)) is False
+
+    now[0] = 61.0
+    assert limiter.allow((("subject:c", 10),)) is True
+
+
+def test_request_rate_limiter_deduplicates_a_bucket_using_the_strictest_limit():
+    limiter = RequestRateLimiter()
+
+    assert limiter.allow((("ip:shared", 2), ("ip:shared", 1))) is True
+    assert len(limiter._events["ip:shared"]) == 1
+    assert limiter.allow((("ip:shared", 2),)) is True
+
+
+def test_request_rate_limiter_samples_time_inside_the_atomic_section():
+    limiter = RequestRateLimiter()
+
+    class TrackingLock:
+        entered = False
+
+        def __enter__(self):
+            self.entered = True
+
+        def __exit__(self, *_args):
+            self.entered = False
+
+    lock = TrackingLock()
+    limiter._lock = lock
+    limiter._clock = lambda: 0.0 if lock.entered else (_ for _ in ()).throw(
+        AssertionError("clock sampled outside the atomic section")
+    )
+
+    assert limiter.allow((("subject:a", 1),)) is True
 
 
 def test_request_body_limit_middleware_replays_allowed_chunks():

@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     ai_enabled: bool = True
     ai_user_daily_limit: int = Field(default=5, ge=0, le=100)
     ai_global_daily_limit: int = Field(default=100, ge=0, le=10_000)
+    request_anonymous_per_minute: int = Field(default=30, ge=1, le=10_000)
+    request_authenticated_per_minute: int = Field(default=120, ge=1, le=10_000)
+    request_ip_per_minute: int = Field(default=180, ge=1, le=20_000)
+    ai_input_cost_micros_per_million_tokens: int = Field(
+        default=0, ge=0, le=1_000_000_000
+    )
+    ai_output_cost_micros_per_million_tokens: int = Field(
+        default=0, ge=0, le=1_000_000_000
+    )
     trusted_client_ip_header: Literal["none", "cf-connecting-ip"] = "none"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

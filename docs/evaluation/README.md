@@ -13,14 +13,27 @@ is missed and prints every failed case ID in both files. The corpus always has
 contradictory requests (`M`), 15 refusals (`R`), 15 natural-language variants
 (`N`), and 10 provider/model/limit failures (`E`).
 
-The runner invokes the real `SafeTravelAgent`, Task 2 intent/profile extraction,
-safety routing, profile validation and structured itinerary validator. Model
-and provider responses are keyed only by raw messages: there is no network
-traffic or paid-model usage, and case expectations never create predictions.
+The 80-case release gate is explicitly labeled `offline_component_fixtures`.
+It invokes the real `SafeTravelAgent`, safety routing, profile validation and
+structured itinerary validator, but intentionally supplies `OfflineClassifier`
+and `OfflineExtractor` fixtures rather than claiming to test the deployed rule
+composition. Model and provider responses are keyed only by raw messages:
+there is no network traffic or paid-model usage, and case expectations never
+create predictions.
 Multi-message cases start with an empty profile and carry each result into the
 next turn in the same simulated thread. `--live` is deliberately rejected by
 this runner; a separate explicit harness must set `ALLOW_PAID_EVAL=true` before
 any paid evaluation is introduced.
+
+Each report also contains a separate `production_composition_offline_seams`
+section. That flow uses the deployed `RuleIntentClassifier`,
+`RuleTravelExtractor`, `SafeTravelAgent`, `TravelChatApplication` and
+`TripService` through plan/confirm/save/modify/explain/reopen. Supabase,
+network providers and the paid model remain deterministic offline seams. The
+section reports step success, P50/P95 orchestration latency, model calls,
+input/output tokens, estimated cost, harness versions and change notes. Its
+zero model cost means exactly “no paid call was made”; it is not a live latency
+or billing benchmark.
 
 Metric denominators are included in every JSON report: all 80 cases for intent
 and task success; cases with expected slots and `slot_applicable: true` for slot
@@ -37,9 +50,6 @@ and convert its actual return value or production-mapped exception into a
 through the agent first. The database case alone uses `SafeTravelAgent`, backed
 by a real `TripService`, and observes only its `ChatResult`.
 
-The current baseline records `P015`, `P019`, `M005`, `R001`, `R006`, `R014`, and
-`E002` as known product failures. They cover missing domestic allowlist entries,
-an invalid-traveler extraction that aborts too early, safety/refusal mapping
-gaps, and a twice-empty Places result that has no stable production error code.
-They are intentionally retained so a product fix must improve production
-behavior rather than alter the evaluation answer or release thresholds.
+The current baseline has no accepted known failures. Product changes must
+improve implementation behavior rather than alter case answers or release
+thresholds.

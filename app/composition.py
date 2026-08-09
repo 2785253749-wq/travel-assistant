@@ -95,12 +95,24 @@ def get_usage_guard() -> UsageGuard:
         global_daily_limit=settings.ai_global_daily_limit,
         enabled=settings.ai_enabled,
         provider_configured=configured,
+        input_cost_micros_per_million_tokens=(
+            settings.ai_input_cost_micros_per_million_tokens
+        ),
+        output_cost_micros_per_million_tokens=(
+            settings.ai_output_cost_micros_per_million_tokens
+        ),
     )
+
+
+@lru_cache(maxsize=1)
+def get_provider_evidence_aggregator() -> ProviderEvidenceAggregator:
+    """Keep the short provider cache alive across request-scoped applications."""
+    return ProviderEvidenceAggregator()
 
 
 def build_chat_application(user: Any | None) -> TravelChatApplication:
     """The sole concrete composition root for the public chat use case."""
-    providers = ProviderEvidenceAggregator()
+    providers = get_provider_evidence_aggregator()
 
     def agent_factory(initial_profile: TravelProfile) -> SafeTravelAgent:
         return SafeTravelAgent(

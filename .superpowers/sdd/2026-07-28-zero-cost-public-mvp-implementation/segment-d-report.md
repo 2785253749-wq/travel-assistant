@@ -37,8 +37,8 @@
 - Focused review-fix command:
 
 ```powershell
-$env:PYTHONPATH='D:\Users\Asus\Desktop\旅行助手\.worktrees\zero-cost-public-mvp\.venv\Lib\site-packages'
-& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest tests/integration/test_request_limits.py tests/integration/test_rls_contract.py tests/unit/test_trip_production_wiring.py -q
+$env:PYTHONPATH='.venv\Lib\site-packages'
+python -m pytest tests/integration/test_request_limits.py tests/integration/test_rls_contract.py tests/unit/test_trip_production_wiring.py -q
 ```
 
 Result: exit `0`, `15 passed`, one pre-existing Starlette/httpx deprecation warning.
@@ -48,8 +48,8 @@ Result: exit `0`, `15 passed`, one pre-existing Starlette/httpx deprecation warn
 ## Final verification
 
 ```powershell
-$env:PYTHONPATH='D:\Users\Asus\Desktop\旅行助手\.worktrees\zero-cost-public-mvp\.venv\Lib\site-packages'
-& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest -q
+$env:PYTHONPATH='.venv\Lib\site-packages'
+python -m pytest -q
 ```
 
 Result: exit `0`, `322 passed`, one pre-existing Starlette/httpx deprecation warning, `43.51s`.
@@ -61,7 +61,7 @@ node --test tests/frontend/app.test.js
 Result: exit `0`, `16 passed`, `0 failed`.
 
 ```powershell
-git -c safe.directory='D:/Users/Asus/Desktop/旅行助手/.worktrees/zero-cost-public-mvp' diff --cached --check
+git diff --cached --check
 ```
 
 Result before implementation commit: exit `0`, no whitespace errors. The staged path list contained no evaluation case or baseline file.
@@ -121,8 +121,8 @@ Focused transitions were observed GREEN as follows:
 Final Python verification:
 
 ```powershell
-$env:PYTHONPATH='D:\Users\Asus\Desktop\旅行助手\.worktrees\zero-cost-public-mvp\.venv\Lib\site-packages'
-& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest -q
+$env:PYTHONPATH='.venv\Lib\site-packages'
+python -m pytest -q
 ```
 
 Result: exit `0`, `335 passed`, one pre-existing Starlette/httpx deprecation warning, `40.00s`.
@@ -180,8 +180,8 @@ Result: exit `0`, `17 passed`, one pre-existing Starlette/httpx deprecation warn
 Full regression command:
 
 ```powershell
-$env:PYTHONPATH='D:\Users\Asus\Desktop\旅行助手\.worktrees\zero-cost-public-mvp\.venv\Lib\site-packages'
-& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest -q
+$env:PYTHONPATH='.venv\Lib\site-packages'
+python -m pytest -q
 ```
 
 Result: exit `0`, `339 passed`, one pre-existing Starlette/httpx deprecation warning, `42.07s`.
@@ -221,8 +221,8 @@ Result: exit `0`, `20 passed`, one pre-existing Starlette/httpx deprecation warn
 Full regression command:
 
 ```powershell
-$env:PYTHONPATH='D:\Users\Asus\Desktop\旅行助手\.worktrees\zero-cost-public-mvp\.venv\Lib\site-packages'
-& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest -q
+$env:PYTHONPATH='.venv\Lib\site-packages'
+python -m pytest -q
 ```
 
 Result: exit `0`, `342 passed`, one pre-existing Starlette/httpx deprecation warning, `40.43s`.
@@ -263,8 +263,8 @@ Results: exit `0`, respectively `18 passed` and `25 passed`, each with one pre-e
 Full regression command:
 
 ```powershell
-$env:PYTHONPATH='D:\Users\Asus\Desktop\旅行助手\.worktrees\zero-cost-public-mvp\.venv\Lib\site-packages'
-& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest -q
+$env:PYTHONPATH='.venv\Lib\site-packages'
+python -m pytest -q
 ```
 
 Result: exit `0`, `347 passed`, one pre-existing Starlette/httpx deprecation warning, `38.01s`.

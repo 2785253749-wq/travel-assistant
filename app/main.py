@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.core.config import get_settings
-from app.core.http import RequestBodyLimitMiddleware
+from app.core.http import ChatNetworkRateLimitMiddleware, RequestBodyLimitMiddleware
 from app.core.logging import configure_logging, operational_context, request_context
 from app.api.auth import CurrentUser
 from app.api.trips import router as trips_router
@@ -25,6 +25,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="旅行助手", version="0.1.0", lifespan=lifespan)
 app.add_middleware(RequestBodyLimitMiddleware)
+app.add_middleware(ChatNetworkRateLimitMiddleware)
 app.middleware("http")(request_context)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 

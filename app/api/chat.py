@@ -3,9 +3,7 @@
 import base64
 import hashlib
 import hmac
-import ipaddress
 import logging
-import os
 import re
 import secrets
 from typing import Annotated
@@ -14,12 +12,15 @@ from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
+from app.agent.graph import RuleIntentClassifier
 from app.composition import execute_chat_request as chat
 from app.api.auth import OptionalCurrentUser
 from app.core.errors import AppError, ERROR_STATUS, safe_error_detail
 from app.core.config import get_settings
 from app.core.logging import log_subject, operational_context
+from app.core.http import normalized_client_network
 from app.core.usage import ProviderUnavailable
+from app.core.rate_limit import request_rate_limiter
 from app.schemas import ChatRequest, ChatResponse, SourceCitation, TravelProfile
 
 
@@ -27,6 +28,14 @@ router = APIRouter()
 _SESSION_COOKIE = "travel_session"
 _SESSION_COMPONENT = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _DEVELOPMENT_SESSION_SECRET = secrets.token_bytes(32)
+_request_rate_limiter = request_rate_limiter
+_KNOWN_INTENTS = {
+    "plan_trip",
+    "modify_trip",
+    "explain_trip",
+    "smalltalk",
+    "unsupported",
+}
 
 
 def _session_signing_secret() -> bytes:
@@ -64,25 +73,8 @@ def _verify_anonymous_session(cookie: str | None) -> str | None:
     return session_id if hmac.compare_digest(presented_signature, expected_signature) else None
 
 
-def _normalized_client_network(request: Request) -> str:
-    source = get_settings().trusted_client_ip_header
-    if source == "cf-connecting-ip":
-        values = request.headers.getlist("CF-Connecting-IP")
-        if len(values) != 1 or "," in values[0]:
-            return "unavailable"
-        candidate = values[0].strip()
-    else:
-        candidate = request.client.host if request.client is not None else "unavailable"
-    try:
-        address = ipaddress.ip_address(candidate)
-    except ValueError:
-        return "unavailable"
-    prefix_length = 32 if address.version == 4 else 64
-    return str(ipaddress.ip_network(f"{address}/{prefix_length}", strict=False))
-
-
 def _anonymous_quota_subject(request: Request) -> str:
-    network = _normalized_client_network(request)
+    network = normalized_client_network(request.scope)
     digest = hmac.new(
         _session_signing_secret(),
         b"anonymous-quota-v1\0" + network.encode("ascii"),
@@ -100,6 +92,11 @@ def _log_subject(quota_subject: str) -> str:
         hashlib.sha256,
     ).hexdigest()
     return "user-digest:" + digest
+
+
+def _fallback_intent(error: Exception, request_intent: str) -> str:
+    claimed = getattr(error, "intent", None)
+    return claimed if claimed in _KNOWN_INTENTS else request_intent
 
 
 def _bounded_citations(sources: list[dict]) -> list[SourceCitation] | None:
@@ -158,6 +155,11 @@ def api_chat(
     http_request: Request,
     anonymous_session: Annotated[str | None, Cookie(alias=_SESSION_COOKIE)] = None,
 ) -> ChatResponse | JSONResponse:
+    settings = get_settings()
+    request_intent = RuleIntentClassifier().classify(
+        request.message, request.trip_id is not None
+    ).intent
+    http_request.state.log_intent = request_intent
     if user is not None:
         session_scope = f"user:{user.id}"
         quota_subject = session_scope
@@ -170,13 +172,38 @@ def api_chat(
                 signed_cookie,
                 httponly=True,
                 samesite="lax",
-                secure=os.environ.get("APP_ENV", "development").lower() == "production",
+                secure=settings.app_env == "production",
                 max_age=60 * 60 * 24,
             )
         session_scope = "anon:" + hashlib.sha256(session_id.encode("ascii")).hexdigest()
         quota_subject = _anonymous_quota_subject(http_request)
     safe_log_subject = _log_subject(quota_subject)
     http_request.state.log_subject = safe_log_subject
+
+    subject_limit = (
+        settings.request_authenticated_per_minute
+        if user is not None
+        else settings.request_anonymous_per_minute
+    )
+    if not _request_rate_limiter.allow(
+        (("subject:" + quota_subject, subject_limit),)
+    ):
+        logging.getLogger("app.api.chat").warning(
+            "request_rate_limited",
+            extra=operational_context(
+                subject=safe_log_subject,
+                intent=request_intent,
+                stage="rejected",
+                error_code="REQUEST_RATE_LIMITED",
+            ),
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "REQUEST_RATE_LIMITED",
+                "message": "Too many requests; please retry later",
+            },
+        )
 
     with log_subject(safe_log_subject):
         try:
@@ -192,6 +219,15 @@ def api_chat(
                 )
             except ProviderUnavailable as exc:
                 code = exc.code if exc.code in {"AI_RATE_LIMITED", "AI_UNAVAILABLE", "AI_CIRCUIT_OPEN"} else "AI_UNAVAILABLE"
+                logging.getLogger("app.api.chat").info(
+                    "chat_result",
+                    extra=operational_context(
+                        intent=_fallback_intent(exc, request_intent),
+                        stage="collecting",
+                        error_code=code,
+                        trip_saved=False,
+                    ),
+                )
                 return _json_chat_response(
                     response,
                     reply="AI provider is temporarily unavailable.",
@@ -200,6 +236,15 @@ def api_chat(
                     warnings=[code],
                 )
             if result.error_code == "AGENT_UNAVAILABLE":
+                logging.getLogger("app.api.chat").info(
+                    "chat_result",
+                    extra=operational_context(
+                        stage=result.stage,
+                        intent=result.intent or request_intent,
+                        error_code=result.error_code,
+                        trip_saved=False,
+                    ),
+                )
                 return _json_chat_response(
                     response,
                     reply=result.reply,
@@ -207,6 +252,15 @@ def api_chat(
                     profile=TravelProfile.model_validate(result.profile),
                     warnings=["AI_PROVIDER_UNAVAILABLE"],
                 )
+            logging.getLogger("app.api.chat").info(
+                "chat_result",
+                extra=operational_context(
+                    stage=result.stage,
+                    intent=result.intent or request_intent,
+                    error_code=result.error_code,
+                    trip_saved=result.persisted_this_request,
+                ),
+            )
             return _json_chat_response(
                 response,
                 reply=result.reply,
@@ -218,9 +272,27 @@ def api_chat(
                 warnings=result.warnings,
             )
         except AppError as exc:
+            logging.getLogger("app.api.chat").info(
+                "chat_result",
+                extra=operational_context(
+                    intent=_fallback_intent(exc, request_intent),
+                    stage="rejected",
+                    error_code=exc.code,
+                    trip_saved=False,
+                ),
+            )
             raise HTTPException(status_code=ERROR_STATUS.get(exc.code, 503), detail=safe_error_detail(exc)) from None
         except ProviderUnavailable as exc:
             code = exc.code if exc.code in {"AI_RATE_LIMITED", "AI_UNAVAILABLE", "AI_CIRCUIT_OPEN"} else "AI_UNAVAILABLE"
+            logging.getLogger("app.api.chat").info(
+                "chat_result",
+                extra=operational_context(
+                    intent=_fallback_intent(exc, request_intent),
+                    stage="collecting",
+                    error_code=code,
+                    trip_saved=False,
+                ),
+            )
             return _json_chat_response(
                 response,
                 reply="AI provider is temporarily unavailable.",
@@ -229,6 +301,15 @@ def api_chat(
                 warnings=[code],
             )
         except Exception as exc:
+            logging.getLogger("app.api.chat").info(
+                "chat_result",
+                extra=operational_context(
+                    intent=_fallback_intent(exc, request_intent),
+                    stage="error",
+                    error_code="CHAT_UNAVAILABLE",
+                    trip_saved=False,
+                ),
+            )
             logging.getLogger("app.api.chat").warning(
                 "chat_request_failed",
                 extra=operational_context(error_code="CHAT_UNAVAILABLE", exception_type=type(exc).__name__),

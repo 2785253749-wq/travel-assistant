@@ -156,9 +156,10 @@ def test_out_of_range_traveler_fixture_reaches_the_real_extraction_gate() -> Non
     seven = run_case(cases["M006"])
 
     assert zero.action == "ask"
-    assert zero.error_code is None
+    assert zero.error_code == "PROFILE_INVALID"
     assert zero.fields["travelers"] == 0
     assert seven.action == "ask"
+    assert seven.error_code == "PROFILE_INVALID"
     assert seven.fields["travelers"] == 7
 
 
@@ -506,3 +507,69 @@ def test_exception_expected_action_and_error_never_change_observation() -> None:
     changed = replace(case, expected_action="plan", expected_error="INVENTED_EXPECTATION")
 
     assert run_case(changed) == run_case(case)
+
+
+def test_production_composition_flow_covers_plan_modify_explain_and_reopen() -> None:
+    report = runner.run_production_composition_evaluation()
+
+    assert report.mode == "production_composition_offline_seams"
+    assert report.harness_version == "production-flow-v2"
+    assert [step.name for step in report.steps] == [
+        "smalltalk",
+        "unsupported",
+        "plan_and_save",
+        "modify_and_save",
+        "explain",
+        "reopen",
+    ]
+    assert all(step.success for step in report.steps)
+    assert report.success_rate == 1.0
+    assert 0 <= report.p50_latency_ms <= report.p95_latency_ms
+    assert report.model_calls == 0
+    assert report.input_tokens == 0
+    assert report.output_tokens == 0
+    assert report.estimated_cost_micros == 0
+    assert "offline" in report.cost_basis
+    assert "RuleIntentClassifier" in report.production_components
+    assert "RuleTravelExtractor" in report.production_components
+    assert report.change_summary
+
+
+def test_written_report_fails_closed_when_production_composition_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = EvaluationCase(
+        "unit-production-gate", "unit", ["x"], "plan_trip", {}, "ask", []
+    )
+    component_report = score([Prediction("plan_trip", "ask", {})], [case])
+    production_report = runner.run_production_composition_evaluation()
+    monkeypatch.setattr(
+        runner,
+        "run_production_composition_evaluation",
+        lambda: replace(production_report, success_rate=0.5),
+    )
+
+    assert runner._write_report(component_report, tmp_path, {}, []) is False
+    payload = __import__("json").loads(
+        (tmp_path / "evaluation-report.json").read_text(encoding="utf-8")
+    )
+    assert "production_composition_success" in payload["failed_thresholds"]
+
+
+def test_written_report_labels_fixture_gate_and_embeds_production_flow(tmp_path: Path) -> None:
+    case = EvaluationCase(
+        "unit-report", "unit", ["x"], "plan_trip", {}, "ask", []
+    )
+    report = score([Prediction("plan_trip", "ask", {})], [case])
+
+    assert runner._write_report(report, tmp_path, {}, []) is True
+
+    payload = __import__("json").loads(
+        (tmp_path / "evaluation-report.json").read_text(encoding="utf-8")
+    )
+    markdown = (tmp_path / "evaluation-report.md").read_text(encoding="utf-8")
+    assert payload["evaluation_mode"] == "offline_component_fixtures"
+    assert payload["harness_version"] == "offline-components-v2"
+    assert payload["production_composition"]["success_rate"] == 1.0
+    assert "production composition" in markdown.lower()
+    assert "not a paid-model or network benchmark" in markdown.lower()

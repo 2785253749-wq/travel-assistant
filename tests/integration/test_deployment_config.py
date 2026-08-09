@@ -198,6 +198,7 @@ def test_public_repo_check_rejects_javascript_expression_in_review_report(tmp_pa
 
     assert result.returncode != 0
     assert "credential" in result.stdout.lower()
+    assert "credential" in result.stdout.lower()
 
 
 def test_public_repo_check_accepts_typed_secret_setting_declarations(tmp_path: Path):
@@ -314,6 +315,23 @@ def test_public_repo_check_rejects_placeholder_prefixed_secret(tmp_path: Path):
 
     assert result.returncode != 0
     assert "credential" in result.stdout.lower()
+
+
+def test_release_docs_do_not_claim_unverified_online_evidence_or_langgraph():
+    readme = Path("README.md").read_text(encoding="utf-8")
+    deployment = Path("docs/deployment/free-tier.md").read_text(encoding="utf-8")
+    evidence = Path("docs/deployment/release-evidence.md").read_text(encoding="utf-8")
+    requirements = Path("requirements.txt").read_text(encoding="utf-8").lower()
+
+    assert "LangGraph" not in readme
+    assert "langgraph" not in requirements
+    assert "BLOCKED" in deployment
+    assert "不包含已验证的公开 URL" in deployment
+    assert "不得把 `https://<service>.onrender.com`" in deployment
+    assert "匿名用户只能使用未持久化的对话规划" in deployment
+    assert "BLOCKED — external deployment has not been verified" in evidence
+    assert "Not supplied" in evidence
+    assert "Not run" in evidence
 
 
 def test_public_repo_check_accepts_typescript_secret_type_declaration(tmp_path: Path):

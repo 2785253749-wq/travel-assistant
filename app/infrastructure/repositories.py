@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from app.core.logging import database_operation, hashed_log_subject
 from app.trips.models import ConversationMessage, ShareLink, Trip, validate_trip_title
 from app.schemas import Itinerary, TravelProfile
 
@@ -132,27 +133,46 @@ class SupabaseTripRepository:
         self._client = client
 
     def create(self, trip: Trip) -> Trip:
-        return self._trip_from_row(self._one(self._client.table("trips").insert(self._trip_row(trip)).execute()))
+        with database_operation(
+            "trip.create", subject=hashed_log_subject("user", trip.user_id)
+        ):
+            return self._trip_from_row(self._one(self._client.table("trips").insert(self._trip_row(trip)).execute()))
 
     def get(self, user_id: UUID, trip_id: UUID) -> Trip | None:
-        response = self._client.table("trips").select("*").eq("id", str(trip_id)).eq("user_id", str(user_id)).execute()
-        return self._read_trip(response.data[0]) if response.data else None
+        with database_operation(
+            "trip.get", subject=hashed_log_subject("user", user_id)
+        ):
+            response = self._client.table("trips").select("*").eq("id", str(trip_id)).eq("user_id", str(user_id)).execute()
+            return self._read_trip(response.data[0]) if response.data else None
 
     def list_for_user(self, user_id: UUID) -> list[Trip]:
-        response = self._client.table("trips").select("*").eq("user_id", str(user_id)).order("updated_at", desc=True).execute()
-        trips = (self._read_trip(row) for row in response.data)
-        return [trip for trip in trips if trip is not None]
+        with database_operation(
+            "trip.list", subject=hashed_log_subject("user", user_id)
+        ):
+            response = self._client.table("trips").select("*").eq("user_id", str(user_id)).order("updated_at", desc=True).execute()
+            trips = (self._read_trip(row) for row in response.data)
+            return [trip for trip in trips if trip is not None]
 
     def update(self, user_id: UUID, trip_id: UUID, trip: Trip) -> Trip | None:
-        response = self._client.table("trips").update(self._trip_row(trip, include_id=False)).eq("id", str(trip_id)).eq("user_id", str(user_id)).execute()
-        return self._trip_from_row(response.data[0]) if response.data else None
+        with database_operation(
+            "trip.update", subject=hashed_log_subject("user", user_id)
+        ):
+            response = self._client.table("trips").update(self._trip_row(trip, include_id=False)).eq("id", str(trip_id)).eq("user_id", str(user_id)).execute()
+            return self._trip_from_row(response.data[0]) if response.data else None
 
     def delete(self, user_id: UUID, trip_id: UUID) -> bool:
-        response = self._client.table("trips").delete().eq("id", str(trip_id)).eq("user_id", str(user_id)).execute()
-        return bool(response.data)
+        with database_operation(
+            "trip.delete", subject=hashed_log_subject("user", user_id)
+        ):
+            response = self._client.table("trips").delete().eq("id", str(trip_id)).eq("user_id", str(user_id)).execute()
+            return bool(response.data)
 
     def append_message(self, message: ConversationMessage) -> None:
-        self._client.table("conversation_messages").insert({"id": str(message.id), "user_id": str(message.user_id), "trip_id": str(message.trip_id), "role": message.role, "content": message.content}).execute()
+        with database_operation(
+            "conversation.append",
+            subject=hashed_log_subject("user", message.user_id),
+        ):
+            self._client.table("conversation_messages").insert({"id": str(message.id), "user_id": str(message.user_id), "trip_id": str(message.trip_id), "role": message.role, "content": message.content}).execute()
 
     def persist_planned_chat(
         self,
@@ -166,9 +186,13 @@ class SupabaseTripRepository:
         user_message, assistant_message = messages
         if any(message.user_id != trip.user_id or message.trip_id != trip.id for message in messages):
             raise ValueError("planned chat ownership does not match")
-        response = self._client.rpc(
-            "persist_planned_chat",
-            {
+        with database_operation(
+            "planned_chat.persist",
+            subject=hashed_log_subject("user", trip.user_id),
+        ):
+            response = self._client.rpc(
+                "persist_planned_chat",
+                {
                 "p_create": create,
                 "p_trip_id": str(trip.id),
                 "p_title": validate_trip_title(trip.title),
@@ -182,20 +206,27 @@ class SupabaseTripRepository:
                 "p_user_message": user_message.content,
                 "p_assistant_message_id": str(assistant_message.id),
                 "p_assistant_message": assistant_message.content,
-            },
-        ).execute()
-        data = response.data
-        row = data[0] if isinstance(data, list) else data
-        if not isinstance(row, dict):
-            raise RuntimeError("planned chat transaction returned no trip")
-        return self._trip_from_row(row)
+                },
+            ).execute()
+            data = response.data
+            row = data[0] if isinstance(data, list) else data
+            if not isinstance(row, dict):
+                raise RuntimeError("planned chat transaction returned no trip")
+            return self._trip_from_row(row)
 
     def create_share_link(self, share_link: ShareLink) -> ShareLink:
-        row = self._one(self._client.table("share_links").insert({"id": str(share_link.id), "user_id": str(share_link.user_id), "trip_id": str(share_link.trip_id), "token_hash": share_link.token_hash, "expires_at": share_link.expires_at.isoformat()}).execute())
-        return self._share_from_row(row)
+        with database_operation(
+            "share.create",
+            subject=hashed_log_subject("user", share_link.user_id),
+        ):
+            row = self._one(self._client.table("share_links").insert({"id": str(share_link.id), "user_id": str(share_link.user_id), "trip_id": str(share_link.trip_id), "token_hash": share_link.token_hash, "expires_at": share_link.expires_at.isoformat()}).execute())
+            return self._share_from_row(row)
 
     def revoke_share_links(self, user_id: UUID, trip_id: UUID) -> None:
-        self._client.table("share_links").update({"revoked_at": datetime.now(UTC).isoformat()}).eq("user_id", str(user_id)).eq("trip_id", str(trip_id)).is_("revoked_at", "null").execute()
+        with database_operation(
+            "share.revoke", subject=hashed_log_subject("user", user_id)
+        ):
+            self._client.table("share_links").update({"revoked_at": datetime.now(UTC).isoformat()}).eq("user_id", str(user_id)).eq("trip_id", str(trip_id)).is_("revoked_at", "null").execute()
 
     @staticmethod
     def _one(response):
@@ -288,10 +319,13 @@ class SupabasePublicShareRepository:
         self._client = client
 
     def get_shared_trip(self, token_hash: str) -> dict | None:
-        response = self._client.rpc(
-            "get_shared_trip_by_token_hash", {"p_token_hash": token_hash}
-        ).execute()
-        return response.data[0] if response.data else None
+        with database_operation(
+            "share.resolve", subject=hashed_log_subject("share", token_hash)
+        ):
+            response = self._client.rpc(
+                "get_shared_trip_by_token_hash", {"p_token_hash": token_hash}
+            ).execute()
+            return response.data[0] if response.data else None
 
 
 def create_user_scoped_supabase_repository(

@@ -8,18 +8,28 @@ calls.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from types import SimpleNamespace
 from typing import Any, Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 
-from app.agent.graph import ChatResult, SafeTravelAgent, TrustedEvidence, extract_profile
+from app.agent.graph import (
+    ChatResult,
+    RuleIntentClassifier,
+    RuleTravelExtractor,
+    SafeTravelAgent,
+    TrustedEvidence,
+    extract_profile,
+)
+from app.application.chat import ConfirmationStore, TravelChatApplication
 from app.agent.extraction import ExtractionCandidate
 from app.agent.intent import IntentResult, classify_intent
 from app.agent.planning import PlanValidationError, Planner
@@ -36,6 +46,8 @@ from tests.evaluation.offline_fixtures import OfflineModel, SCENARIO_BY_MESSAGE,
 
 ACTION = Literal["ask", "refuse", "plan", "modify", "explain", "degrade"]
 FIXTURE_NOW = datetime(2026, 7, 28, tzinfo=timezone.utc)
+OFFLINE_COMPONENT_HARNESS_VERSION = "offline-components-v2"
+PRODUCTION_FLOW_HARNESS_VERSION = "production-flow-v2"
 
 
 @dataclass(frozen=True)
@@ -124,6 +136,35 @@ class EvaluationReport:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class ProductionFlowStep:
+    name: str
+    success: bool
+    latency_ms: float
+    failure_type: str | None = None
+
+
+@dataclass(frozen=True)
+class ProductionCompositionReport:
+    mode: str
+    harness_version: str
+    production_components: tuple[str, ...]
+    seam_disclosure: str
+    change_summary: tuple[str, ...]
+    steps: tuple[ProductionFlowStep, ...]
+    success_rate: float
+    p50_latency_ms: float
+    p95_latency_ms: float
+    model_calls: int
+    input_tokens: int
+    output_tokens: int
+    estimated_cost_micros: int
+    cost_basis: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 class OfflineClassifier:
     """Exercise Task 2's JSON model gateway and deterministic route."""
 
@@ -179,9 +220,28 @@ class FixtureStructuredPlanner:
         self._scenario = scenario
         self._planner = Planner(self._generate, now=lambda: FIXTURE_NOW)
         self.attempts = 0
+        self.revisions: list[tuple[Itinerary, str, str]] = []
 
     def plan(self, profile: TravelProfile, provider_results: object) -> Itinerary:
         return self._planner.plan(profile, provider_results)
+
+    def revise(
+        self,
+        profile: TravelProfile,
+        provider_results: object,
+        *,
+        itinerary: Itinerary,
+        instruction: str,
+    ) -> Itinerary:
+        payload = _fixture_itinerary(profile, provider_results)
+        marker = hashlib.sha256(
+            (itinerary.model_dump_json() + "\0" + instruction).encode("utf-8")
+        ).hexdigest()[:12]
+        payload["title"] = f"fixture-revision-{marker}"
+        self.revisions.append((itinerary, instruction, marker))
+        return Planner(lambda *_: payload, now=lambda: FIXTURE_NOW).plan(
+            profile, provider_results
+        )
 
     def _generate(self, profile: TravelProfile, provider_results: object, repair_codes: list[str] | None) -> object:
         self.attempts += 1
@@ -609,21 +669,246 @@ def run_evaluation(cases: list[EvaluationCase], agent: Any | None = None) -> Eva
     return evaluate(cases)
 
 
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
+def run_production_composition_evaluation() -> ProductionCompositionReport:
+    """Exercise production orchestration with explicit offline external seams.
+
+    This intentionally uses the deployed rule classifier/extractor, application
+    confirmation protocol and trip persistence service. Only paid/network
+    boundaries are replaced, so the result must not be represented as a live
+    provider or model benchmark.
+    """
+    repository = InMemoryTripRepository()
+    trip_service = TripService(repository)
+    planner = FixtureStructuredPlanner(None)
+    evidence_provider = FixtureEvidenceProvider(["production-flow-source"])
+    usage_repository = InMemoryUsageRepository()
+    usage_guard = UsageGuard(
+        repository=usage_repository,
+        user_daily_limit=10,
+        global_daily_limit=10,
+        enabled=True,
+        provider_configured=True,
+        clock=lambda: FIXTURE_NOW,
+    )
+
+    def agent_factory(initial_profile: TravelProfile) -> SafeTravelAgent:
+        return SafeTravelAgent(
+            classifier=RuleIntentClassifier(),
+            extractor=RuleTravelExtractor(),
+            planner=planner,
+            evidence_provider=evidence_provider,
+            initial_profile=initial_profile,
+        )
+
+    application = TravelChatApplication(
+        agent_factory=agent_factory,
+        usage_guard=usage_guard,
+        confirmation_store=ConfirmationStore(),
+        trip_service=trip_service,
+    )
+    user_id = UUID("11111111-1111-4111-8111-111111111111")
+    subject = "user:production-evaluation"
+    thread_id = "production-flow"
+    state: dict[str, Any] = {}
+    steps: list[ProductionFlowStep] = []
+
+    def run_step(name: str, operation: Any) -> None:
+        started = perf_counter()
+        failure_type = None
+        try:
+            operation()
+            success = True
+        except Exception as exc:
+            success = False
+            failure_type = type(exc).__name__
+        steps.append(
+            ProductionFlowStep(
+                name=name,
+                success=success,
+                latency_ms=round((perf_counter() - started) * 1000, 3),
+                failure_type=failure_type,
+            )
+        )
+
+    def plan_and_save() -> None:
+        collected = application.collect(
+            user_id=user_id,
+            subject=subject,
+            thread_id=thread_id,
+            trip_id=None,
+            message="从上海到杭州 2026-10-01 至 2026-10-02 2人 预算3000元",
+        )
+        if collected.stage != "confirming":
+            raise RuntimeError("plan did not reach confirmation")
+        planned = application.confirm(
+            user_id=user_id,
+            subject=subject,
+            quota_subject=subject,
+            thread_id=thread_id,
+            trip_id=None,
+            message="确认",
+        )
+        if planned.stage != "planned" or planned.trip_id is None:
+            raise RuntimeError("plan was not atomically saved")
+        state["trip_id"] = planned.trip_id
+
+    def smalltalk() -> None:
+        result = application.collect(
+            user_id=user_id,
+            subject=subject,
+            thread_id=thread_id,
+            trip_id=None,
+            message="hello",
+        )
+        if result.stage != "collecting" or result.intent != "smalltalk":
+            raise RuntimeError("smalltalk production route was not reached")
+
+    def unsupported() -> None:
+        result = application.collect(
+            user_id=user_id,
+            subject=subject,
+            thread_id=thread_id,
+            trip_id=None,
+            message="write my Java homework",
+        )
+        if result.error_code != "OUT_OF_SCOPE" or result.intent != "unsupported":
+            raise RuntimeError("unsupported production route was not refused")
+
+    def modify_and_save() -> None:
+        trip_id = state["trip_id"]
+        previous = trip_service.get_trip(user_id, trip_id)
+        if previous.itinerary is None:
+            raise RuntimeError("saved itinerary is missing before modification")
+        instruction = "the second day不要太赶，预算3200元"
+        collected = application.collect(
+            user_id=user_id,
+            subject=subject,
+            thread_id=thread_id,
+            trip_id=trip_id,
+            message=instruction,
+        )
+        if collected.stage != "confirming" or collected.intent != "modify_trip":
+            raise RuntimeError("modify did not reach confirmation")
+        modified = application.confirm(
+            user_id=user_id,
+            subject=subject,
+            quota_subject=subject,
+            thread_id=thread_id,
+            trip_id=trip_id,
+            message="确认",
+        )
+        if (
+            modified.stage != "planned"
+            or modified.itinerary is None
+            or modified.itinerary.budget.trip_total != 3200
+            or not planner.revisions
+            or planner.revisions[-1][0] != previous.itinerary
+            or planner.revisions[-1][1] != instruction
+            or modified.itinerary.title
+            != f"fixture-revision-{planner.revisions[-1][2]}"
+        ):
+            raise RuntimeError("revision did not consume and persist the saved plan/instruction")
+
+    def explain() -> None:
+        explained = application.collect(
+            user_id=user_id,
+            subject=subject,
+            thread_id=thread_id,
+            trip_id=state["trip_id"],
+            message="为什么这样安排第一天？",
+        )
+        if explained.stage != "planned" or explained.intent != "explain_trip":
+            raise RuntimeError("saved itinerary was not explained")
+
+    def reopen() -> None:
+        reopened = trip_service.get_trip(user_id, state["trip_id"])
+        if reopened.status != "planned" or reopened.profile.budget_cny != 3200:
+            raise RuntimeError("modified itinerary could not be reopened")
+
+    for name, operation in (
+        ("smalltalk", smalltalk),
+        ("unsupported", unsupported),
+        ("plan_and_save", plan_and_save),
+        ("modify_and_save", modify_and_save),
+        ("explain", explain),
+        ("reopen", reopen),
+    ):
+        run_step(name, operation)
+
+    latencies = [step.latency_ms for step in steps]
+    successes = sum(step.success for step in steps)
+    usage = usage_repository.get_daily(subject, FIXTURE_NOW.date())
+    return ProductionCompositionReport(
+        mode="production_composition_offline_seams",
+        harness_version=PRODUCTION_FLOW_HARNESS_VERSION,
+        production_components=(
+            "RuleIntentClassifier",
+            "RuleTravelExtractor",
+            "SafeTravelAgent",
+            "TravelChatApplication",
+            "TripService",
+        ),
+        seam_disclosure=(
+            "InMemoryTripRepository plus deterministic planner/provider fixtures replace "
+            "Supabase, network providers and the paid model."
+        ),
+        change_summary=(
+            "Added a production-rule plan/confirm/persist/modify/explain/reopen flow.",
+            "Separated the 80-case component fixture gate from production composition evidence.",
+            "Added deterministic latency and explicit zero-cost offline accounting metadata.",
+        ),
+        steps=tuple(steps),
+        success_rate=_ratio(successes, len(steps)),
+        p50_latency_ms=round(_percentile(latencies, 0.50), 3),
+        p95_latency_ms=round(_percentile(latencies, 0.95), 3),
+        model_calls=usage.model_calls,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        estimated_cost_micros=usage.estimated_cost_micros,
+        cost_basis=(
+            "offline external seams: no paid-model or network call; production billing "
+            "must use recorded model calls/tokens and configured rates"
+        ),
+    )
+
+
 def _write_report(report: EvaluationReport, output: Path, thresholds: dict[str, float], known_failures: list[str]) -> bool:
     output.mkdir(parents=True, exist_ok=True)
     payload = report.to_dict()
+    production_report = run_production_composition_evaluation()
+    payload["evaluation_mode"] = "offline_component_fixtures"
+    payload["harness_version"] = OFFLINE_COMPONENT_HARNESS_VERSION
+    payload["change_summary"] = [
+        "The fixed 80-case corpus remains the versioned component regression gate.",
+        "Production rule/application composition is reported separately with offline external seams.",
+    ]
+    payload["production_composition"] = production_report.to_dict()
     failed_thresholds = []
     for metric, threshold in thresholds.items():
         value = payload[metric]
         failed = value > threshold if metric == "unsupported_fact_rate" else value < threshold
         if failed:
             failed_thresholds.append(metric)
+    if production_report.success_rate < 1.0:
+        failed_thresholds.append("production_composition_success")
     payload["thresholds"] = thresholds
     payload["failed_thresholds"] = failed_thresholds
     payload["known_failures"] = known_failures
     (output / "evaluation-report.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     rows = "\n".join(f"| {metric} | {payload[metric]:.2%} | {threshold:.2%} | {'FAIL' if metric in failed_thresholds else 'PASS'} |" for metric, threshold in thresholds.items())
-    markdown = f"# Offline evaluation report\n\nCases: {report.total_cases}. This run uses fixed model/provider fixtures and does not make network calls.\n\n| Metric | Result | Gate | Status |\n|---|---:|---:|---|\n{rows}\n\nFailures: `{json.dumps(report.failures, ensure_ascii=False, sort_keys=True)}`\n\nMetric denominators: `{json.dumps(report.denominators, ensure_ascii=False, sort_keys=True)}`.\n"
+    production_status = "PASS" if production_report.success_rate == 1.0 else "FAIL"
+    markdown = f"# Offline evaluation report\n\nCases: {report.total_cases}. Evaluation mode: `offline_component_fixtures`; harness: `{OFFLINE_COMPONENT_HARNESS_VERSION}`. The 80-case gate uses fixed model/provider fixtures and does not make network calls.\n\n| Metric | Result | Gate | Status |\n|---|---:|---:|---|\n{rows}\n\nFailures: `{json.dumps(report.failures, ensure_ascii=False, sort_keys=True)}`\n\nMetric denominators: `{json.dumps(report.denominators, ensure_ascii=False, sort_keys=True)}`.\n\n## Production composition (offline seams)\n\nHarness: `{production_report.harness_version}`. Success: {production_report.success_rate:.2%} (gate: 100%, {production_status}); P50: {production_report.p50_latency_ms:.3f} ms; P95: {production_report.p95_latency_ms:.3f} ms. Model calls/input/output/cost: {production_report.model_calls}/{production_report.input_tokens}/{production_report.output_tokens}/{production_report.estimated_cost_micros} micro-CNY. This is not a paid-model or network benchmark. {production_report.seam_disclosure}\n"
     (output / "evaluation-report.md").write_text(markdown, encoding="utf-8")
     return not failed_thresholds
 

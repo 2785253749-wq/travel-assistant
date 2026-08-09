@@ -1,5 +1,6 @@
 from uuid import UUID
 from pathlib import Path
+import logging
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,6 +9,7 @@ from app.api.auth import AuthenticatedUser, get_supabase_auth_gateway_factory
 from app.composition import get_public_trip_service, get_trip_service
 from app.infrastructure.repositories import InMemoryTripRepository
 from app.main import app
+from app.core.logging import database_operation
 from app.schemas import Itinerary
 from app.trips.service import TripService
 
@@ -57,6 +59,27 @@ def _create_trip(client: TestClient) -> dict:
     )
     assert response.status_code == 201
     return response.json()
+
+
+def test_public_share_resolve_binds_a_token_digest_to_database_logs(client, caplog):
+    token = "private-share-token"
+
+    class LoggingPublicService:
+        def get_shared_trip(self, presented_token):
+            assert presented_token == token
+            with database_operation(
+                "share.resolve.synthetic", subject="share-digest:synthetic"
+            ):
+                return {"status": "planned"}
+
+    app.dependency_overrides[get_public_trip_service] = lambda: LoggingPublicService()
+    with caplog.at_level(logging.INFO, logger="app.database"):
+        response = client.post("/api/shared/resolve", json={"token": token})
+
+    assert response.status_code == 200
+    record = next(record for record in caplog.records if record.message == "database_result")
+    assert record.subject.startswith("share-digest:")
+    assert token not in caplog.text
 
 
 def test_private_crud_uses_verified_owner(client):

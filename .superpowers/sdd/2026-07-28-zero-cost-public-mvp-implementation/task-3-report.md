@@ -16,7 +16,7 @@
 Command:
 
 ```powershell
-& 'D:\Users\Asus\Desktop\旅行助手\.venv\Scripts\python.exe' -m pytest tests/unit/test_auth.py tests/integration/test_rls_contract.py -v
+python -m pytest tests/unit/test_auth.py tests/integration/test_rls_contract.py -v
 ```
 
 Result: failed at collection with `ModuleNotFoundError: No module named 'app.api'`, before the auth gateway and migration existed.
@@ -26,7 +26,7 @@ Result: failed at collection with `ModuleNotFoundError: No module named 'app.api
 Command:
 
 ```powershell
-& 'D:\Users\Asus\Desktop\旅行助手\.venv\Scripts\python.exe' -m pytest tests/unit/test_auth.py tests/integration/test_rls_contract.py -v
+python -m pytest tests/unit/test_auth.py tests/integration/test_rls_contract.py -v
 ```
 
 Result: `5 passed, 1 warning in 1.49s`.
@@ -36,7 +36,7 @@ Result: `5 passed, 1 warning in 1.49s`.
 Command:
 
 ```powershell
-& 'D:\Users\Asus\Desktop\旅行助手\.venv\Scripts\python.exe' -m pytest -v
+python -m pytest -v
 ```
 
 Result: `30 passed, 1 warning in 1.59s`.
@@ -60,7 +60,7 @@ Result: `30 passed, 1 warning in 1.59s`.
 Command:
 
 ```powershell
-& 'D:\Users\Asus\Desktop\旅行助手\.venv\Scripts\python.exe' -m pytest tests/unit/test_auth.py tests/integration/test_rls_contract.py -v
+python -m pytest tests/unit/test_auth.py tests/integration/test_rls_contract.py -v
 ```
 
 Result before the fixes: `4 failed, 5 passed, 1 warning in 2.58s`. The failures were the unconfigured missing-token request returning 500, service failure returning 401, and both cross-user child inserts lacking a composite ownership constraint.
@@ -74,7 +74,7 @@ The same command after the fixes returned `9 passed, 1 warning in 1.98s`.
 Command:
 
 ```powershell
-& 'D:\Users\Asus\Desktop\旅行助手\.venv\Scripts\python.exe' -m pytest -v
+python -m pytest -v
 ```
 
 Result: `34 passed, 1 warning in 1.62s`.

@@ -11,7 +11,8 @@ from app.agent.graph import (
     TrustedEvidence,
 )
 from app.agent.intent import IntentResult
-from app.schemas import TravelProfile
+from app.core.usage import model_usage_scope
+from app.schemas import Itinerary, TravelProfile
 
 
 class _PlanClassifier:
@@ -43,6 +44,7 @@ class _EvidenceProvider:
 @dataclass
 class _RawModelResponse:
     content: object
+    usage_metadata: dict[str, int] | None = None
 
 
 class _SequenceChatModel:
@@ -56,7 +58,10 @@ class _SequenceChatModel:
         self.messages.append(messages)
         candidate = next(self._candidates)
         content = candidate if isinstance(candidate, str) else json.dumps(candidate)
-        return _RawModelResponse(content)
+        return _RawModelResponse(
+            content,
+            usage_metadata={"input_tokens": 7, "output_tokens": 11},
+        )
 
 
 def _profile() -> TravelProfile:
@@ -184,6 +189,42 @@ def test_production_model_seam_repairs_one_non_display_error(monkeypatch):
     assert len(chat_model.messages) == 2
     second_request = json.loads(chat_model.messages[1][1].content)
     assert second_request["repair_codes"] == ["SCHEMA_INVALID"]
+
+
+def test_production_model_seam_counts_both_paid_repair_calls_and_tokens(monkeypatch):
+    invalid = _valid_candidate()
+    invalid["budget"]["total"] = 2999
+
+    with model_usage_scope() as usage:
+        result, _ = _run_production_planner(
+            monkeypatch, [invalid, _valid_candidate()]
+        )
+
+    assert result.stage == "planned"
+    assert usage.calls == 2
+    assert usage.input_tokens == 14
+    assert usage.output_tokens == 22
+
+
+def test_production_revision_prompt_contains_existing_itinerary_and_user_instruction(monkeypatch):
+    existing = _valid_candidate()
+    existing["days"][1]["morning"]["title"] = "Old second-day plan"
+    revised = copy.deepcopy(existing)
+    revised["days"][1]["morning"]["title"] = "West Lake walk"
+    chat_model = _SequenceChatModel([revised])
+    monkeypatch.setattr("app.agent.graph.model", lambda: chat_model)
+
+    result = ModelStructuredPlanner().revise(
+        _profile(),
+        (),
+        itinerary=Itinerary.model_validate(existing),
+        instruction="把第二天上午改成西湖",
+    )
+
+    request = json.loads(chat_model.messages[0][1].content)
+    assert request["modification_request"] == "把第二天上午改成西湖"
+    assert request["existing_itinerary"]["days"][1]["morning"]["title"] == "Old second-day plan"
+    assert result.days[1].morning.title == "West Lake walk"
 
 
 def _non_display_structure_error() -> dict[str, object]:
