@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" role="img" aria-label="中国地图试点示意图">
+  <rect width="800" height="500" fill="#eef4f2"/>
+  <path d="M160 95 290 55 415 105 570 85 670 165 620 275 695 355 555 420 415 375 265 430 115 340 150 235Z" fill="#d7e6df" stroke="#7ea494" stroke-width="5"/>
+  <circle cx="570" cy="305" r="16" fill="#087d69"/><text x="594" y="312" font-family="sans-serif" font-size="26" fill="#174239">福建</text>
+  <circle cx="285" cy="300" r="16" fill="#087d69"/><text x="309" y="307" font-family="sans-serif" font-size="26" fill="#174239">云南</text>
+  <text x="400" y="465" text-anchor="middle" font-family="sans-serif" font-size="22" fill="#4c6760">离线试点地图：福建 · 云南</text>
+</svg>

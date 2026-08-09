@@ -20,6 +20,9 @@ class FakeElement {
     this.href = "";
     this.rel = "";
     this.target = "";
+    this.src = "";
+    this.async = false;
+    this.alt = "";
     this._text = "";
   }
 
