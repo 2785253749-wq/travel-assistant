@@ -9,6 +9,7 @@ class FakeElement {
     this.children = [];
     this.parentNode = null;
     this.dataset = {};
+    this.attributes = new Map();
     this.listeners = new Map();
     this.hidden = false;
     this.disabled = false;
@@ -54,6 +55,9 @@ class FakeElement {
     listeners.push(listener);
     this.listeners.set(type, listeners);
   }
+
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) || null; }
 
   async dispatch(type) {
     if (type === "click" && this.disabled) return;
@@ -181,6 +185,16 @@ function createHarness(options = {}) {
         return { auth };
       },
     },
+  };
+  const windowListeners = new Map();
+  window.addEventListener = (type, listener) => {
+    const listeners = windowListeners.get(type) || [];
+    listeners.push(listener);
+    windowListeners.set(type, listeners);
+  };
+  window.dispatch = async (type, properties = {}) => {
+    const event = { preventDefault() {}, target: window, currentTarget: window, ...properties };
+    for (const listener of windowListeners.get(type) || []) await listener(event);
   };
   const context = {
     window, document, navigator: { clipboard: { async writeText() {} } }, URL, Date, Math, JSON,

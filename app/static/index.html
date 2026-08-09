@@ -35,6 +35,12 @@
       </section>
     </header>
 
+    <nav id="main-navigation" class="main-navigation" aria-label="主导航">
+      <button type="button" class="navigation-item is-active" aria-current="page">探索</button>
+      <button type="button" class="navigation-item">我的行程</button>
+      <button type="button" class="navigation-item">社区</button>
+    </nav>
+
     <p id="status-message" class="status-message" role="status" aria-live="polite"></p>
     <section id="provider-notice" class="provider-notice" hidden role="status" aria-live="polite">
       <strong>部分外部信息暂不可用。</strong><span id="provider-updated-at"></span>
@@ -42,7 +48,21 @@
     </section>
 
     <div class="workspace">
+      <aside id="trip-history" class="trip-history" aria-labelledby="history-heading" hidden>
+        <div class="section-heading">
+          <h2 id="history-heading">我的行程</h2>
+          <p>仅显示当前登录账户的私有行程。</p>
+        </div>
+        <ul id="trip-history-list" class="history-list" aria-live="polite"></ul>
+      </aside>
+    </div>
+
+    <aside id="assistant-panel" class="assistant-panel" aria-labelledby="chat-heading" hidden>
       <section id="chat-panel" class="chat-panel" aria-labelledby="chat-heading">
+        <div class="assistant-panel-header">
+          <p class="eyebrow">旅行规划</p>
+          <button id="assistant-close" type="button" class="assistant-close" aria-label="关闭旅行助手">关闭</button>
+        </div>
         <div class="section-heading">
           <h2 id="chat-heading">规划对话</h2>
           <p>请告诉我出发地、目的地、日期、人数、总预算和偏好。</p>
@@ -59,15 +79,7 @@
           </div>
         </form>
       </section>
-
-      <aside id="trip-history" class="trip-history" aria-labelledby="history-heading" hidden>
-        <div class="section-heading">
-          <h2 id="history-heading">我的行程</h2>
-          <p>仅显示当前登录账户的私有行程。</p>
-        </div>
-        <ul id="trip-history-list" class="history-list" aria-live="polite"></ul>
-      </aside>
-    </div>
+    </aside>
 
     <section id="profile-confirmation" class="profile-card" aria-labelledby="profile-title" hidden>
       <h2 id="profile-title">确认旅行资料</h2>
@@ -92,6 +104,10 @@
       </div>
       <div id="trip-content"></div>
     </section>
+
+    <button id="assistant-toggle" class="assistant-toggle" type="button" aria-controls="assistant-panel" aria-expanded="false">
+      打开 AI 助手
+    </button>
   </main>
 
   <dialog id="share-dialog" aria-labelledby="share-title">

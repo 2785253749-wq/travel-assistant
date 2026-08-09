@@ -36,6 +36,46 @@ function assertBefore(events, first, second) {
   assert.ok(events.indexOf(first) < events.indexOf(second), `${first} must precede ${second}: ${events.join(", ")}`);
 }
 
+test("floating assistant opens from its launcher and Escape restores launcher focus", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const assistant = harness.elements.get("assistant-panel");
+  const toggle = harness.elements.get("assistant-toggle");
+  assert.ok(assistant, "assistant panel is present");
+  assert.ok(toggle, "assistant launcher is present");
+  assert.equal(assistant.hidden, true);
+
+  await toggle.dispatch("click");
+  assert.equal(assistant.hidden, false);
+
+  await harness.window.dispatch("keydown", { key: "Escape" });
+  assert.equal(assistant.hidden, true);
+  assert.equal(toggle.focused, true);
+});
+
+test("page shell exposes Chinese navigation while the assistant stays initially closed", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const navigation = harness.elements.get("main-navigation");
+  assert.ok(navigation, "main navigation is present");
+  assert.equal(navigation.hidden, false);
+  assert.equal(harness.elements.get("trip-view").hidden, true);
+  assert.equal(harness.elements.get("assistant-panel").hidden, true);
+});
+
+test("public shared itinerary hides the assistant launcher", async () => {
+  const harness = createHarness({ hash: "#share=opaque", fetch: async () => jsonResponse(200, {
+    id: "trip-1", title: "共享行程", status: "planned", profile: {}, itinerary: { title: "共享行程", days: [] }, updated_at: null,
+  }) });
+
+  await settle();
+
+  assert.equal(harness.elements.get("assistant-toggle").hidden, true);
+  assert.equal(harness.elements.get("assistant-panel").hidden, true);
+});
+
 test("login uses the Supabase session lifecycle and starts a fresh authenticated conversation", async () => {
   const chatCalls = [];
   const auth = new FakeSupabaseAuth({ loginSession: SESSION });
