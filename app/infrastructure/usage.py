@@ -4,6 +4,7 @@ from datetime import date
 from uuid import UUID
 
 from app.core.usage import (
+    CallAdmissionResult,
     ProviderUnavailable,
     ReserveResult,
     UsageCount,
@@ -88,6 +89,51 @@ class SupabaseUsageRepository:
                             return ReserveResult(reservation_id, None)
                     except ValueError:
                         pass
+                raise ProviderUnavailable()
+        except Exception:
+            raise ProviderUnavailable() from None
+
+    def admit_model_call(
+        self,
+        reservation_id: str,
+        user_key: str,
+        reservation_day: date,
+        call_day: date,
+        user_limit: int,
+        global_limit: int,
+    ) -> CallAdmissionResult:
+        try:
+            with database_operation("usage.admit_model_call"):
+                result = self._data(
+                    self._client.rpc(
+                        "admit_ai_usage_call",
+                        {
+                            "p_reservation_id": reservation_id,
+                            "p_subject_key": user_key,
+                            "p_reservation_date": reservation_day.isoformat(),
+                            "p_call_usage_date": call_day.isoformat(),
+                            "p_user_limit": user_limit,
+                            "p_global_limit": global_limit,
+                        },
+                    ).execute()
+                )
+                if isinstance(result, list):
+                    result = result[0] if len(result) == 1 else None
+                if not isinstance(result, dict) or set(result) != {
+                    "allowed",
+                    "reason",
+                }:
+                    raise ProviderUnavailable()
+                allowed = result["allowed"]
+                reason = result["reason"]
+                if allowed is True and reason is None:
+                    return CallAdmissionResult(True, None)
+                if allowed is False and reason in {
+                    "user_limit",
+                    "global_limit",
+                    "reservation_expired",
+                }:
+                    return CallAdmissionResult(False, reason)
                 raise ProviderUnavailable()
         except Exception:
             raise ProviderUnavailable() from None

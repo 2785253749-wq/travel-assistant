@@ -54,6 +54,25 @@ function Test-SafeReference {
     )
 }
 
+function Get-JavaScriptCookedTemplateNamePattern {
+    param([string]$Name)
+
+    $parts = [System.Collections.Generic.List[string]]::new()
+    foreach ($character in $Name.ToCharArray()) {
+        $literal = [regex]::Escape([string]$character)
+        $codePoint = [int]$character
+        $hexByte = '{0:X2}' -f $codePoint
+        $hexCodeUnit = '{0:X4}' -f $codePoint
+        $hexCodePoint = '{0:X}' -f $codePoint
+        $parts.Add(
+            "(?:${literal}|\\${literal}|\\x${hexByte}|\\u${hexCodeUnit}|\\u\{0*${hexCodePoint}\})"
+        )
+    }
+
+    $lineContinuations = '(?:\\(?:\r\n?|\n|\u2028|\u2029))*'
+    return $lineContinuations + ($parts -join $lineContinuations) + $lineContinuations
+}
+
 function Test-DefaultIgnorableCodePoint {
     param([int]$CodePoint)
 
@@ -108,12 +127,19 @@ function Get-SensitiveAssignments {
     $separator = if ($AllowColon) { '[:=]' } else { '=' }
     $receiver = '(?:(?:[A-Za-z_$][A-Za-z0-9_$]*\.)+|\$env:)?'
     $directKey = "$receiver[`"']?$escapedName[`"']?"
-    $propertyPath = '(?:[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*|\s*\[\s*[`"''][A-Za-z_$][A-Za-z0-9_$]*[`"'']\s*\])*)'
-    $backtick = [regex]::Escape([string][char]96)
-    $quotedName = "(?:`"${escapedName}`"|'${escapedName}'|${backtick}${escapedName}${backtick})"
     $javascriptTrivia = '(?:(?:\s)|(?:/\*[\s\S]*?\*/)|(?://[^\r\n\u2028\u2029]*(?:\r\n?|\n|\u2028|\u2029)))*'
-    $computedKey = "${propertyPath}${javascriptTrivia}\[${javascriptTrivia}${quotedName}${javascriptTrivia}\]"
-    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>(?:$computedKey|$directKey))\??\s*(?<separator>$separator)\s*"
+    $propertyPath = '(?:[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*|\s*\[\s*[`"''][A-Za-z_$][A-Za-z0-9_$]*[`"'']\s*\])*)'
+    $propertyPath = $propertyPath.Replace('\s*', $javascriptTrivia)
+    $backtick = [regex]::Escape([string][char]96)
+    $quotedName = "(?:`"${escapedName}`"|'${escapedName}')"
+    $cookedTemplateName = $backtick + (Get-JavaScriptCookedTemplateNamePattern -Name $Name) + $backtick
+    $templateCharacter = '(?:\\[\s\S]|[^\\' + $backtick + '])'
+    $dynamicTemplate =
+        '(?<dynamicTemplate>' + $backtick + $templateCharacter + '*?\$\{' +
+        '[\s\S]*?' + $backtick + ')'
+    $computedName = "(?:${quotedName}|${cookedTemplateName}|${dynamicTemplate})"
+    $computedKey = "${propertyPath}${javascriptTrivia}\[${javascriptTrivia}${computedName}${javascriptTrivia}\]"
+    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>(?:$computedKey|$directKey))\??${javascriptTrivia}(?<separator>$separator)${javascriptTrivia}"
     return [regex]::Matches($Content, $pattern)
 }
 
@@ -404,10 +430,16 @@ foreach ($file in $trackedFiles) {
     $sensitiveAssignments[("DEEPSEEK_API" + "_KEY")] = "DeepSeek API key"
     $sensitiveAssignments[("SUPABASE_SERVICE" + "_KEY")] = "Supabase service key"
     $sensitiveAssignments[("ANON_SESSION_SIGNING" + "_SECRET")] = "anonymous session signing secret"
+    $dynamicTemplateViolation = $false
     foreach ($name in $sensitiveAssignments.Keys) {
         foreach ($match in (Get-SensitiveAssignments -Content $content -Name $name -AllowColon $allowColonAssignments)) {
             if (Test-TypeScriptTypeMember -Content $content -Match $match -Extension $extension) {
                 continue
+            }
+            if ($match.Groups['dynamicTemplate'].Success) {
+                $violations.Add("Credential pattern (unresolved JavaScript template assignment): $displayPath")
+                $dynamicTemplateViolation = $true
+                break
             }
             $valueStart = $match.Index + $match.Length
             $value = Get-AssignedExpression -Content $content -StartIndex $valueStart
@@ -415,6 +447,9 @@ foreach ($file in $trackedFiles) {
                 $violations.Add("Credential pattern ($($sensitiveAssignments[$name])): $displayPath")
                 break
             }
+        }
+        if ($dynamicTemplateViolation) {
+            break
         }
     }
 

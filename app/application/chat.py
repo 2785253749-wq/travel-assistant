@@ -197,7 +197,7 @@ class TravelChatApplication:
             raise
         usage = None
         try:
-            with model_usage_scope() as usage:
+            with model_usage_scope(reservation) as usage:
                 result = self._agent_factory(pending.profile).plan_confirmed(
                     pending.profile,
                     trip,

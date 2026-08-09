@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier, Lock
 from types import SimpleNamespace
 import re
 import sys
@@ -13,7 +14,7 @@ import pytest
 from app.core.errors import AppError
 from app.core.config import get_settings
 from app.composition import get_usage_guard
-from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircuitBreaker, ProviderUnavailable, ReserveResult, UsageGuard, classify_provider_error, model_usage_scope
+from app.core.usage import CallAdmissionResult, InMemoryUsageRepository, ModelGateway, ProviderCircuitBreaker, ProviderUnavailable, ReserveResult, UsageGuard, classify_provider_error, model_usage_scope
 from app.infrastructure.usage import SupabaseUsageRepository
 
 
@@ -31,6 +32,14 @@ COST_COMMIT_SIGNATURE = (
     "integer",
     "bigint",
 )
+ADMIT_CALL_SIGNATURE = (
+    "uuid",
+    "text",
+    "date",
+    "date",
+    "integer",
+    "integer",
+)
 ROLLBACK_SIGNATURE = ("uuid", "text", "date")
 
 
@@ -46,7 +55,7 @@ def _parse_usage_functions(sql: str, migration_name: str):
     contracts = {}
     pattern = re.compile(
         r"create(?:\s+or\s+replace)?\s+function\s+public\."
-        r"(?P<name>reserve_ai_usage|commit_ai_usage|rollback_ai_usage)\s*"
+        r"(?P<name>reserve_ai_usage|admit_ai_usage_call|commit_ai_usage|rollback_ai_usage)\s*"
         r"\((?P<parameters>.*?)\)\s*returns\s+(?P<return_type>\w+)\s+"
         r"language\s+\w+.*?\bas\s+\$\$(?P<body>.*?)\$\$;",
         re.IGNORECASE | re.DOTALL,
@@ -86,15 +95,74 @@ def _assert_service_role_grant(contract, function_name: str, parameter_types: tu
     assert f"grant execute on function {signature} to service_role;" in sql
 
 
-def make_guard(*, user_limit: int = 5, global_limit: int = 100, enabled: bool = True):
-    repository = InMemoryUsageRepository()
+class MutableClock:
+    def __init__(self, current: datetime):
+        self.current = current
+
+    def __call__(self) -> datetime:
+        return self.current
+
+    def advance(self, delta: timedelta) -> None:
+        self.current += delta
+
+
+class CountingModel:
+    def __init__(self, lock: Lock | None = None):
+        self.calls = 0
+        self._lock = lock
+
+    def invoke(self, _messages):
+        if self._lock is None:
+            self.calls += 1
+        else:
+            with self._lock:
+                self.calls += 1
+        return SimpleNamespace(usage_metadata={})
+
+
+def make_guard(
+    *,
+    user_limit: int = 5,
+    global_limit: int = 100,
+    enabled: bool = True,
+    clock=None,
+    repository=None,
+):
+    clock = clock or (lambda: datetime(2026, 7, 29, tzinfo=UTC))
+    repository = repository or InMemoryUsageRepository(clock=clock)
     return UsageGuard(
         repository=repository,
         user_daily_limit=user_limit,
         global_daily_limit=global_limit,
         enabled=enabled,
-        clock=lambda: datetime(2026, 7, 29, tzinfo=UTC),
+        clock=clock,
     )
+
+
+def make_cross_midnight_guard():
+    clock = MutableClock(datetime(2026, 8, 9, 23, 59, 59, tzinfo=UTC))
+    guard = make_guard(user_limit=2, global_limit=2, clock=clock)
+    reservation = guard.reserve("user-a")
+    clock.advance(timedelta(seconds=2))
+    return clock, guard, guard.repository, reservation
+
+
+def invoke(reservation, *, calls: int = 1, model=None):
+    model = model or CountingModel()
+    with model_usage_scope(reservation) as usage:
+        gateway = ModelGateway(lambda: model)
+        for _ in range(calls):
+            gateway.invoke([])
+    return model, usage
+
+
+def fill_day(repository, user_key: str, day, limit: int = 2) -> None:
+    reservation = repository.reserve(user_key, day, limit, limit)
+    for _ in range(2):
+        assert repository.admit_model_call(
+            reservation.reservation_id, user_key, day, day, limit, limit
+        ).admitted
+    repository.commit(reservation.reservation_id, user_key, day, 0, 0, 2, 0)
 
 
 def test_user_limit_counts_model_calls_and_blocks_when_two_slots_would_exceed_it():
@@ -186,6 +254,132 @@ def test_parallel_reservations_cannot_oversell_a_global_daily_limit():
     assert outcomes.count("AI_GLOBAL_DAILY_LIMIT_REACHED") == 10
     global_count = guard.repository.get_global_daily(TODAY)
     assert global_count.model_calls + global_count.pending == 100
+
+
+def test_cross_midnight_model_invokes_consume_the_invoke_days_global_quota():
+    clock, guard, repository, reservation = make_cross_midnight_guard()
+    model, usage = invoke(reservation, calls=2)
+    reservation.commit(model_calls=usage.calls)
+
+    assert model.calls == 2
+    assert repository.get_global_daily(clock.current.date() - timedelta(days=1)).model_calls == 0
+    assert repository.get_global_daily(clock.current.date()).model_calls == 2
+    with pytest.raises(AppError) as error:
+        guard.reserve("user-b")
+    assert error.value.code == "AI_GLOBAL_DAILY_LIMIT_REACHED"
+
+
+def test_full_invoke_day_rejects_before_the_provider_call():
+    clock, _, repository, cross_midnight = make_cross_midnight_guard()
+    fill_day(repository, "user-b", clock.current.date())
+    model = CountingModel()
+    with pytest.raises(AppError) as error:
+        with model_usage_scope(cross_midnight):
+            ModelGateway(lambda: model).invoke([])
+
+    assert error.value.code == "AI_GLOBAL_DAILY_LIMIT_REACHED"
+    assert model.calls == 0
+
+
+def test_parallel_cross_midnight_attempts_and_new_day_reserve_do_not_oversell():
+    clock, guard, repository, cross_midnight = make_cross_midnight_guard()
+    start = Barrier(3)
+    model = CountingModel(Lock())
+    gateway = ModelGateway(lambda: model)
+
+    def invoke() -> str:
+        start.wait()
+        try:
+            with model_usage_scope(cross_midnight):
+                gateway.invoke([])
+            return "called"
+        except AppError as error:
+            return error.code
+
+    def reserve_new_day() -> str:
+        start.wait()
+        try:
+            guard.reserve("user-b")
+            return "reserved"
+        except AppError as error:
+            return error.code
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(invoke), pool.submit(invoke), pool.submit(reserve_new_day)]
+        outcomes = [future.result() for future in futures]
+
+    global_count = repository.get_global_daily(clock.current.date())
+    assert global_count.reserved_model_calls == 2
+    assert global_count.model_calls == model.calls
+    assert outcomes.count("called") == model.calls
+
+
+def test_settlement_failure_keeps_incurred_and_unused_slots_fail_closed():
+    clock = MutableClock(datetime(2026, 8, 9, 12, tzinfo=UTC))
+    base_repository = InMemoryUsageRepository(clock=clock)
+
+    class Repository:
+        fail_commit = True
+
+        def __getattr__(self, name):
+            return getattr(base_repository, name)
+
+        def commit(self, *args):
+            if self.fail_commit:
+                raise ProviderUnavailable()
+            return base_repository.commit(*args)
+
+    repository = Repository()
+    guard = make_guard(
+        repository=repository, user_limit=2, global_limit=2, clock=clock
+    )
+    reservation = guard.reserve("user-a")
+    _, usage = invoke(reservation)
+
+    with pytest.raises(ProviderUnavailable):
+        reservation.commit(model_calls=usage.calls)
+    count = base_repository.get_global_daily(clock.current.date())
+    assert (count.model_calls, count.pending) == (1, 1)
+    with pytest.raises(AppError) as error:
+        guard.reserve("user-b")
+    assert error.value.code == "AI_GLOBAL_DAILY_LIMIT_REACHED"
+
+    repository.fail_commit = False
+    reservation.commit(model_calls=usage.calls)
+    count = base_repository.get_global_daily(clock.current.date())
+    assert (count.model_calls, count.pending) == (1, 0)
+
+
+def test_expired_reservation_rejects_before_provider_and_keeps_slots():
+    clock = MutableClock(datetime(2026, 8, 9, 12, tzinfo=UTC))
+    guard = make_guard(user_limit=2, global_limit=2, clock=clock)
+    repository = guard.repository
+    reservation = guard.reserve("user-a")
+    clock.advance(timedelta(minutes=6))
+    model = CountingModel()
+    with pytest.raises(ProviderUnavailable):
+        with model_usage_scope(reservation):
+            ModelGateway(lambda: model).invoke([])
+
+    count = repository.get_global_daily(clock.current.date())
+    assert model.calls == 0
+    assert (count.model_calls, count.pending) == (0, 2)
+
+
+def test_call_admitted_before_expiry_can_be_settled_after_expiry():
+    clock = MutableClock(datetime(2026, 8, 9, 12, tzinfo=UTC))
+    guard = make_guard(user_limit=2, global_limit=2, clock=clock)
+    repository = guard.repository
+    reservation = guard.reserve("user-a")
+    _, usage = invoke(reservation)
+    clock.advance(timedelta(minutes=6))
+    with pytest.raises(AppError):
+        guard.reserve("user-b")
+
+    reservation.commit(model_calls=usage.calls)
+
+    count = repository.get_global_daily(clock.current.date())
+    assert (count.request_count, count.model_calls, count.pending) == (1, 1, 0)
 
 
 def test_expired_unsettled_reservation_keeps_global_slots_fail_closed():
@@ -400,6 +594,38 @@ def test_006_removes_cost_blind_legacy_usage_rpc_overloads():
         assert f"drop function if exists {signature};" in normalized
 
 
+def test_007_admits_each_call_on_its_utc_day_and_commit_does_not_double_count():
+    migration = MIGRATIONS / "007_actual_invoke_day_quota.sql"
+    assert migration.exists(), "actual-call-day admission requires a forward migration"
+    sql = migration.read_text(encoding="utf-8")
+    contracts = _parse_usage_functions(sql, migration.name)
+
+    reserve = contracts[("reserve_ai_usage", RESERVE_SIGNATURE)]
+    admit = contracts[("admit_ai_usage_call", ADMIT_CALL_SIGNATURE)]
+    commit = contracts[("commit_ai_usage", COST_COMMIT_SIGNATURE)]
+    rollback = contracts[("rollback_ai_usage", ROLLBACK_SIGNATURE)]
+    reserve_body = _normalized(reserve["body"])
+    admit_body = _normalized(admit["body"])
+    commit_body = _normalized(commit["body"])
+    rollback_body = _normalized(rollback["body"])
+
+    assert "r.reserved_model_calls - r.incurred_model_calls" in reserve_body
+    assert "least(p_reservation_date, p_call_usage_date)" in admit_body
+    assert "greatest(p_reservation_date, p_call_usage_date)" in admit_body
+    assert "incurred_model_calls = r.incurred_model_calls + 1" in admit_body
+    assert "model_calls = ai_model_cost_counters.model_calls + 1" in admit_body
+    assert "pending = pending - 1" in admit_body
+    assert "p_model_calls <> incurred_model_calls" in commit_body
+    assert "reservation_slots - incurred_model_calls" in commit_body
+    assert "model_calls = ai_model_cost_counters.model_calls + excluded.model_calls" not in commit_body
+    assert "reservation_slots - incurred_model_calls" in rollback_body
+    _assert_service_role_grant(
+        admit, "admit_ai_usage_call", ADMIT_CALL_SIGNATURE
+    )
+    _assert_service_role_grant(commit, "commit_ai_usage", COST_COMMIT_SIGNATURE)
+    _assert_service_role_grant(rollback, "rollback_ai_usage", ROLLBACK_SIGNATURE)
+
+
 def test_model_factory_disables_hidden_sdk_retries(monkeypatch):
     from app.agent import graph
 
@@ -486,27 +712,39 @@ def test_service_role_repository_uses_exact_complete_reservation_rpc_contract():
         def __init__(self, name, args): self.name, self.args = name, args
         def execute(self):
             calls.append((self.name, self.args))
-            data = (
-                dict(zip(json_keys, (True, RESERVATION_ID, None), strict=True))
-                if self.name == "reserve_ai_usage"
-                else True
-            )
+            if self.name == "reserve_ai_usage":
+                data = dict(zip(json_keys, (True, RESERVATION_ID, None), strict=True))
+            elif self.name == "admit_ai_usage_call":
+                data = {"allowed": True, "reason": None}
+            else:
+                data = True
             return type("Result", (), {"data": data})()
     class Client:
         def rpc(self, name, args): return Query(name, args)
     repo = SupabaseUsageRepository(Client())
     result = repo.reserve("user:1", TODAY, 5, 100)
     assert result == ReserveResult(RESERVATION_ID, None)
+    admitted = repo.admit_model_call(
+        result.reservation_id,
+        "user:1",
+        TODAY,
+        TODAY + timedelta(days=1),
+        5,
+        100,
+    )
+    assert admitted == CallAdmissionResult(True, None)
     repo.commit(result.reservation_id, "user:1", TODAY, 3, 4, 2, 17)
     repo.rollback(result.reservation_id, "user:1", TODAY)
 
     expected_contracts = [
         contracts[("reserve_ai_usage", RESERVE_SIGNATURE)],
+        contracts[("admit_ai_usage_call", ADMIT_CALL_SIGNATURE)],
         contracts[("commit_ai_usage", COST_COMMIT_SIGNATURE)],
         contracts[("rollback_ai_usage", ROLLBACK_SIGNATURE)],
     ]
     assert [name for name, _ in calls] == [
         "reserve_ai_usage",
+        "admit_ai_usage_call",
         "commit_ai_usage",
         "rollback_ai_usage",
     ]
@@ -516,6 +754,7 @@ def test_service_role_repository_uses_exact_complete_reservation_rpc_contract():
     ]
     assert [list(args.values()) for _, args in calls] == [
         ["user:1", "2026-07-29", 5, 100],
+        [RESERVATION_ID, "user:1", "2026-07-29", "2026-07-30", 5, 100],
         [RESERVATION_ID, "user:1", "2026-07-29", 3, 4, 2, 17],
         [RESERVATION_ID, "user:1", "2026-07-29"],
     ]
@@ -634,6 +873,10 @@ def test_atomic_reserve_results_do_not_cross_contaminate_failure_reasons():
     repository = InMemoryUsageRepository()
     for _ in range(2):
         result = repository.reserve("full", TODAY, 5, 100)
+        for _ in range(2):
+            assert repository.admit_model_call(
+                result.reservation_id, "full", TODAY, TODAY, 5, 100
+            ).admitted
         repository.commit(result.reservation_id, "full", TODAY, 0, 0, 2, 0)
     user_result = repository.reserve("full", TODAY, 5, 100)
     global_result = repository.reserve("other", TODAY, 5, 0)

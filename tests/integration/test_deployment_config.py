@@ -245,6 +245,93 @@ def test_public_repo_check_rejects_javascript_computed_property_secret_assignmen
     assert "credential" in result.stdout.lower()
 
 
+def test_public_repo_check_rejects_cooked_static_javascript_template_secret_key(tmp_path: Path):
+    receiver = "process" + ".env"
+    left_hand_side = receiver + "[`ANON_SESSION_SIGNING_" + r"\u0053ECRET`]"
+    repo = _tracked_repo(tmp_path, "config/settings.js", f'{left_hand_side} = "real-secret";\n')
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
+@pytest.mark.parametrize(
+    "left_hand_side",
+    [
+        pytest.param(
+            'process{trivia}.env["{name}"]',
+            id="before-property-access-dot",
+        ),
+        pytest.param(
+            'process.{trivia}env["{name}"]',
+            id="after-property-access-dot",
+        ),
+        pytest.param(
+            'process.env{trivia}["{name}"]',
+            id="before-computed-property-bracket",
+        ),
+        pytest.param(
+            'process.env[{trivia}"{name}"]',
+            id="after-computed-property-bracket",
+        ),
+        pytest.param(
+            'process.env["{name}"{trivia}]',
+            id="before-computed-property-close",
+        ),
+        pytest.param(
+            'process.env["{name}"]{trivia}',
+            id="before-assignment-operator",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "trivia",
+    [
+        pytest.param("/* config */", id="block-comment"),
+        pytest.param("// config\n", id="line-comment"),
+    ],
+)
+def test_public_repo_check_rejects_javascript_comment_trivia_at_assignment_token_seams(
+    tmp_path: Path,
+    left_hand_side: str,
+    trivia: str,
+):
+    name = "ANON_SESSION_SIGNING" + "_SECRET"
+    left_hand_side = left_hand_side.format(name=name, trivia=trivia)
+    repo = _tracked_repo(tmp_path, "config/settings.js", f'{left_hand_side} = "real-secret";\n')
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
+@pytest.mark.parametrize(
+    ("setup", "expression"),
+    [
+        pytest.param('const suffix = "SECRET";\n', "suffix", id="identifier-expression"),
+        pytest.param("", "`SECRET`", id="nested-template-expression"),
+    ],
+)
+def test_public_repo_check_rejects_dynamic_template_key_with_safe_environment_reference(
+    tmp_path: Path,
+    setup: str,
+    expression: str,
+):
+    receiver = "process" + ".env"
+    name = "ANON_SESSION_SIGNING" + "_SECRET"
+    prefix = "ANON_SESSION_SIGNING" + "_"
+    source = setup
+    source += f"{receiver}[`{prefix}${{{expression}}}`] = {receiver}.{name};\n"
+    repo = _tracked_repo(tmp_path, "config/settings.js", source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
 def test_public_repo_check_accepts_javascript_environment_reference(tmp_path: Path):
     name = "DEEPSEEK_API" + "_KEY"
     repo = _tracked_repo(tmp_path, "config/settings.js", f"const config = {{ {name}: process.env.{name} }};\n")

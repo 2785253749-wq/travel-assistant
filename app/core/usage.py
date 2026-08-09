@@ -7,7 +7,7 @@ reservation is made in one database transaction across web workers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from threading import RLock
 from typing import Any, Callable, Protocol
@@ -79,8 +79,11 @@ class ModelUsage:
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    _reservation: Any | None = field(default=None, repr=False)
 
     def record_attempt(self) -> None:
+        if self._reservation is not None:
+            self._reservation.admit_model_call()
         self.calls += 1
 
     def record_tokens(self, response: object) -> None:
@@ -98,8 +101,8 @@ _model_usage: ContextVar[ModelUsage | None] = ContextVar("model_usage", default=
 
 
 @contextmanager
-def model_usage_scope():
-    usage = ModelUsage()
+def model_usage_scope(reservation: Any | None = None):
+    usage = ModelUsage(_reservation=reservation)
     token = _model_usage.set(usage)
     try:
         yield usage
@@ -126,6 +129,8 @@ class ModelGateway:
                 collector.record_attempt()
             response = client.invoke(messages)
         except ProviderUnavailable:
+            raise
+        except AppError:
             raise
         except Exception as exc:
             code = classify_provider_error(exc)
@@ -172,10 +177,25 @@ class ReserveResult:
     failure_reason: str | None
 
 
+@dataclass(frozen=True)
+class CallAdmissionResult:
+    admitted: bool
+    failure_reason: str | None
+
+
 class UsageRepository(Protocol):
     def get_daily(self, user_key: str, day: date) -> UsageCount: ...
     def get_global_daily(self, day: date) -> UsageCount: ...
     def reserve(self, user_key: str, day: date, user_limit: int, global_limit: int) -> ReserveResult: ...
+    def admit_model_call(
+        self,
+        reservation_id: str,
+        user_key: str,
+        reservation_day: date,
+        call_day: date,
+        user_limit: int,
+        global_limit: int,
+    ) -> CallAdmissionResult: ...
     def commit(
         self,
         reservation_id: str,
@@ -189,6 +209,16 @@ class UsageRepository(Protocol):
     def rollback(self, reservation_id: str, user_key: str, day: date) -> None: ...
 
 
+@dataclass
+class _UsageReservationState:
+    user_key: str
+    reservation_day: date
+    expires_at: datetime
+    status: str
+    reserved_model_calls: int
+    incurred_model_calls: int = 0
+
+
 class InMemoryUsageRepository:
     """Atomic reference implementation used without any network dependency."""
 
@@ -196,7 +226,7 @@ class InMemoryUsageRepository:
         self._lock = RLock()
         self._users: dict[tuple[str, date], UsageCount] = {}
         self._global: dict[date, UsageCount] = {}
-        self._reservations: dict[str, tuple[str, date, datetime, str, int]] = {}
+        self._reservations: dict[str, _UsageReservationState] = {}
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def get_daily(self, user_key: str, day: date) -> UsageCount:
@@ -255,34 +285,78 @@ class InMemoryUsageRepository:
                 global_count.estimated_cost_micros,
             )
             reservation_id = str(uuid4())
-            self._reservations[reservation_id] = (
-                user_key,
-                day,
-                now + timedelta(minutes=5),
-                "reserved",
-                MODEL_CALL_SLOTS_PER_REQUEST,
+            self._reservations[reservation_id] = _UsageReservationState(
+                user_key=user_key,
+                reservation_day=day,
+                expires_at=now + timedelta(minutes=5),
+                status="reserved",
+                reserved_model_calls=MODEL_CALL_SLOTS_PER_REQUEST,
             )
             return ReserveResult(reservation_id, None)
 
     def _cleanup_expired(self, day: date, now: datetime) -> None:
-        for reservation_id, (
-            subject,
-            reserved_day,
-            expires_at,
-            status,
-            reserved_model_calls,
-        ) in tuple(self._reservations.items()):
-            if reserved_day == day and status == "reserved" and expires_at <= now:
+        for reservation in self._reservations.values():
+            if (
+                reservation.reservation_day == day
+                and reservation.status == "reserved"
+                and reservation.expires_at <= now
+            ):
                 # An expired reservation may already have incurred a provider call.
                 # Keep its worst-case slots pending until a late settlement arrives;
                 # releasing them would allow the daily ceiling to be oversold.
-                self._reservations[reservation_id] = (
-                    subject,
-                    reserved_day,
-                    expires_at,
-                    "expired",
-                    reserved_model_calls,
+                reservation.status = "expired"
+
+    def admit_model_call(
+        self,
+        reservation_id: str,
+        user_key: str,
+        reservation_day: date,
+        call_day: date,
+        user_limit: int,
+        global_limit: int,
+    ) -> CallAdmissionResult:
+        with self._lock:
+            reservation = self._reservations.get(reservation_id)
+            if (
+                reservation is None
+                or reservation.user_key != user_key
+                or reservation.reservation_day != reservation_day
+                or reservation.status != "reserved"
+            ):
+                return CallAdmissionResult(False, "reservation_unavailable")
+            if reservation.expires_at <= self._clock():
+                reservation.status = "expired"
+                return CallAdmissionResult(False, "reservation_expired")
+            if reservation.incurred_model_calls >= reservation.reserved_model_calls:
+                return CallAdmissionResult(False, "reservation_exhausted")
+
+            source_user = self._users.get((user_key, reservation_day), UsageCount())
+            source_global = self._global.get(reservation_day, UsageCount())
+            if call_day == reservation_day:
+                self._users[(user_key, reservation_day)] = self._incur_reserved_call(
+                    source_user
                 )
+                self._global[reservation_day] = self._incur_reserved_call(
+                    source_global
+                )
+            else:
+                target_user = self._users.get((user_key, call_day), UsageCount())
+                target_global = self._global.get(call_day, UsageCount())
+                if target_user.reserved_model_calls + 1 > user_limit:
+                    return CallAdmissionResult(False, "user_limit")
+                if target_global.reserved_model_calls + 1 > global_limit:
+                    return CallAdmissionResult(False, "global_limit")
+                self._users[(user_key, reservation_day)] = self._rollback_count(
+                    source_user, 1
+                )
+                self._global[reservation_day] = self._rollback_count(source_global, 1)
+                self._users[(user_key, call_day)] = self._record_model_call(
+                    target_user
+                )
+                self._global[call_day] = self._record_model_call(target_global)
+
+            reservation.incurred_model_calls += 1
+            return CallAdmissionResult(True, None)
 
     def commit(
         self,
@@ -298,72 +372,95 @@ class InMemoryUsageRepository:
             reservation = self._reservations.get(reservation_id)
             if (
                 reservation is None
-                or reservation[:2] != (user_key, day)
-                or reservation[3] not in {"reserved", "expired"}
+                or (reservation.user_key, reservation.reservation_day)
+                != (user_key, day)
+                or reservation.status not in {"reserved", "expired"}
             ):
                 return
-            reserved_model_calls = reservation[4]
-            if model_calls < 0 or model_calls > reserved_model_calls:
-                raise ValueError("actual model calls exceed the reservation")
+            reserved_model_calls = reservation.reserved_model_calls
+            if model_calls != reservation.incurred_model_calls:
+                raise ValueError("actual model calls do not match admitted attempts")
+            unused_model_calls = reserved_model_calls - reservation.incurred_model_calls
             self._users[(user_key, day)] = self._commit_count(
                 self._users.get((user_key, day), UsageCount()),
                 input_tokens,
                 output_tokens,
-                model_calls,
                 estimated_cost_micros,
-                reserved_model_calls,
+                unused_model_calls,
             )
             self._global[day] = self._commit_count(
                 self._global.get(day, UsageCount()),
                 input_tokens,
                 output_tokens,
-                model_calls,
                 estimated_cost_micros,
-                reserved_model_calls,
+                unused_model_calls,
             )
-            self._reservations[reservation_id] = (
-                *reservation[:3],
-                "committed",
-                reserved_model_calls,
-            )
+            reservation.status = "committed"
 
     def rollback(self, reservation_id: str, user_key: str, day: date) -> None:
         with self._lock:
             reservation = self._reservations.get(reservation_id)
-            if reservation is None or reservation[:2] != (user_key, day) or reservation[3] != "reserved": return
-            reserved_model_calls = reservation[4]
+            if (
+                reservation is None
+                or (reservation.user_key, reservation.reservation_day)
+                != (user_key, day)
+                or reservation.status != "reserved"
+            ):
+                return
+            unused_model_calls = (
+                reservation.reserved_model_calls - reservation.incurred_model_calls
+            )
             self._users[(user_key, day)] = self._rollback_count(
                 self._users.get((user_key, day), UsageCount()),
-                reserved_model_calls,
+                unused_model_calls,
             )
             self._global[day] = self._rollback_count(
                 self._global.get(day, UsageCount()),
-                reserved_model_calls,
+                unused_model_calls,
             )
-            self._reservations[reservation_id] = (
-                *reservation[:3],
-                "rolled_back",
-                reserved_model_calls,
-            )
+            reservation.status = "rolled_back"
 
     @staticmethod
     def _commit_count(
         count: UsageCount,
         input_tokens: int,
         output_tokens: int,
-        model_calls: int,
         estimated_cost_micros: int,
-        reserved_model_calls: int,
+        unused_model_calls: int,
     ) -> UsageCount:
-        if count.pending < reserved_model_calls:
+        if count.pending < unused_model_calls:
             raise RuntimeError("usage reservation is missing")
         return UsageCount(
             count.request_count + 1,
-            count.pending - reserved_model_calls,
+            count.pending - unused_model_calls,
             count.input_tokens + input_tokens,
             count.output_tokens + output_tokens,
-            count.model_calls + model_calls,
+            count.model_calls,
             count.estimated_cost_micros + estimated_cost_micros,
+        )
+
+    @staticmethod
+    def _incur_reserved_call(count: UsageCount) -> UsageCount:
+        if count.pending < 1:
+            raise RuntimeError("usage reservation is missing")
+        return UsageCount(
+            count.request_count,
+            count.pending - 1,
+            count.input_tokens,
+            count.output_tokens,
+            count.model_calls + 1,
+            count.estimated_cost_micros,
+        )
+
+    @staticmethod
+    def _record_model_call(count: UsageCount) -> UsageCount:
+        return UsageCount(
+            count.request_count,
+            count.pending,
+            count.input_tokens,
+            count.output_tokens,
+            count.model_calls + 1,
+            count.estimated_cost_micros,
         )
 
     @staticmethod
@@ -388,6 +485,9 @@ class UsageReservation:
         user_key: str,
         day: date,
         *,
+        user_daily_limit: int,
+        global_daily_limit: int,
+        clock: Callable[[], datetime],
         input_cost_micros_per_million_tokens: int = 0,
         output_cost_micros_per_million_tokens: int = 0,
     ) -> None:
@@ -395,9 +495,40 @@ class UsageReservation:
         self.id = reservation_id
         self._user_key = user_key
         self._day = day
+        self._user_daily_limit = user_daily_limit
+        self._global_daily_limit = global_daily_limit
+        self._clock = clock
         self._input_cost_rate = input_cost_micros_per_million_tokens
         self._output_cost_rate = output_cost_micros_per_million_tokens
+        self._incurred_model_calls = 0
         self._settled = False
+        self._lock = RLock()
+
+    def admit_model_call(self) -> None:
+        with self._lock:
+            if self._settled:
+                raise ProviderUnavailable()
+            if self._incurred_model_calls >= MODEL_CALL_SLOTS_PER_REQUEST:
+                raise ProviderUnavailable()
+            call_day = self._clock().astimezone(UTC).date()
+            result = self._repository.admit_model_call(
+                self.id,
+                self._user_key,
+                self._day,
+                call_day,
+                self._user_daily_limit,
+                self._global_daily_limit,
+            )
+            if not result.admitted:
+                if result.failure_reason == "user_limit":
+                    raise AppError("AI_DAILY_LIMIT_REACHED", "AI daily limit reached")
+                if result.failure_reason == "global_limit":
+                    raise AppError(
+                        "AI_GLOBAL_DAILY_LIMIT_REACHED",
+                        "AI global daily limit reached",
+                    )
+                raise ProviderUnavailable()
+            self._incurred_model_calls += 1
 
     def estimate_cost_micros(self, input_tokens: int, output_tokens: int) -> int:
         safe_input = max(0, input_tokens)
@@ -414,27 +545,38 @@ class UsageReservation:
         output_tokens: int = 0,
         model_calls: int = 0,
     ) -> None:
-        if self._settled:
-            return
-        safe_input = max(0, input_tokens)
-        safe_output = max(0, output_tokens)
-        estimated_cost_micros = self.estimate_cost_micros(safe_input, safe_output)
-        self._repository.commit(
-            self.id,
-            self._user_key,
-            self._day,
-            safe_input,
-            safe_output,
-            max(0, model_calls),
-            estimated_cost_micros,
-        )
-        self._settled = True
+        with self._lock:
+            if self._settled:
+                return
+            safe_input = max(0, input_tokens)
+            safe_output = max(0, output_tokens)
+            safe_model_calls = max(0, model_calls)
+            if safe_model_calls > MODEL_CALL_SLOTS_PER_REQUEST:
+                raise ValueError("actual model calls exceed the reservation")
+            while self._incurred_model_calls < safe_model_calls:
+                self.admit_model_call()
+            if self._incurred_model_calls != safe_model_calls:
+                raise ValueError("actual model calls do not match admitted attempts")
+            estimated_cost_micros = self.estimate_cost_micros(
+                safe_input, safe_output
+            )
+            self._repository.commit(
+                self.id,
+                self._user_key,
+                self._day,
+                safe_input,
+                safe_output,
+                safe_model_calls,
+                estimated_cost_micros,
+            )
+            self._settled = True
 
     def rollback(self) -> None:
-        if self._settled:
-            return
-        self._repository.rollback(self.id, self._user_key, self._day)
-        self._settled = True
+        with self._lock:
+            if self._settled:
+                return
+            self._repository.rollback(self.id, self._user_key, self._day)
+            self._settled = True
 
 
 class UsageGuard:
@@ -474,6 +616,9 @@ class UsageGuard:
             result.reservation_id,
             user_key,
             day,
+            user_daily_limit=self._user_daily_limit,
+            global_daily_limit=self._global_daily_limit,
+            clock=self._clock,
             input_cost_micros_per_million_tokens=self._input_cost_rate,
             output_cost_micros_per_million_tokens=self._output_cost_rate,
         )

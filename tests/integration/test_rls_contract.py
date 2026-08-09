@@ -26,6 +26,11 @@ AUDITED_PRIVATE_TABLE_ALTERS = {
         "add column if not exists reserved_model_calls integer not null "
         "default 1 check (reserved_model_calls between 1 and 2)",
     ),
+    (
+        "ai_usage_reservations",
+        "add column if not exists incurred_model_calls integer not null "
+        "default 0 check (incurred_model_calls between 0 and 2)",
+    ),
 }
 
 

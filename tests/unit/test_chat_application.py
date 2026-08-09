@@ -278,6 +278,9 @@ def test_failed_model_attempt_is_committed_instead_of_rolled_back():
     events = []
 
     class Reservation:
+        def admit_model_call(self):
+            events.append(("admit",))
+
         def commit(self, input_tokens=0, output_tokens=0, model_calls=0):
             events.append(("commit", input_tokens, output_tokens, model_calls))
 
@@ -318,7 +321,7 @@ def test_failed_model_attempt_is_committed_instead_of_rolled_back():
     else:
         raise AssertionError("provider failure must still propagate")
 
-    assert events == [("commit", 0, 0, 1)]
+    assert events == [("admit",), ("commit", 0, 0, 1)]
 
 
 def test_usage_commit_failure_after_atomic_persistence_does_not_turn_success_into_503():
@@ -398,6 +401,9 @@ def test_usage_commit_failure_on_a_nonplanned_result_surfaces_fail_closed_warnin
     store.put("anon:session", "thread-unsettled", None, profile, "规划成都")
 
     class Reservation:
+        def admit_model_call(self):
+            pass
+
         def commit(self, *_args, **_kwargs):
             raise RuntimeError("usage store unavailable")
 
