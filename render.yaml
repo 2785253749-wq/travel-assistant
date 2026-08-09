@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: travel-assistant
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --no-proxy-headers --no-access-log
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: AI_ENABLED
+        value: true
+      # Daily limits count model invocations; each request reserves two slots.
+      - key: AI_USER_DAILY_LIMIT
+        value: 5
+      - key: AI_GLOBAL_DAILY_LIMIT
+        value: 100
+      - key: REQUEST_ANONYMOUS_PER_MINUTE
+        value: 30
+      - key: REQUEST_AUTHENTICATED_PER_MINUTE
+        value: 120
+      - key: REQUEST_IP_PER_MINUTE
+        value: 180
+      - key: AI_INPUT_COST_MICROS_PER_MILLION_TOKENS
+        sync: false
+      - key: AI_OUTPUT_COST_MICROS_PER_MILLION_TOKENS
+        sync: false
+      - key: TRUSTED_CLIENT_IP_HEADER
+        value: cf-connecting-ip
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: ANON_SESSION_SIGNING_SECRET
+        sync: false

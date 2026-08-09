@@ -1,0 +1,19 @@
+{
+  "version": "2026-07-28",
+  "description": "Offline fixed-fixture baseline after Task 10 production fixes. Thresholds are unchanged; known failures reflect the latest runner output.",
+  "thresholds": {
+    "intent_accuracy": 0.9,
+    "slot_micro_f1": 0.9,
+    "clarification_recall": 0.95,
+    "refusal_precision": 0.9,
+    "refusal_recall": 0.95,
+    "schema_validity": 0.98,
+    "budget_validity": 0.98,
+    "citation_coverage": 0.95,
+    "citation_validity": 0.95,
+    "unsupported_fact_rate": 0.02,
+    "task_success_rate": 0.85,
+    "fallback_success_rate": 1.0
+  },
+  "known_failures": []
+}

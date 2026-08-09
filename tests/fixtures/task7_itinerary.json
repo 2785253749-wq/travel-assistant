@@ -1,0 +1,50 @@
+{
+  "title": "成都 | 2-day itinerary",
+  "start_date": "2026-10-01",
+  "end_date": "2026-10-02",
+  "days": [
+    {
+      "date": "2026-10-01",
+      "morning": {
+        "title": "Day 1 morning",
+        "start_time": "09:00",
+        "end_time": "11:00",
+        "notes": [],
+        "facts": [{"text": "成都 2026-10-01 的最高气温为 24°C。", "evidence_id": "weather-1"}],
+        "citations": [{
+          "evidence_id": "weather-1",
+          "source_url": "https://api.open-meteo.com/v1/forecast",
+          "source_type": "trusted_provider",
+          "fetched_at": "2026-09-30T08:30:00+00:00",
+          "freshness": "Fetched 2026-09-30T08:30:00+00:00; reference only.",
+          "fact": "成都 2026-10-01 的最高气温为 24°C。"
+        }]
+      },
+      "afternoon": {"title": "Day 1 afternoon", "start_time": "13:00", "end_time": "16:00", "notes": [], "facts": [], "citations": []},
+      "evening": {"title": "Day 1 evening", "start_time": "18:00", "end_time": "20:00", "notes": [], "facts": [], "citations": []}
+    },
+    {
+      "date": "2026-10-02",
+      "morning": {"title": "Day 2 morning", "start_time": "09:00", "end_time": "11:00", "notes": [], "facts": [], "citations": []},
+      "afternoon": {"title": "Day 2 afternoon", "start_time": "13:00", "end_time": "16:00", "notes": [], "facts": [], "citations": []},
+      "evening": {"title": "Day 2 evening", "start_time": "18:00", "end_time": "20:00", "notes": [], "facts": [], "citations": []}
+    }
+  ],
+  "budget": {
+    "transport": 1200,
+    "hotel": 1400,
+    "food": 800,
+    "tickets": 300,
+    "reserve": 500,
+    "other": 300,
+    "total": 4500,
+    "currency": "CNY",
+    "traveler_basis": "trip_total",
+    "traveler_count": 2,
+    "trip_total": 4500,
+    "estimate": {"low": 4000, "point": 4500, "high": 5000, "currency": "CNY", "basis": "trip_total", "assumption_id": "budget-1"}
+  },
+  "notes": [],
+  "assumptions": [{"assumption_id": "budget-1", "category": "budget", "description": "按已确认总预算分配。"}],
+  "citations": []
+}

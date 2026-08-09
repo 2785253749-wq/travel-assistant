@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+from datetime import date
+from uuid import UUID
+
+from app.core.usage import (
+    CallAdmissionResult,
+    ProviderUnavailable,
+    ReserveResult,
+    UsageCount,
+)
+from app.core.logging import database_operation
+
+
+class SupabaseUsageRepository:
+    """Server-only service-role adapter for the atomic usage RPCs."""
+
+    def __init__(self, client: object) -> None:
+        self._client = client
+
+    @staticmethod
+    def _data(response: object) -> object:
+        return getattr(response, "data", response)
+
+    def get_daily(self, user_key: str, day: date) -> UsageCount:
+        with database_operation("usage.get_daily"):
+            response = self._client.rpc(
+                "get_ai_usage",
+                {"p_subject_key": user_key, "p_usage_date": day.isoformat()},
+            ).execute()
+            row = self._data(response) or {}
+            if isinstance(row, list):
+                row = row[0] if row else {}
+            return UsageCount(
+                **{key: int(row.get(key, 0)) for key in UsageCount.__dataclass_fields__}
+            )
+
+    def get_global_daily(self, day: date) -> UsageCount:
+        with database_operation("usage.get_global_daily"):
+            response = self._client.rpc(
+                "get_ai_global_usage", {"p_usage_date": day.isoformat()}
+            ).execute()
+            row = self._data(response) or {}
+            if isinstance(row, list):
+                row = row[0] if row else {}
+            return UsageCount(
+                **{key: int(row.get(key, 0)) for key in UsageCount.__dataclass_fields__}
+            )
+
+    def reserve(
+        self,
+        user_key: str,
+        day: date,
+        user_limit: int,
+        global_limit: int,
+    ) -> ReserveResult:
+        try:
+            with database_operation("usage.reserve"):
+                result = self._data(
+                    self._client.rpc(
+                        "reserve_ai_usage",
+                        {
+                            "p_subject_key": user_key,
+                            "p_usage_date": day.isoformat(),
+                            "p_user_limit": user_limit,
+                            "p_global_limit": global_limit,
+                        },
+                    ).execute()
+                )
+                if isinstance(result, list):
+                    result = result[0] if len(result) == 1 else None
+                if not isinstance(result, dict) or set(result) != {
+                    "allowed",
+                    "reservation_id",
+                    "reason",
+                }:
+                    raise ProviderUnavailable()
+                allowed = result["allowed"]
+                reservation_id = result["reservation_id"]
+                reason = result["reason"]
+                if allowed is False and reservation_id is None and reason in {
+                    "user_limit",
+                    "global_limit",
+                }:
+                    return ReserveResult(None, reason)
+                if allowed is True and isinstance(reservation_id, str) and reason is None:
+                    try:
+                        if str(UUID(reservation_id)) == reservation_id:
+                            return ReserveResult(reservation_id, None)
+                    except ValueError:
+                        pass
+                raise ProviderUnavailable()
+        except Exception:
+            raise ProviderUnavailable() from None
+
+    def admit_model_call(
+        self,
+        reservation_id: str,
+        user_key: str,
+        reservation_day: date,
+        call_day: date,
+        user_limit: int,
+        global_limit: int,
+    ) -> CallAdmissionResult:
+        try:
+            with database_operation("usage.admit_model_call"):
+                result = self._data(
+                    self._client.rpc(
+                        "admit_ai_usage_call",
+                        {
+                            "p_reservation_id": reservation_id,
+                            "p_subject_key": user_key,
+                            "p_reservation_date": reservation_day.isoformat(),
+                            "p_call_usage_date": call_day.isoformat(),
+                            "p_user_limit": user_limit,
+                            "p_global_limit": global_limit,
+                        },
+                    ).execute()
+                )
+                if isinstance(result, list):
+                    result = result[0] if len(result) == 1 else None
+                if not isinstance(result, dict) or set(result) != {
+                    "allowed",
+                    "reason",
+                }:
+                    raise ProviderUnavailable()
+                allowed = result["allowed"]
+                reason = result["reason"]
+                if allowed is True and reason is None:
+                    return CallAdmissionResult(True, None)
+                if allowed is False and reason in {
+                    "user_limit",
+                    "global_limit",
+                    "reservation_expired",
+                }:
+                    return CallAdmissionResult(False, reason)
+                raise ProviderUnavailable()
+        except Exception:
+            raise ProviderUnavailable() from None
+
+    def commit(
+        self,
+        reservation_id: str,
+        user_key: str,
+        day: date,
+        input_tokens: int,
+        output_tokens: int,
+        model_calls: int,
+        estimated_cost_micros: int,
+    ) -> None:
+        with database_operation("usage.commit"):
+            response = self._client.rpc(
+                "commit_ai_usage",
+                {
+                    "p_reservation_id": reservation_id,
+                    "p_subject_key": user_key,
+                    "p_usage_date": day.isoformat(),
+                    "p_input_tokens": input_tokens,
+                    "p_output_tokens": output_tokens,
+                    "p_model_calls": model_calls,
+                    "p_estimated_cost_micros": estimated_cost_micros,
+                },
+            ).execute()
+            if self._data(response) is not True:
+                raise ProviderUnavailable()
+
+    def rollback(self, reservation_id: str, user_key: str, day: date) -> None:
+        with database_operation("usage.rollback"):
+            self._client.rpc(
+                "rollback_ai_usage",
+                {
+                    "p_reservation_id": reservation_id,
+                    "p_subject_key": user_key,
+                    "p_usage_date": day.isoformat(),
+                },
+            ).execute()
