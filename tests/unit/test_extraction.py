@@ -2,8 +2,22 @@ import pytest
 from pydantic import ValidationError
 
 from app.agent.extraction import merge_profile, validate_profile
-from app.agent.graph import extract_profile
+from app.agent.graph import RuleTravelExtractor, extract_profile
 from app.schemas import TravelProfile
+
+
+@pytest.mark.parametrize(
+    ("message", "origin", "destination"),
+    [
+        ("From Shanghai to Xiamen, 2026-10-01 to 2026-10-03", "Shanghai", "Xiamen"),
+        ("\u4ece\u4e0a\u6d77\u5230\u53a6\u95e8", "\u4e0a\u6d77", "\u53a6\u95e8"),
+    ],
+)
+def test_rule_extractor_reads_explicit_chinese_and_english_routes(message, origin, destination):
+    profile = RuleTravelExtractor().extract(message, TravelProfile())
+
+    assert profile.origin == origin
+    assert profile.destination == destination
 
 
 class _StructuredExtractionModel:

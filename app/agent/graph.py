@@ -209,7 +209,7 @@ class RuleTravelExtractor:
     """Conservatively extracts explicit profile fields without any model call."""
 
     _ROUTE = re.compile(
-        r"(?:\u4ece|from)\s*([^\s\uff0c,\u3002]{1,30}?)(?:\u51fa\u53d1)?(?:\u5230|\u53bb|to)\s*([^\s\uff0c,\u30020-9]{1,30})",
+        r"(?:\u4ece|from)\s*([^\s\uff0c,\u3002]{1,30}?)(?:\u51fa\u53d1)?\s*(?:\u5230|\u53bb|to)\s*([^\s\uff0c,\u30020-9]{1,30})",
         re.IGNORECASE,
     )
     _DATE = re.compile(r"\b20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
