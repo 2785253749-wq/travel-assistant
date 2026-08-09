@@ -18,24 +18,40 @@
   }
 
   function loadAmap(amapKey) {
-    if (!amapKey || typeof document === "undefined" || typeof window === "undefined") return Promise.resolve(null);
-    if (window.AMap && typeof window.AMap.Map === "function") return Promise.resolve(window.AMap);
-    return new Promise((resolve) => {
+    const unavailable = Promise.resolve(null);
+    unavailable.cancel = () => {};
+    if (!amapKey || typeof document === "undefined" || typeof window === "undefined") return unavailable;
+    if (window.AMap && typeof window.AMap.Map === "function") {
+      const existing = Promise.resolve(window.AMap);
+      existing.cancel = () => {};
+      return existing;
+    }
+    let finish;
+    const loading = new Promise((resolve) => {
       const script = document.createElement("script");
-      const timer = window.setTimeout(() => finish(null), 6000);
+      let timer = null;
       let settled = false;
-      const finish = (value) => {
+      const cleanup = () => {
+        if (timer !== null) window.clearTimeout(timer);
+        script.onload = null;
+        script.onerror = null;
+        if (script.parentNode) script.parentNode.removeChild(script);
+      };
+      finish = (value) => {
         if (settled) return;
         settled = true;
-        window.clearTimeout(timer);
+        cleanup();
         resolve(value);
       };
       script.async = true;
       script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(amapKey)}`;
       script.onload = () => finish(window.AMap && typeof window.AMap.Map === "function" ? window.AMap : null);
       script.onerror = () => finish(null);
+      timer = window.setTimeout(() => finish(null), 6000);
       document.head.append(script);
     });
+    loading.cancel = () => finish(null);
+    return loading;
   }
 
   function createMapExplorer(root, { amapKey = null, onSelect = () => {} } = {}) {
@@ -45,6 +61,7 @@
     let destroyed = false;
     let amap = null;
     let map = null;
+    let amapLoading = null;
 
     function citiesForProvince(provinceId) {
       return EXPLORE_TRIAL.cities.filter((city) => city.provinceId === provinceId);
@@ -54,7 +71,15 @@
 
     function emit(kind, item) { onSelect(selection(kind, item)); }
 
+    function destroyMap() {
+      if (map && typeof map.destroy === "function") {
+        try { map.destroy(); } catch (_) { /* best effort cleanup */ }
+      }
+      map = null;
+    }
+
     function renderOffline() {
+      destroyMap();
       clear(root);
       root.dataset.mapLevel = activeLevel;
       root.dataset.mapMode = "offline";
@@ -100,7 +125,9 @@
         });
         root.dataset.mapMode = "amap";
       } catch (_) {
-        root.dataset.mapMode = "offline";
+        amap = null;
+        destroyMap();
+        renderOffline();
       }
     }
 
@@ -122,8 +149,23 @@
     }
 
     render();
-    loadAmap(amapKey).then((loaded) => { amap = loaded; enhanceWithAmap(); });
-    return { showNation, showProvince, showCity, destroy() { destroyed = true; clear(root); } };
+    amapLoading = loadAmap(amapKey);
+    amapLoading.then((loaded) => {
+      if (destroyed || !loaded) return;
+      amap = loaded;
+      enhanceWithAmap();
+    });
+    return {
+      showNation,
+      showProvince,
+      showCity,
+      destroy() {
+        destroyed = true;
+        amapLoading.cancel();
+        destroyMap();
+        clear(root);
+      },
+    };
   }
 
   const exported = { EXPLORE_TRIAL, createMapExplorer, loadAmap };
