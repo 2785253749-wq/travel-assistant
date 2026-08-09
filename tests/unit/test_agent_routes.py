@@ -5,8 +5,10 @@ from uuid import UUID
 
 import pytest
 
+import app.agent.graph as graph
 from app.agent.graph import (
     ChatSessionStore,
+    ModelStructuredPlanner,
     PlanClaim,
     PlanningResult,
     RuleIntentClassifier,
@@ -48,6 +50,36 @@ class StubEvidenceProvider:
 
     def fetch(self, profile: TravelProfile) -> list[TrustedEvidence]:
         return self.evidence
+
+
+def test_structured_planner_prompt_requires_exact_evidence_pairs(monkeypatch) -> None:
+    """A model may omit facts, but may not paraphrase a trusted fact."""
+    captured: list[object] = []
+
+    class Gateway:
+        def invoke(self, messages):
+            captured.extend(messages)
+            return type("Response", (), {"content": "{}"})()
+
+    monkeypatch.setattr(graph, "get_model_gateway", lambda _model: Gateway())
+    profile = TravelProfile(
+        origin="北京", destination="厦门", start_date="2026-10-01",
+        end_date="2026-10-02", travelers=2, budget_cny=4000,
+    )
+
+    ModelStructuredPlanner._generate(
+        profile,
+        [TrustedEvidence(
+            "place-1", "鼓浪屿位于厦门市。", "https://provider.example/place",
+            "trusted_provider", datetime(2026, 7, 2, tzinfo=timezone.utc),
+        )],
+        ["CLAIM_EVIDENCE_MISMATCH"],
+    )
+
+    system_prompt = captured[0].content
+    assert "facts array may be an empty array" in system_prompt
+    assert "copy both text and evidence_id exactly" in system_prompt
+    assert "no translation, paraphrase, summary, combination, or invention" in system_prompt
 
 
 def make_agent(
