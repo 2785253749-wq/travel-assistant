@@ -38,6 +38,7 @@ def test_json_formatter_emits_timestamp_and_operational_context_only():
     record.model_output_tokens = 7
     record.error_code = "WEATHER_TIMEOUT"
     record.exception_type = "TimeoutError"
+    record.provider_status = 401
 
     payload = json.loads(JsonFormatter().format(record))
 
@@ -51,6 +52,7 @@ def test_json_formatter_emits_timestamp_and_operational_context_only():
     assert payload["model_output_tokens"] == 7
     assert payload["error_code"] == "WEATHER_TIMEOUT"
     assert payload["exception_type"] == "TimeoutError"
+    assert payload["provider_status"] == 401
 
 
 def test_configure_logging_honors_configured_level(monkeypatch):

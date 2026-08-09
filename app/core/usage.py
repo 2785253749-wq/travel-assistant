@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+import logging
 from threading import RLock
 from typing import Any, Callable, Protocol
 from contextlib import contextmanager
@@ -16,6 +17,7 @@ from contextvars import ContextVar
 from uuid import uuid4
 
 from app.core.errors import AppError
+from app.core.logging import operational_context
 
 
 MODEL_CALL_SLOTS_PER_REQUEST = 2
@@ -134,6 +136,17 @@ class ModelGateway:
             raise
         except Exception as exc:
             code = classify_provider_error(exc)
+            status = getattr(exc, "status_code", getattr(exc, "status", None))
+            safe_status = status if isinstance(status, int) and 100 <= status <= 599 else None
+            logging.getLogger("app.model").warning(
+                "model_provider_failure",
+                extra=operational_context(
+                    provider="deepseek",
+                    provider_status=safe_status,
+                    error_code=code,
+                    exception_type=type(exc).__name__,
+                ),
+            )
             self._breaker.record_failure(code)
             raise ProviderUnavailable("AI_RATE_LIMITED" if code == "AI_PROVIDER_RATE_LIMITED" else "AI_UNAVAILABLE") from None
         self._breaker.record_success()

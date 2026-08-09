@@ -28,6 +28,7 @@ _OPERATIONAL_FIELDS = (
     "duration_ms",
     "intent",
     "provider",
+    "provider_status",
     "model_calls",
     "model_input_tokens",
     "model_output_tokens",
