@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 from app.agent.graph import ChatResult
@@ -379,6 +380,67 @@ def test_usage_commit_failure_after_atomic_persistence_does_not_turn_success_int
 
     assert result.stage == "planned"
     assert result.trip_id is not None
+    assert result.warnings == [
+        "用量结算暂不可用；本次预留额度已按最坏情况继续占用。"
+    ]
+
+
+def test_usage_commit_failure_on_a_nonplanned_result_surfaces_fail_closed_warning():
+    profile = TravelProfile(
+        origin="上海",
+        destination="成都",
+        start_date="2026-10-01",
+        end_date="2026-10-02",
+        travelers=2,
+        budget_cny=5000,
+    )
+    store = ConfirmationStore()
+    store.put("anon:session", "thread-unsettled", None, profile, "规划成都")
+
+    class Reservation:
+        def commit(self, *_args, **_kwargs):
+            raise RuntimeError("usage store unavailable")
+
+        def rollback(self):
+            raise AssertionError("an incurred model call must retain its reservation")
+
+    class Guard:
+        def reserve(self, _subject):
+            return Reservation()
+
+    gateway = ModelGateway(
+        lambda: SimpleNamespace(
+            invoke=lambda _messages: SimpleNamespace(
+                content="invalid plan",
+                usage_metadata={"input_tokens": 2, "output_tokens": 3},
+            )
+        )
+    )
+
+    class Agent:
+        def plan_confirmed(self, *_args, **_kwargs):
+            gateway.invoke([])
+            return ChatResult(
+                "暂时无法生成行程", "collecting", profile.model_dump()
+            )
+
+    result = TravelChatApplication(
+        agent_factory=lambda _: Agent(),
+        usage_guard=Guard(),
+        confirmation_store=store,
+    ).confirm(
+        user_id=None,
+        subject="anon:session",
+        quota_subject="anon-network:stable",
+        thread_id="thread-unsettled",
+        trip_id=None,
+        message="确认",
+    )
+
+    assert result.stage == "collecting"
+    assert result.warnings == [
+        "用量结算暂不可用；本次预留额度已按最坏情况继续占用。"
+    ]
 
 
 def test_successful_confirmation_consumes_pending_and_replay_never_reserves_again():

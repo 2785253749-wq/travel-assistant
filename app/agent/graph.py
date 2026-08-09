@@ -804,6 +804,7 @@ def chat(
 
 _SENSITIVE_PROFILE_PATTERN = re.compile(
     r"(?:\bBearer\s+\S+|\beyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+|"
+    r"(?<![A-Za-z0-9_])(?:sk-[A-Za-z0-9_-]{20,}|sb_secret_[A-Za-z0-9_-]{20,})|"
     r"(?:api[_-]?key|password|passwd|secret|token)\s*[:=])",
     re.IGNORECASE,
 )

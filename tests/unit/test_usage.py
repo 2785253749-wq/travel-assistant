@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -188,6 +188,29 @@ def test_parallel_reservations_cannot_oversell_a_global_daily_limit():
     assert global_count.model_calls + global_count.pending == 100
 
 
+def test_expired_unsettled_reservation_keeps_global_slots_fail_closed():
+    now = datetime(2026, 7, 29, tzinfo=UTC)
+    clock = lambda: now
+    repository = InMemoryUsageRepository(clock=clock)
+    guard = UsageGuard(
+        repository=repository,
+        user_daily_limit=2,
+        global_daily_limit=2,
+        enabled=True,
+        clock=clock,
+    )
+
+    guard.reserve("user-a")
+    now += timedelta(minutes=6)
+
+    with pytest.raises(AppError) as error:
+        guard.reserve("user-b")
+
+    assert error.value.code == "AI_GLOBAL_DAILY_LIMIT_REACHED"
+    global_count = repository.get_global_daily(TODAY)
+    assert (global_count.model_calls, global_count.pending) == (0, 2)
+
+
 def test_manual_kill_switch_rejects_before_any_reservation():
     guard = make_guard(enabled=False)
 
@@ -353,6 +376,10 @@ def test_006_reserves_two_slots_and_settles_the_actual_model_call_count():
     assert "p_model_calls > reservation_slots" in _normalized(commit["body"])
     assert commit["return_type"] == "boolean"
     assert "status in ('reserved', 'expired')" in _normalized(commit["body"])
+    assert "status in ('reserved', 'expired')" in _normalized(reserve["body"])
+    assert "when reservation_status in ('reserved', 'expired')" in _normalized(
+        commit["body"]
+    )
     assert "return true" in _normalized(commit["body"])
     assert "raise exception" in _normalized(commit["body"])
     assert "reserved_model_calls" in _normalized(rollback["body"])

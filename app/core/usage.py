@@ -192,11 +192,12 @@ class UsageRepository(Protocol):
 class InMemoryUsageRepository:
     """Atomic reference implementation used without any network dependency."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Callable[[], datetime] | None = None) -> None:
         self._lock = RLock()
         self._users: dict[tuple[str, date], UsageCount] = {}
         self._global: dict[date, UsageCount] = {}
         self._reservations: dict[str, tuple[str, date, datetime, str, int]] = {}
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     def get_daily(self, user_key: str, day: date) -> UsageCount:
         with self._lock:
@@ -229,7 +230,8 @@ class InMemoryUsageRepository:
 
     def reserve(self, user_key: str, day: date, user_limit: int, global_limit: int) -> ReserveResult:
         with self._lock:
-            self._cleanup_expired(day, datetime.now(UTC))
+            now = self._clock()
+            self._cleanup_expired(day, now)
             user = self._users.get((user_key, day), UsageCount())
             global_count = self._global.get(day, UsageCount())
             if user.reserved_model_calls + MODEL_CALL_SLOTS_PER_REQUEST > user_limit:
@@ -256,7 +258,7 @@ class InMemoryUsageRepository:
             self._reservations[reservation_id] = (
                 user_key,
                 day,
-                datetime.now(UTC) + timedelta(minutes=5),
+                now + timedelta(minutes=5),
                 "reserved",
                 MODEL_CALL_SLOTS_PER_REQUEST,
             )
@@ -271,14 +273,9 @@ class InMemoryUsageRepository:
             reserved_model_calls,
         ) in tuple(self._reservations.items()):
             if reserved_day == day and status == "reserved" and expires_at <= now:
-                self._users[(subject, day)] = self._rollback_count(
-                    self._users.get((subject, day), UsageCount()),
-                    reserved_model_calls,
-                )
-                self._global[day] = self._rollback_count(
-                    self._global.get(day, UsageCount()),
-                    reserved_model_calls,
-                )
+                # An expired reservation may already have incurred a provider call.
+                # Keep its worst-case slots pending until a late settlement arrives;
+                # releasing them would allow the daily ceiling to be oversold.
                 self._reservations[reservation_id] = (
                     subject,
                     reserved_day,
@@ -299,9 +296,12 @@ class InMemoryUsageRepository:
     ) -> None:
         with self._lock:
             reservation = self._reservations.get(reservation_id)
-            if reservation is None or reservation[:2] != (user_key, day) or reservation[3] != "reserved": return
-            if reservation[2] < datetime.now(UTC):
-                self.rollback(reservation_id, user_key, day); return
+            if (
+                reservation is None
+                or reservation[:2] != (user_key, day)
+                or reservation[3] not in {"reserved", "expired"}
+            ):
+                return
             reserved_model_calls = reservation[4]
             if model_calls < 0 or model_calls > reserved_model_calls:
                 raise ValueError("actual model calls exceed the reservation")

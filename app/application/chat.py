@@ -16,6 +16,9 @@ from app.schemas import Itinerary, TravelProfile
 from app.trips.models import Trip
 
 
+_USAGE_SETTLEMENT_WARNING = "用量结算暂不可用；本次预留额度已按最坏情况继续占用。"
+
+
 class TripOperations(Protocol):
     def create_trip(self, user_id: UUID, profile: TravelProfile) -> Trip: ...
     def get_trip(self, user_id: UUID, trip_id: UUID) -> Trip: ...
@@ -215,7 +218,8 @@ class TravelChatApplication:
         if result.stage != "planned" or result.itinerary is None:
             try:
                 if usage.calls:
-                    self._commit_usage(reservation, usage)
+                    if not self._commit_usage(reservation, usage):
+                        result.warnings.append(_USAGE_SETTLEMENT_WARNING)
                 else:
                     reservation.rollback()
             finally:
@@ -251,11 +255,12 @@ class TravelChatApplication:
                 raise
             result.trip_id = trip.id
             result.persisted_this_request = True
-        self._commit_usage(reservation, usage)
+        if not self._commit_usage(reservation, usage):
+            result.warnings.append(_USAGE_SETTLEMENT_WARNING)
         return result
 
     @staticmethod
-    def _commit_usage(reservation: object, usage: object) -> None:
+    def _commit_usage(reservation: object, usage: object) -> bool:
         estimate = getattr(reservation, "estimate_cost_micros", lambda *_: 0)(
             usage.input_tokens, usage.output_tokens
         )
@@ -277,7 +282,7 @@ class TravelChatApplication:
                     exception_type=type(exc).__name__,
                 ),
             )
-            return
+            return False
         logging.getLogger("app.model").info(
             "model_usage",
             extra=operational_context(
@@ -288,6 +293,7 @@ class TravelChatApplication:
                 cost_estimate_configured=estimate > 0,
             ),
         )
+        return True
 
     def _load_trip(self, user_id: UUID | None, trip_id: UUID | None) -> Trip | None:
         if trip_id is None:

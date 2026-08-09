@@ -228,6 +228,8 @@ def test_public_repo_check_rejects_javascript_property_secret_assignment(tmp_pat
     [
         'process.env["ANON_SESSION_SIGNING_SECRET"]',
         "process.env['ANON_SESSION_SIGNING_SECRET']",
+        "process.env[`ANON_SESSION_SIGNING_SECRET`]",
+        'process.env[/* config */ "ANON_SESSION_SIGNING_SECRET"]',
         'config["ANON_SESSION_SIGNING_SECRET"]',
     ],
 )

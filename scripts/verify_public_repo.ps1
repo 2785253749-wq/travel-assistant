@@ -109,7 +109,10 @@ function Get-SensitiveAssignments {
     $receiver = '(?:(?:[A-Za-z_$][A-Za-z0-9_$]*\.)+|\$env:)?'
     $directKey = "$receiver[`"']?$escapedName[`"']?"
     $propertyPath = '(?:[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*|\s*\[\s*[`"''][A-Za-z_$][A-Za-z0-9_$]*[`"'']\s*\])*)'
-    $computedKey = "$propertyPath\s*\[\s*[`"']$escapedName[`"']\s*\]"
+    $backtick = [regex]::Escape([string][char]96)
+    $quotedName = "(?:`"${escapedName}`"|'${escapedName}'|${backtick}${escapedName}${backtick})"
+    $javascriptTrivia = '(?:(?:\s)|(?:/\*[\s\S]*?\*/)|(?://[^\r\n\u2028\u2029]*(?:\r\n?|\n|\u2028|\u2029)))*'
+    $computedKey = "${propertyPath}${javascriptTrivia}\[${javascriptTrivia}${quotedName}${javascriptTrivia}\]"
     $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>(?:$computedKey|$directKey))\??\s*(?<separator>$separator)\s*"
     return [regex]::Matches($Content, $pattern)
 }

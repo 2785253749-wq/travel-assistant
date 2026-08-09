@@ -52,8 +52,8 @@ uvicorn app.main:app --reload
 | `SUPABASE_SERVICE_KEY` | 生产必需 | 仅服务端使用，绝不能暴露到前端或仓库 |
 | `ANON_SESSION_SIGNING_SECRET` | 生产必需 | 至少 32 字节随机值的 URL-safe base64（无填充） |
 | `AI_ENABLED` | 否 | `true`；设为 `false` 可立即停用 AI 调用 |
-| `AI_USER_DAILY_LIMIT` | 否 | 单用户每日实际模型调用次数上限，默认 `5`；每次规划先预留首次调用和 repair 共 `2` 个槽，按实际调用数结算 |
-| `AI_GLOBAL_DAILY_LIMIT` | 否 | 全局每日实际模型调用次数上限，默认 `100`；预留与结算均由 Supabase 原子执行 |
+| `AI_USER_DAILY_LIMIT` | 否 | 单用户每日模型调用上限，默认 `5`；每次规划先预留首次调用和 repair 共 `2` 个槽，结算成功后按实际调用数释放余量 |
+| `AI_GLOBAL_DAILY_LIMIT` | 否 | 全局每日模型调用上限，默认 `100`；预留与结算均由 Supabase 原子执行，结算未知时保留全部预留槽以 fail-closed |
 | `REQUEST_ANONYMOUS_PER_MINUTE` | 否 | 匿名网络每分钟聊天请求上限，默认 `30` |
 | `REQUEST_AUTHENTICATED_PER_MINUTE` | 否 | 登录用户每分钟聊天请求上限，默认 `120` |
 | `REQUEST_IP_PER_MINUTE` | 否 | 单一可信网络前缀每分钟聊天请求上限，默认 `180` |

@@ -31,7 +31,7 @@ begin
     from ai_usage_reservations r
     where r.subject_key = c.subject_key
       and r.usage_date = c.usage_date
-      and r.status = 'reserved'
+      and r.status in ('reserved', 'expired')
   ), 0)
   where c.usage_date = p_usage_date;
 
@@ -137,7 +137,7 @@ begin
     input_tokens = input_tokens + greatest(p_input_tokens, 0),
     output_tokens = output_tokens + greatest(p_output_tokens, 0),
     pending = case
-      when reservation_status = 'reserved'
+      when reservation_status in ('reserved', 'expired')
         then greatest(pending - reservation_slots, 0)
       else pending
     end

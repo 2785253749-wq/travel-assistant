@@ -192,6 +192,49 @@ def test_modify_instruction_with_a_secret_is_rejected_before_confirmation():
     planner.invoke.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "s" + "k-" + "A" * 24,
+        "s" + "b_secret_" + "B" * 24,
+    ],
+)
+def test_modify_instruction_with_a_raw_provider_token_is_never_forwarded_to_planner(
+    credential: str,
+):
+    profile = TravelProfile(
+        origin="上海",
+        destination="成都",
+        start_date="2026-10-01",
+        end_date="2026-10-02",
+        travelers=2,
+        budget_cny=5000,
+    )
+    trip = Trip(
+        user_id=UUID("11111111-1111-1111-1111-111111111111"),
+        title="成都 trip",
+        profile=profile,
+        status="planned",
+    )
+    planner = Mock()
+    agent = SafeTravelAgent(
+        classifier=RuleIntentClassifier(),
+        extractor=StubExtractor(),
+        planner=planner,
+        evidence_provider=StubEvidenceProvider(),
+        initial_profile=profile,
+    )
+
+    result = agent.collect(f"修改第二天安排为 {credential}", trip)
+
+    assert result.stage == "collecting"
+    assert result.error_code == "SENSITIVE_INPUT_REJECTED"
+    assert result.intent == "modify_trip"
+    planner.revise.assert_not_called()
+    planner.plan.assert_not_called()
+    planner.invoke.assert_not_called()
+
+
 def test_explain_reply_is_bounded_for_a_maximum_legal_fact_payload():
     profile = TravelProfile(
         origin="上海",
