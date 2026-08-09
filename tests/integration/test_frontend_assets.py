@@ -68,3 +68,33 @@ def test_returned_page_bootstraps_only_public_supabase_runtime_config(client, mo
     assert "server-only-placeholder" not in runtime.text
     assert "DEEPSEEK" not in runtime.text
     get_settings.cache_clear()
+
+
+def test_runtime_config_exposes_only_configured_amap_browser_key(client, monkeypatch):
+    """The map script receives only the optional browser-facing AMap key."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("AMAP_JS_KEY", "amap-browser-test-key")
+    get_settings.cache_clear()
+
+    response = client.get("/runtime-config.js")
+
+    assert '"amapJsKey":"amap-browser-test-key"' in response.text
+    assert "service" not in response.text.lower()
+
+    get_settings.cache_clear()
+
+
+def test_runtime_config_uses_null_when_amap_browser_key_is_not_configured(
+    client, monkeypatch
+):
+    from app.core.config import get_settings
+
+    monkeypatch.delenv("AMAP_JS_KEY", raising=False)
+    get_settings.cache_clear()
+
+    response = client.get("/runtime-config.js")
+
+    assert '"amapJsKey":null' in response.text
+
+    get_settings.cache_clear()
