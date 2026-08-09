@@ -324,7 +324,11 @@ class ModelStructuredPlanner:
             SystemMessage(content=(
                 "Generate only one raw JSON object matching the supplied JSON Schema. "
                 "Use concise, readable Chinese titles and advisory notes. Put every external fact in facts with "
-                "an evidence_id; never put live prices, availability, opening hours, or source metadata in display text."
+                "an evidence_id; never put live prices, availability, opening hours, or source metadata in display text. "
+                "The facts array may be an empty array. If a fact is included, copy both text and evidence_id exactly "
+                "from one allowed_evidence entry: no translation, paraphrase, summary, combination, or invention. "
+                "If no listed evidence supports a fact, omit it. If repair_codes includes CLAIM_EVIDENCE_MISMATCH, "
+                "remove every fact that does not meet this exact-pair requirement."
             )),
             HumanMessage(content=json.dumps({
                 "json_schema": Itinerary.model_json_schema(),
