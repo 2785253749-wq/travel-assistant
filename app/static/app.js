@@ -6,6 +6,13 @@
     origin: "出发地", destination: "目的地", start_date: "出发日期", end_date: "返回日期",
     travelers: "出行人数", budget_cny: "总预算（元）", preferences: "偏好", constraints: "限制",
   };
+  const BUDGET_LABELS = Object.freeze({
+    transport: "交通", hotel: "住宿", food: "餐饮", tickets: "门票",
+    reserve: "预留", other: "其他", total: "合计",
+  });
+  const ACTIVITY_SLOT_LABELS = Object.freeze({
+    morning: "上午", afternoon: "下午", evening: "晚上",
+  });
   const ALLOWED_EXTERNAL_HOSTS = new Set([
     "api.open-meteo.com", "geocoding-api.open-meteo.com", "photon.komoot.io",
     "www.12306.cn", "www.ctrip.com",
@@ -242,9 +249,15 @@
       budget.className = "budget-card";
       appendTextBlock(budget, "h3", "预算估算");
       const list = document.createElement("ul");
-      for (const key of ["transport", "hotel", "food", "tickets", "reserve", "other", "total"]) {
+      const standardBudgetKeys = Object.keys(BUDGET_LABELS);
+      const extraBudgetKeys = Object.keys(itinerary.budget).filter((key) => (
+        !standardBudgetKeys.includes(key)
+        && !["trip_total", "traveler_count"].includes(key)
+        && typeof itinerary.budget[key] === "number"
+      ));
+      for (const key of [...standardBudgetKeys, ...extraBudgetKeys]) {
         if (Object.prototype.hasOwnProperty.call(itinerary.budget, key)) {
-          appendTextBlock(list, "li", `${key}: ${itinerary.budget[key]} ${itinerary.budget.currency || "CNY"}`);
+          appendTextBlock(list, "li", `${BUDGET_LABELS[key] || key}：${itinerary.budget[key]} ${itinerary.budget.currency || "CNY"}`);
         }
       }
       budget.append(list);
@@ -269,7 +282,7 @@
       for (const slot of ["morning", "afternoon", "evening"]) {
         const activity = day[slot];
         if (!activity) continue;
-        const titleText = `${slot}: ${activity.title || "待确认"} (${activity.start_time || ""}-${activity.end_time || ""})`;
+        const titleText = `${ACTIVITY_SLOT_LABELS[slot] || slot}：${activity.title || "待确认"} (${activity.start_time || ""}-${activity.end_time || ""})`;
         const item = appendTextBlock(slots, "li", titleText);
         if (Array.isArray(activity.notes)) {
           for (const note of activity.notes) appendTextBlock(item, "p", note, "activity-note");

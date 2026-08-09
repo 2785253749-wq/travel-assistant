@@ -398,6 +398,7 @@ test("readable itinerary renders notes facts assumptions and server booking sear
   itinerary.notes = ["每天保留机动时间，按体力调整。"];
   itinerary.days[0].morning.title = "人民公园与茶馆体验";
   itinerary.days[0].morning.notes = ["优先步行，途中安排休息。"];
+  itinerary.budget.insurance = 50;
   itinerary.booking_links = {
     train: "https://www.12306.cn/index/index.html?fromStation=%E4%B8%8A%E6%B5%B7&toStation=%E6%88%90%E9%83%BD",
     hotel: "https://www.ctrip.com/hotels/list?city=%E6%88%90%E9%83%BD",
@@ -420,6 +421,12 @@ test("readable itinerary renders notes facts assumptions and server booking sear
   assert.match(content.textContent, /成都 2026-10-01 的最高气温为 24°C/);
   assert.match(content.textContent, /按已确认总预算分配/);
   assert.match(content.textContent, /价格和库存以第三方平台为准/);
+  assert.match(content.textContent, /交通：1200 CNY/);
+  assert.match(content.textContent, /住宿：1400 CNY/);
+  assert.match(content.textContent, /合计：4500 CNY/);
+  assert.match(content.textContent, /保险：50 CNY|insurance：50 CNY/);
+  assert.match(content.textContent, /上午：人民公园与茶馆体验/);
+  assert.doesNotMatch(content.textContent, /transport:|morning:/);
   assert.deepEqual(bookingHosts, [
     "www.12306.cn", "www.ctrip.com", "www.ctrip.com",
   ]);
