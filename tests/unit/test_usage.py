@@ -425,6 +425,27 @@ def test_provider_429_and_5xx_have_stable_non_leaking_classifications():
     assert classify_provider_error(VendorError(503)) == "AI_PROVIDER_UNAVAILABLE"
 
 
+def test_gateway_logs_a_safe_provider_status_without_the_vendor_body(caplog):
+    class VendorError(Exception):
+        status_code = 401
+
+        def __init__(self):
+            super().__init__("raw vendor body contains api_key=do-not-log")
+
+    class Model:
+        def invoke(self, _messages):
+            raise VendorError()
+
+    with caplog.at_level("WARNING", logger="app.model"):
+        with pytest.raises(ProviderUnavailable):
+            ModelGateway(lambda: Model()).invoke([])
+
+    record = next(record for record in caplog.records if record.message == "model_provider_failure")
+    assert record.provider == "deepseek"
+    assert record.provider_status == 401
+    assert "do-not-log" not in caplog.text
+
+
 def test_circuit_breaker_opens_after_consecutive_upstream_failures():
     breaker = ProviderCircuitBreaker(failure_threshold=2)
 
