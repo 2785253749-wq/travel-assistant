@@ -26,6 +26,8 @@
     providerUpdatedAt: $("provider-updated-at"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantClose: $("assistant-close"),
+    explorePage: $("explore-page"), exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
+    exploreXiamen: $("explore-city-xiamen"), exploreDali: $("explore-city-dali"),
     profileCard: $("profile-confirmation"), profileFields: $("profile-fields"), confirm: $("confirm-profile-button"),
     edit: $("edit-profile-button"), tripView: $("trip-view"), tripTitle: $("trip-title"),
     tripContent: $("trip-content"), tripActions: $("trip-actions"), save: $("save-trip-button"),
@@ -40,6 +42,7 @@
     threadId: makeThreadId(),
   };
   let refreshPromise = null;
+  let mapExplorer = null;
 
   function makeThreadId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
@@ -85,6 +88,56 @@
     message.textContent = String(text || "");
     elements.messages.append(message);
     elements.messages.scrollTop = elements.messages.scrollHeight;
+  }
+
+  function appendExploreRecommendation(selection) {
+    openAssistant();
+    addMessage(selection.recommendation, "assistant");
+  }
+
+  function localizeExploreSelection(selection) {
+    if (selection && selection.kind === "city" && selection.id === "xiamen") {
+      return {
+        ...selection,
+        recommendation: "厦门适合慢节奏游览：上午漫步鼓浪屿，傍晚沿环岛路看海，再留一点时间品尝闽南小吃。",
+      };
+    }
+    return selection;
+  }
+
+  function handleExploreSelection(selection) {
+    if (!selection || typeof selection.recommendation !== "string") return;
+    const localized = localizeExploreSelection(selection);
+    elements.exploreStatus.textContent = `已选择${localized.name}，Voyage AI 助手已准备本地建议。`;
+    appendExploreRecommendation(localized);
+  }
+
+  function initializeExplore() {
+    const mapModule = window.TravelMapExplorer;
+    if (mapModule && typeof mapModule.createMapExplorer === "function") {
+      mapExplorer = mapModule.createMapExplorer(elements.exploreMap, {
+        amapKey: window.TRAVEL_ASSISTANT_CONFIG?.amapJsKey || null,
+        onSelect: handleExploreSelection,
+      });
+    } else {
+      elements.exploreStatus.textContent = "地图组件暂未加载，可使用热门城市快捷入口。";
+    }
+
+    const openCity = (city) => {
+      if (mapExplorer) {
+        mapExplorer.showCity(city.id);
+        return;
+      }
+      handleExploreSelection(city);
+    };
+    elements.exploreXiamen.addEventListener("click", () => openCity({
+      kind: "city", id: "xiamen", name: "厦门",
+      recommendation: "厦门适合慢节奏游览。",
+    }));
+    elements.exploreDali.addEventListener("click", () => openCity({
+      kind: "city", id: "dali", name: "大理",
+      recommendation: "大理适合环洱海慢游，并为苍山和古城各留出半天时间。",
+    }));
   }
 
   function browserAuthConfig() {
@@ -787,6 +840,7 @@
       elements.messages.closest("section").hidden = true;
       elements.assistantPanel.hidden = true;
       elements.assistantToggle.hidden = true;
+      elements.explorePage.hidden = true;
       elements.history.hidden = true;
       setStatus("这是只读分享视图，不包含账户信息或聊天记录。", false);
     } catch (error) { showError(error); } finally { setBusy(false); }
@@ -812,6 +866,7 @@
 
   async function initializeApp() {
     if (await showPublicShare()) return;
+    initializeExplore();
     await initializeAuth();
   }
 

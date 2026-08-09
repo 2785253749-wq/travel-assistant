@@ -4,42 +4,105 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>旅行助手</title>
+  <title>Voyage 旅行助手</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body data-app-state="signed_out">
-  <a class="skip-link" href="#message-input">跳到行程输入</a>
-  <main class="app-shell">
-    <header class="app-header">
-      <div>
-        <p class="eyebrow">国内多日自由行</p>
-        <h1>旅行助手</h1>
-        <p>先补齐资料，再确认并生成可执行的行程框架。</p>
+  <a class="skip-link" href="#explore-page">跳到探索内容</a>
+
+  <header class="site-header">
+    <div class="site-header-inner">
+      <a class="voyage-brand" href="#explore-page" aria-label="Voyage 探索首页">Voyage</a>
+      <nav id="main-navigation" class="main-navigation" aria-label="主导航">
+        <button type="button" class="navigation-item is-active" aria-current="page">探索</button>
+        <button type="button" class="navigation-item">我的行程</button>
+        <button type="button" class="navigation-item">社区</button>
+      </nav>
+      <div class="header-search">
+        <label class="visually-hidden" for="destination-search">搜索目的地</label>
+        <span aria-hidden="true">⌕</span>
+        <input id="destination-search" type="search" placeholder="搜索目的地…" readonly>
       </div>
       <section id="auth-panel" class="auth-panel" aria-label="账户">
-        <form id="auth-form">
-          <label for="email">邮箱</label>
-          <input id="email" name="email" type="email" autocomplete="email" inputmode="email">
-          <label for="password">密码</label>
-          <input id="password" name="password" type="password" autocomplete="current-password" minlength="8">
-          <div class="button-row">
-            <button id="sign-in-button" type="submit">登录</button>
-            <button id="sign-up-button" type="button" class="secondary">注册</button>
+        <details class="account-menu">
+          <summary aria-label="打开账户菜单">账户</summary>
+          <div class="account-popover">
+            <form id="auth-form">
+              <label for="email">邮箱</label>
+              <input id="email" name="email" type="email" autocomplete="email" inputmode="email">
+              <label for="password">密码</label>
+              <input id="password" name="password" type="password" autocomplete="current-password" minlength="8">
+              <div class="button-row">
+                <button id="sign-in-button" type="submit">登录</button>
+                <button id="sign-up-button" type="button" class="secondary">注册</button>
+              </div>
+            </form>
+            <div id="account-summary" hidden>
+              <p id="account-email"></p>
+              <button id="sign-out-button" type="button" class="secondary">退出登录</button>
+            </div>
+            <p id="auth-help" class="help-text">未登录可临时规划；登录后可保存和管理行程。</p>
           </div>
-        </form>
-        <div id="account-summary" hidden>
-          <p id="account-email"></p>
-          <button id="sign-out-button" type="button" class="secondary">退出登录</button>
-        </div>
-        <p id="auth-help" class="help-text">未登录也可进行临时规划；登录后才能保存和管理历史行程。</p>
+        </details>
       </section>
-    </header>
+    </div>
+  </header>
 
-    <nav id="main-navigation" class="main-navigation" aria-label="主导航">
-      <button type="button" class="navigation-item is-active" aria-current="page">探索</button>
-      <button type="button" class="navigation-item">我的行程</button>
-      <button type="button" class="navigation-item">社区</button>
-    </nav>
+  <main class="app-shell">
+    <section id="explore-page" class="explore-page" aria-labelledby="explore-title">
+      <div class="explore-heading">
+        <div>
+          <p class="eyebrow">发现下一段旅程</p>
+          <h1 id="explore-title">探索中国</h1>
+          <p>从福建与云南开始，按省份、城市逐层发现热门目的地。</p>
+        </div>
+        <p id="explore-status" class="explore-status" role="status" aria-live="polite">地图已就绪，可选择试点省份。</p>
+      </div>
+
+      <div class="explore-layout">
+        <section class="map-card" aria-labelledby="map-title">
+          <div class="map-toolbar">
+            <div>
+              <p class="map-breadcrumb">中国 <span aria-hidden="true">›</span> 福建 / 云南</p>
+              <h2 id="map-title">目的地地图</h2>
+            </div>
+            <div class="city-shortcuts" aria-label="热门城市快捷入口">
+              <button id="explore-city-xiamen" type="button" class="map-chip">厦门</button>
+              <button id="explore-city-dali" type="button" class="map-chip">大理</button>
+            </div>
+          </div>
+          <div id="explore-map" class="map-stage" aria-label="中国目的地探索地图"></div>
+        </section>
+
+        <aside id="explore-recommendations" class="recommendations" aria-labelledby="recommendations-title">
+          <div class="recommendations-heading">
+            <div>
+              <p class="eyebrow">热门推荐</p>
+              <h2 id="recommendations-title">试点目的地</h2>
+            </div>
+            <span class="recommendation-count">4 座城市</span>
+          </div>
+          <div class="recommendation-grid">
+            <article class="destination-card destination-card-xiamen">
+              <div class="destination-visual" aria-hidden="true"><span>海岛</span></div>
+              <div class="destination-copy"><p>福建</p><h3>厦门</h3><span>鼓浪屿 · 环岛路</span></div>
+            </article>
+            <article class="destination-card destination-card-fuzhou">
+              <div class="destination-visual" aria-hidden="true"><span>古厝</span></div>
+              <div class="destination-copy"><p>福建</p><h3>福州</h3><span>三坊七巷 · 鼓山</span></div>
+            </article>
+            <article class="destination-card destination-card-dali">
+              <div class="destination-visual" aria-hidden="true"><span>湖山</span></div>
+              <div class="destination-copy"><p>云南</p><h3>大理</h3><span>洱海 · 苍山</span></div>
+            </article>
+            <article class="destination-card destination-card-lijiang">
+              <div class="destination-visual" aria-hidden="true"><span>古城</span></div>
+              <div class="destination-copy"><p>云南</p><h3>丽江</h3><span>雪山 · 束河</span></div>
+            </article>
+          </div>
+        </aside>
+      </div>
+    </section>
 
     <p id="status-message" class="status-message" role="status" aria-live="polite"></p>
     <section id="provider-notice" class="provider-notice" hidden role="status" aria-live="polite">
@@ -60,7 +123,10 @@
     <aside id="assistant-panel" class="assistant-panel" aria-labelledby="chat-heading" hidden>
       <section id="chat-panel" class="chat-panel" aria-labelledby="chat-heading">
         <div class="assistant-panel-header">
-          <p class="eyebrow">旅行规划</p>
+          <div>
+            <p class="eyebrow">Voyage AI 助手</p>
+            <span class="assistant-online">在线 · 随时为你推荐</span>
+          </div>
           <button id="assistant-close" type="button" class="assistant-close" aria-label="关闭旅行助手">关闭</button>
         </div>
         <div class="section-heading">
@@ -106,7 +172,7 @@
     </section>
 
     <button id="assistant-toggle" class="assistant-toggle" type="button" aria-controls="assistant-panel" aria-expanded="false">
-      打开 AI 助手
+      <span aria-hidden="true">✦</span> 打开 AI 助手
     </button>
   </main>
 
@@ -136,7 +202,10 @@
       </div>
     </form>
   </dialog>
+
   <script src="/runtime-config.js"></script>
+  <script src="/static/data/explore-data.js" defer></script>
+  <script src="/static/map-explorer.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.8/dist/umd/supabase.min.js" defer crossorigin="anonymous"></script>
   <script src="/static/app.js" defer></script>
 </body>

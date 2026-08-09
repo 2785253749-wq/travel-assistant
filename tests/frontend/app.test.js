@@ -65,6 +65,22 @@ test("page shell exposes Chinese navigation while the assistant stays initially 
   assert.equal(harness.elements.get("assistant-panel").hidden, true);
 });
 
+test("map selection opens the assistant with a Chinese local recommendation and no chat request", async () => {
+  const harness = createHarness();
+  await harness.settle();
+
+  assert.ok(harness.elements.get("explore-page"), "探索页存在");
+  assert.ok(harness.elements.get("explore-map"), "地图容器存在");
+  assert.ok(harness.elements.get("explore-recommendations"), "推荐区存在");
+  const xiamen = harness.elements.get("explore-city-xiamen");
+  assert.ok(xiamen, "离线页面提供厦门城市入口");
+  await xiamen.dispatch("click");
+
+  assert.equal(harness.elements.get("assistant-panel").hidden, false);
+  assert.match(harness.elements.get("chat-messages").textContent, /厦门适合慢节奏/);
+  assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
+});
+
 test("public shared itinerary hides the assistant launcher", async () => {
   const harness = createHarness({ hash: "#share=opaque", fetch: async () => jsonResponse(200, {
     id: "trip-1", title: "共享行程", status: "planned", profile: {}, itinerary: { title: "共享行程", days: [] }, updated_at: null,
