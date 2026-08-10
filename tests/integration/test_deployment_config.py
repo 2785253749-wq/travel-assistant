@@ -101,6 +101,11 @@ def test_deployment_document_describes_amap_key_and_offline_fallback():
     assert "AMAP_JS_KEY" in text
     assert "离线" in text
     assert "travel-assistant-2cbd.onrender.com" in text
+    assert "JavaScript API" in text
+    assert "Web 服务 Key" in text
+    assert "http://127.0.0.1" in text
+    assert "重新部署" in text
+    assert "福建 → 厦门 → 任一景点" in text
 
 
 def test_ci_runs_tests_offline_evaluation_and_public_repo_gate():
