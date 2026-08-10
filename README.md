@@ -72,6 +72,14 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_public_repo.ps1
 
 CI 对每次 push 和 pull request 运行完整 pytest、独立的 80 条离线评测以及公开仓库敏感信息扫描，并保存评测报告为构建产物。
 
+## 高德地图 Explore 试点
+
+Explore 页面当前只实现 **福建、云南** 两个省份的地图试点：可从省级地图进入厦门、福州、大理、丽江，并查看各城市的本地热门景点标记。地图优先使用高德 JavaScript 地图；未配置 `AMAP_JS_KEY`、脚本加载失败或地图初始化失败时，页面会自动切换到可点击的本地离线 SVG 地图，基础浏览流程仍可运行。
+
+该试点不包含全国地图数据、真实景点图片、实时搜索与路线、票务或酒店支付、社区内容等能力。地图点选只会在前端打开助手并展示本地推荐，不会自动发起 AI 请求。
+
+高德 Key 仅通过 Render 环境变量 `AMAP_JS_KEY` 配置，禁止写入 `.env.example`、源码、文档、日志或 Git 提交记录。具体的生产配置和验收步骤见 [Render + Supabase 免费层部署说明](docs/deployment/free-tier.md)。
+
 ## 免费层部署
 
 详细步骤见 [Render + Supabase 免费层部署说明](docs/deployment/free-tier.md)。简要流程：

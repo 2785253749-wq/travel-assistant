@@ -95,6 +95,14 @@ def test_render_uses_free_plan_port_and_platform_secrets():
     assert env["TRUSTED_CLIENT_IP_HEADER"]["value"] == "cf-connecting-ip"
 
 
+def test_deployment_document_describes_amap_key_and_offline_fallback():
+    text = Path("docs/deployment/free-tier.md").read_text(encoding="utf-8")
+
+    assert "AMAP_JS_KEY" in text
+    assert "离线" in text
+    assert "travel-assistant-2cbd.onrender.com" in text
+
+
 def test_ci_runs_tests_offline_evaluation_and_public_repo_gate():
     workflow = _load_yaml(".github/workflows/ci.yml")
 
