@@ -49,15 +49,21 @@ def test_development_uses_safe_defaults_without_supabase(monkeypatch):
     assert settings.supabase_url is None
 
 
-def test_amap_javascript_key_is_optional_browser_configuration(monkeypatch):
+def test_amap_direct_mode_credentials_are_optional_browser_configuration(monkeypatch):
     from app.core.config import Settings
 
     monkeypatch.setenv("AMAP_JS_KEY", "amap-browser-test-key")
+    monkeypatch.setenv("AMAP_SECURITY_JS_CODE", "amap-browser-test-security-code")
 
     settings = Settings(_env_file=None)
 
     assert settings.amap_js_key is not None
     assert settings.amap_js_key.get_secret_value() == "amap-browser-test-key"
+    assert settings.amap_security_js_code is not None
+    assert (
+        settings.amap_security_js_code.get_secret_value()
+        == "amap-browser-test-security-code"
+    )
 
 
 @pytest.mark.parametrize("secret", [" x" + "A" * 43, "A" * 44 + "=", "x" * 43, "AA==", "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA"])

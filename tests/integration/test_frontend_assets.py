@@ -70,16 +70,18 @@ def test_returned_page_bootstraps_only_public_supabase_runtime_config(client, mo
     get_settings.cache_clear()
 
 
-def test_runtime_config_exposes_only_configured_amap_browser_key(client, monkeypatch):
-    """The map script receives only the optional browser-facing AMap key."""
+def test_runtime_config_exposes_configured_amap_direct_mode_credentials(client, monkeypatch):
+    """The map loader receives both browser-facing direct-mode credentials."""
     from app.core.config import get_settings
 
     monkeypatch.setenv("AMAP_JS_KEY", "amap-browser-test-key")
+    monkeypatch.setenv("AMAP_SECURITY_JS_CODE", "amap-browser-test-security-code")
     get_settings.cache_clear()
 
     response = client.get("/runtime-config.js")
 
     assert '"amapJsKey":"amap-browser-test-key"' in response.text
+    assert '"amapSecurityJsCode":"amap-browser-test-security-code"' in response.text
     assert "service" not in response.text.lower()
 
     get_settings.cache_clear()
@@ -91,10 +93,12 @@ def test_runtime_config_uses_null_when_amap_browser_key_is_not_configured(
     from app.core.config import get_settings
 
     monkeypatch.delenv("AMAP_JS_KEY", raising=False)
+    monkeypatch.delenv("AMAP_SECURITY_JS_CODE", raising=False)
     get_settings.cache_clear()
 
     response = client.get("/runtime-config.js")
 
     assert '"amapJsKey":null' in response.text
+    assert '"amapSecurityJsCode":null' in response.text
 
     get_settings.cache_clear()

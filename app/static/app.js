@@ -27,7 +27,9 @@
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantClose: $("assistant-close"),
     explorePage: $("explore-page"), exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
-    exploreXiamen: $("explore-city-xiamen"), exploreDali: $("explore-city-dali"),
+    mapBreadcrumb: $("map-breadcrumb"), mapTitle: $("map-title"), exploreShortcuts: $("explore-shortcuts"),
+    recommendationsTitle: $("recommendations-title"), recommendationCount: $("recommendation-count"),
+    recommendationGrid: $("recommendation-grid"), explorePlaceCard: $("explore-place-card"),
     profileCard: $("profile-confirmation"), profileFields: $("profile-fields"), confirm: $("confirm-profile-button"),
     edit: $("edit-profile-button"), tripView: $("trip-view"), tripTitle: $("trip-title"),
     tripContent: $("trip-content"), tripActions: $("trip-actions"), save: $("save-trip-button"),
@@ -95,21 +97,74 @@
     addMessage(selection.recommendation, "assistant");
   }
 
-  function localizeExploreSelection(selection) {
-    if (selection && selection.kind === "city" && selection.id === "xiamen") {
-      return {
-        ...selection,
-        recommendation: "厦门适合慢节奏游览：上午漫步鼓浪屿，傍晚沿环岛路看海，再留一点时间品尝闽南小吃。",
-      };
+  function exploreItem(selection) {
+    const data = window.TravelMapExplorer?.EXPLORE_TRIAL;
+    if (!data || !selection) return null;
+    if (selection.kind === "province") return data.provinces.find((item) => item.id === selection.id) || null;
+    if (selection.kind === "city") return data.cities.find((item) => item.id === selection.id) || null;
+    for (const city of data.cities) {
+      const place = city.places.find((item) => item.id === selection.id);
+      if (place) return place;
     }
-    return selection;
+    return null;
+  }
+
+  function renderSelectedPlace(item) {
+    if (!item) return;
+    clearChildren(elements.explorePlaceCard);
+    const visual = document.createElement("div");
+    visual.className = `selected-place-visual ${item.visual}`;
+    visual.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("div");
+    const label = document.createElement("p");
+    label.className = "eyebrow";
+    label.textContent = "本地景点推荐";
+    const title = document.createElement("h3");
+    title.textContent = item.name;
+    const description = document.createElement("p");
+    description.textContent = item.description;
+    copy.append(label, title, description);
+    elements.explorePlaceCard.append(visual, copy);
+    elements.explorePlaceCard.hidden = false;
   }
 
   function handleExploreSelection(selection) {
     if (!selection || typeof selection.recommendation !== "string") return;
-    const localized = localizeExploreSelection(selection);
-    elements.exploreStatus.textContent = `已选择${localized.name}，Voyage AI 助手已准备本地建议。`;
-    appendExploreRecommendation(localized);
+    const item = exploreItem(selection);
+    elements.exploreStatus.textContent = `已选择${selection.name}，Voyage AI 助手已准备本地建议。`;
+    if (selection.kind === "place") renderSelectedPlace(item);
+    appendExploreRecommendation(selection);
+  }
+
+  function renderExploreCards(view) {
+    elements.mapBreadcrumb.textContent = view.breadcrumb.join(" › ");
+    elements.mapTitle.textContent = view.title;
+    elements.recommendationsTitle.textContent = view.title;
+    elements.recommendationCount.textContent = `${view.items.length} 个推荐`;
+    clearChildren(elements.recommendationGrid);
+    view.items.forEach((item) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "destination-card";
+      const visual = document.createElement("span");
+      visual.className = `destination-visual ${item.visual}`;
+      visual.setAttribute("aria-hidden", "true");
+      visual.textContent = item.name.slice(0, 2);
+      const copy = document.createElement("span");
+      copy.className = "destination-copy";
+      const title = document.createElement("strong");
+      title.textContent = item.name;
+      const description = document.createElement("span");
+      description.textContent = item.description;
+      copy.append(title, description);
+      card.append(visual, copy);
+      card.addEventListener("click", () => {
+        if (view.level === "nation") mapExplorer.showProvince(item.id);
+        else if (view.level === "province") mapExplorer.showCity(item.id);
+        else handleExploreSelection({ kind: "place", id: item.id, name: item.name, recommendation: item.recommendation });
+      });
+      elements.recommendationGrid.append(card);
+    });
   }
 
   function initializeExplore() {
@@ -117,27 +172,25 @@
     if (mapModule && typeof mapModule.createMapExplorer === "function") {
       mapExplorer = mapModule.createMapExplorer(elements.exploreMap, {
         amapKey: window.TRAVEL_ASSISTANT_CONFIG?.amapJsKey || null,
+        securityJsCode: window.TRAVEL_ASSISTANT_CONFIG?.amapSecurityJsCode || null,
         onSelect: handleExploreSelection,
+        onStateChange: renderExploreCards,
       });
     } else {
       elements.exploreStatus.textContent = "地图组件暂未加载，可使用热门城市快捷入口。";
     }
 
-    const openCity = (city) => {
-      if (mapExplorer) {
-        mapExplorer.showCity(city.id);
-        return;
-      }
-      handleExploreSelection(city);
-    };
-    elements.exploreXiamen.addEventListener("click", () => openCity({
-      kind: "city", id: "xiamen", name: "厦门",
-      recommendation: "厦门适合慢节奏游览。",
-    }));
-    elements.exploreDali.addEventListener("click", () => openCity({
-      kind: "city", id: "dali", name: "大理",
-      recommendation: "大理适合环洱海慢游，并为苍山和古城各留出半天时间。",
-    }));
+    clearChildren(elements.exploreShortcuts);
+    (mapModule?.EXPLORE_TRIAL?.cities || []).forEach((city) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "map-chip";
+      button.textContent = city.name;
+      button.addEventListener("click", () => mapExplorer ? mapExplorer.showCity(city.id) : handleExploreSelection({
+        kind: "city", id: city.id, name: city.name, recommendation: city.recommendation,
+      }));
+      elements.exploreShortcuts.append(button);
+    });
   }
 
   function browserAuthConfig() {

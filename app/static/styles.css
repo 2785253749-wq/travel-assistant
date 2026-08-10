@@ -68,26 +68,36 @@ h3 { margin: .05rem 0 .15rem; font-size: 1.05rem; }
 .city-shortcuts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .45rem; }
 .map-chip { min-height: 2.2rem; padding: .35rem .75rem; border: 1px solid #b9d6ff; border-radius: 999px; color: #0755b5; background: #f3f8ff; }
 .map-chip:hover { color: #fff; background: var(--brand); }
-.map-stage { position: relative; flex: 1; min-height: 520px; overflow: hidden; padding: 1.1rem; background: linear-gradient(145deg, #f7f9fc, #eaf2fb); }
-.map-stage > p { position: relative; z-index: 2; width: fit-content; margin: 0 0 .7rem; padding: .45rem .7rem; border-radius: .65rem; color: #3e5879; background: rgb(255 255 255 / 88%); font-size: .84rem; }
-.map-stage > img { display: block; width: min(100%, 820px); height: 390px; margin: 0 auto; object-fit: contain; filter: saturate(.9) contrast(.96); }
-.map-stage > div:not(.amap-explorer-canvas) { position: relative; z-index: 2; display: flex; flex-wrap: wrap; gap: .45rem; justify-content: center; margin-top: .7rem; }
-.map-stage > div:not(.amap-explorer-canvas) button { min-height: 2.25rem; padding: .35rem .75rem; border-radius: 999px; box-shadow: 0 4px 12px rgb(8 120 255 / 17%); }
-.amap-explorer-canvas { position: absolute; z-index: 3; inset: 0; min-height: 100%; background: #e7eef8; }
+.map-stage { position: relative; flex: 1; min-height: 520px; overflow: hidden; padding: 0; background: linear-gradient(145deg, #f7f9fc, #eaf2fb); }
+.offline-map-layer { position: absolute; z-index: 1; inset: 0; padding: 1.1rem; }
+.offline-map-layer > p { position: relative; z-index: 2; width: fit-content; margin: 0 0 .7rem; padding: .45rem .7rem; border-radius: .65rem; color: #3e5879; background: rgb(255 255 255 / 88%); font-size: .84rem; }
+.offline-map-layer > img { display: block; width: min(100%, 820px); height: 390px; margin: 0 auto; object-fit: contain; filter: saturate(.9) contrast(.96); }
+.offline-map-hotspots { position: absolute; inset: 4.1rem 1.1rem 1.1rem; display: flex; flex-wrap: wrap; align-content: center; justify-content: center; gap: .7rem; pointer-events: none; }
+.offline-map-hotspots button { min-height: 2.35rem; padding: .4rem .85rem; border-radius: 999px; box-shadow: 0 6px 18px rgb(8 120 255 / 25%); pointer-events: auto; }
+.amap-explorer-canvas { position: absolute; z-index: 2; inset: 0; min-height: 100%; background: #e7eef8; }
+.map-navigation-overlay { position: absolute; z-index: 5; top: 1rem; left: 1rem; display: flex; align-items: center; gap: .5rem; max-width: calc(100% - 2rem); padding: .4rem; border: 1px solid rgb(204 212 224 / 80%); border-radius: .85rem; background: rgb(255 255 255 / 94%); box-shadow: 0 8px 24px rgb(30 51 82 / 14%); }
+.map-navigation-overlay p { overflow: hidden; margin: 0; padding: 0 .45rem; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
+.map-navigation-overlay button { flex: 0 0 auto; min-height: 2.2rem; padding: .35rem .7rem; border-radius: .65rem; }
 
 .recommendations { display: flex; flex-direction: column; }
 .recommendations-heading .eyebrow { margin-bottom: .1rem; }
 .recommendation-count { flex: 0 0 auto; color: var(--muted); font-size: .82rem; }
 .recommendation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; padding: .9rem; overflow-y: auto; }
-.destination-card { overflow: hidden; border: 1px solid var(--line); border-radius: 1rem; background: #fff; box-shadow: 0 8px 22px rgb(37 57 88 / 7%); }
+.destination-card { display: block; overflow: hidden; width: 100%; padding: 0; text-align: left; color: var(--ink); border: 1px solid var(--line); border-radius: 1rem; background: #fff; box-shadow: 0 8px 22px rgb(37 57 88 / 7%); }
+.destination-card:hover { color: var(--ink); background: #fff; border-color: #8abcf4; transform: translateY(-1px); }
 .destination-visual { display: flex; align-items: end; min-height: 130px; padding: .75rem; color: #fff; background: linear-gradient(145deg, #1688ff, #88d8ff); }
-.destination-card-fuzhou .destination-visual { background: linear-gradient(145deg, #155db0, #e5a74d); }
-.destination-card-dali .destination-visual { background: linear-gradient(145deg, #29a6ae, #92d6c8 50%, #607aa4); }
-.destination-card-lijiang .destination-visual { background: linear-gradient(145deg, #27396c, #a16f99 55%, #f1b27c); }
-.destination-visual span { padding: .2rem .5rem; border-radius: 999px; background: rgb(0 0 0 / 25%); font-size: .78rem; font-weight: 700; }
-.destination-copy { padding: .75rem; }
-.destination-copy p { margin-bottom: 0; color: var(--brand-dark); font-size: .78rem; font-weight: 800; }
-.destination-copy span { color: var(--muted); font-size: .8rem; }
+.destination-visual-fujian, .destination-visual-xiamen, .place-visual-island, .place-visual-coast { background: linear-gradient(145deg, #0878d8, #48b9e8 55%, #f2c96d); }
+.destination-visual-yunnan, .destination-visual-dali, .place-visual-lake, .place-visual-mountain { background: linear-gradient(145deg, #176d72, #78c8b7 52%, #738ab8); }
+.destination-visual-fuzhou, .place-visual-temple, .place-visual-lanes, .place-visual-street { background: linear-gradient(145deg, #155db0, #d9944a 72%); }
+.destination-visual-lijiang, .place-visual-old-town, .place-visual-snow, .place-visual-village { background: linear-gradient(145deg, #27396c, #a16f99 55%, #f1b27c); }
+.destination-copy { display: grid; gap: .3rem; padding: .75rem; }
+.destination-copy strong { font-size: 1rem; }
+.destination-copy span { color: var(--muted); font-size: .8rem; font-weight: 500; }
+.selected-place-card { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: .9rem; margin: 0 .9rem .9rem; padding: .75rem; border: 1px solid var(--line); border-radius: 1rem; background: var(--surface-blue); }
+.selected-place-card[hidden] { display: none; }
+.selected-place-visual { min-height: 7.5rem; border-radius: .75rem; background: linear-gradient(145deg, #0878d8, #8bd0e7); }
+.selected-place-card h3 { margin-bottom: .35rem; }
+.selected-place-card p:last-child { margin-bottom: 0; color: var(--muted); font-size: .88rem; }
 
 .workspace { display: grid; gap: 1rem; margin-top: 1rem; }
 .auth-panel form { margin: 0; }
@@ -150,7 +160,7 @@ dialog::backdrop { background: rgb(0 0 0 / 45%); }
   .explore-status { max-width: none; margin-top: .8rem; border-radius: .75rem; }
   .explore-layout { grid-template-columns: 1fr; min-height: auto; }
   .map-stage { min-height: 380px; }
-  .map-stage > img { height: 270px; }
+  .offline-map-layer > img { height: 270px; }
   .recommendation-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .assistant-panel { right: 12px; bottom: 5rem; width: calc(100% - 24px); max-height: 78vh; border-radius: 1rem 1rem .75rem .75rem; }
   .assistant-toggle { right: 12px; bottom: 12px; }
@@ -161,11 +171,14 @@ dialog::backdrop { background: rgb(0 0 0 / 45%); }
   .main-navigation .navigation-item:nth-child(3) { display: none; }
   .map-toolbar { align-items: flex-start; flex-direction: column; }
   .city-shortcuts { justify-content: flex-start; }
-  .map-stage { min-height: 340px; padding: .7rem; }
-  .map-stage > img { height: 230px; }
+  .map-stage { min-height: 340px; }
+  .offline-map-layer { padding: .7rem; }
+  .offline-map-layer > img { height: 230px; }
   .recommendation-grid { grid-template-columns: 1fr; }
   .destination-card { display: grid; grid-template-columns: 7.2rem minmax(0, 1fr); }
   .destination-visual { min-height: 112px; }
+  .selected-place-card { grid-template-columns: 1fr; }
+  .selected-place-visual { min-height: 7rem; }
   .profile-fields { grid-template-columns: 1fr; }
   .profile-fields dd { margin-bottom: .45rem; }
 }

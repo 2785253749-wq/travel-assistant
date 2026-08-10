@@ -85,6 +85,8 @@ def test_render_uses_free_plan_port_and_platform_secrets():
     env = {item["key"]: item for item in service["envVars"]}
     for key in (
         "DEEPSEEK_API_KEY",
+        "AMAP_JS_KEY",
+        "AMAP_SECURITY_JS_CODE",
         "SUPABASE_URL",
         "SUPABASE_ANON_KEY",
         "SUPABASE_SERVICE_KEY",
@@ -99,6 +101,9 @@ def test_deployment_document_describes_amap_key_and_offline_fallback():
     text = Path("docs/deployment/free-tier.md").read_text(encoding="utf-8")
 
     assert "AMAP_JS_KEY" in text
+    assert "AMAP_SECURITY_JS_CODE" in text
+    assert "同时" in text
+    assert "域名" in text
     assert "离线" in text
     assert "travel-assistant-2cbd.onrender.com" in text
     assert "JavaScript API" in text

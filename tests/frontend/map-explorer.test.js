@@ -67,6 +67,9 @@ test("trial data includes both provinces, all trial cities, and three coordinate
     assert.equal(city.places.length, 3);
     for (const place of city.places) {
       assert.equal(typeof place.name, "string");
+      assert.equal(typeof place.description, "string");
+      assert.ok(place.description.length >= 8);
+      assert.match(place.visual, /^place-visual-/);
       assert.equal(place.coordinates.length, 2);
       assert.ok(place.coordinates.every(Number.isFinite));
     }
@@ -90,12 +93,27 @@ test("offline controls emit the same structured city and place selections", with
   });
 }));
 
+test("missing either direct-mode credential keeps the clickable offline map without injecting AMap", withBrowser(async ({ head }) => {
+  const { createMapExplorer } = require("../../app/static/map-explorer.js");
+  const keyOnlyRoot = new FakeElement("section");
+  const securityOnlyRoot = new FakeElement("section");
+
+  createMapExplorer(keyOnlyRoot, { amapKey: "test-browser-key", onSelect() {} });
+  createMapExplorer(securityOnlyRoot, { securityJsCode: "test-security-code", onSelect() {} });
+
+  assert.equal(head.children.length, 0);
+  assert.equal(keyOnlyRoot.dataset.mapMode, "offline");
+  assert.equal(securityOnlyRoot.dataset.mapMode, "offline");
+  assert.ok(descendants(keyOnlyRoot).some((node) => node.className === "offline-map-hotspots"));
+  assert.equal(findByText(keyOnlyRoot, "福建").tagName, "BUTTON");
+}));
+
 test("failed AMap script loading keeps the offline drill controls available", withBrowser(async ({ head }) => {
   const { createMapExplorer } = require("../../app/static/map-explorer.js");
   let loadedScript;
   head.append = (node) => { loadedScript = node; FakeElement.prototype.append.call(head, node); node.onerror(); };
   const root = new FakeElement("section");
-  const explorer = createMapExplorer(root, { amapKey: "test-browser-key", onSelect() {} });
+  const explorer = createMapExplorer(root, { amapKey: "test-browser-key", securityJsCode: "test-security-code", onSelect() {} });
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(root.dataset.mapMode, "offline");
@@ -106,13 +124,28 @@ test("failed AMap script loading keeps the offline drill controls available", wi
   assert.equal(head.children.length, 0);
 }));
 
+test("AMap loader configures the direct security code before script injection", withControlledBrowser(async ({ head, window }) => {
+  const { loadAmap } = require("../../app/static/map-explorer.js");
+  let configAtAppend = null;
+  head.append = (node) => {
+    configAtAppend = window._AMapSecurityConfig;
+    FakeElement.prototype.append.call(head, node);
+  };
+
+  const loading = loadAmap("safe-key", "test-security-code");
+
+  assert.deepEqual(configAtAppend, { securityJsCode: "test-security-code" });
+  loading.cancel();
+  assert.equal(await loading, null);
+}));
+
 test("AMap loader encodes the key and cleans its script and handlers once after timeout", withControlledBrowser(async ({ head, timers, clearedTimers }) => {
   const { loadAmap } = require("../../app/static/map-explorer.js");
   let removals = 0;
   const removeChild = head.removeChild.bind(head);
   head.removeChild = (node) => { removals += 1; return removeChild(node); };
 
-  const loading = loadAmap("key with & symbol");
+  const loading = loadAmap("key with & symbol", "test-security-code");
   const script = head.firstChild;
   assert.match(script.src, /key=key%20with%20%26%20symbol/);
   timers[0]();
@@ -132,7 +165,7 @@ test("AMap loader accepts an existing map API without injecting a script", withC
   const existing = { Map() {} };
   window.AMap = existing;
 
-  assert.equal(await loadAmap("unused"), existing);
+  assert.equal(await loadAmap("unused", "test-security-code"), existing);
   assert.equal(head.children.length, 0);
 }));
 
@@ -141,7 +174,7 @@ test("AMap loader cleans script once after a successful script event", withContr
   let removals = 0;
   const removeChild = head.removeChild.bind(head);
   head.removeChild = (node) => { removals += 1; return removeChild(node); };
-  const loading = loadAmap("safe-key");
+  const loading = loadAmap("safe-key", "test-security-code");
   const script = head.firstChild;
   window.AMap = { Map() {} };
   script.onload();
@@ -156,8 +189,18 @@ test("immediate AMap script errors clear the timer that is already armed", withC
   const { loadAmap } = require("../../app/static/map-explorer.js");
   head.append = (node) => { FakeElement.prototype.append.call(head, node); node.onerror(); };
 
-  assert.equal(await loadAmap("safe-key"), null);
+  assert.equal(await loadAmap("safe-key", "test-security-code"), null);
   assert.deepEqual(clearedTimers, [0]);
+  assert.equal(head.children.length, 0);
+}));
+
+test("synchronous script injection errors degrade to null without an unhandled rejection", withControlledBrowser(async ({ head }) => {
+  const { loadAmap } = require("../../app/static/map-explorer.js");
+  head.append = () => { throw new Error("blocked by browser policy"); };
+
+  const loading = loadAmap("safe-key", "test-security-code");
+
+  assert.equal(await loading, null);
   assert.equal(head.children.length, 0);
 }));
 
@@ -165,21 +208,27 @@ test("AMap initialization failure restores only the offline renderer", withBrows
   const { createMapExplorer } = require("../../app/static/map-explorer.js");
   global.window.AMap = { Map() { throw new Error("initialization failed"); } };
   const root = new FakeElement("section");
-  const explorer = createMapExplorer(root, { amapKey: "safe-key", onSelect() {} });
+  const explorer = createMapExplorer(root, { amapKey: "safe-key", securityJsCode: "test-security-code", onSelect() {} });
   await new Promise((resolve) => setImmediate(resolve));
   explorer.showCity("xiamen");
 
   assert.equal(root.dataset.mapMode, "offline");
-  assert.equal(descendants(root).some((node) => node.className === "amap-explorer-canvas"), false);
+  const canvas = descendants(root).find((node) => node.className === "amap-explorer-canvas");
+  assert.equal(canvas.hidden, true);
   assert.match(root.textContent, /离线地图/);
 }));
 
-test("AMap markers reuse selection callbacks and destroy releases the map", withBrowser(async () => {
+test("one AMap instance starts at China and is reused for province and city transitions", withBrowser(async () => {
   const { createMapExplorer } = require("../../app/static/map-explorer.js");
   const markers = [];
+  const maps = [];
   let destroyedMaps = 0;
   class Map {
-    setZoomAndCenter(zoom, center) { this.zoom = zoom; this.center = center; }
+    constructor(host, options) {
+      assert.equal(host.hidden, false, "AMap must receive a visible container");
+      this.host = host; this.options = options; this.transitions = []; maps.push(this);
+    }
+    setZoomAndCenter(zoom, center) { this.transitions.push([zoom, center]); }
     destroy() { destroyedMaps += 1; }
   }
   class Marker {
@@ -190,10 +239,24 @@ test("AMap markers reuse selection callbacks and destroy releases the map", with
   global.window.AMap = { Map, Marker };
   const root = new FakeElement("section");
   const selections = [];
-  const explorer = createMapExplorer(root, { amapKey: "safe-key", onSelect: (value) => selections.push(value) });
+  const explorer = createMapExplorer(root, {
+    amapKey: "safe-key", securityJsCode: "test-security-code", onSelect: (value) => selections.push(value),
+  });
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(maps.length, 1);
+  assert.equal(root.dataset.mapLevel, "nation");
+  assert.deepEqual(maps[0].options.center, [104.2, 35.9]);
+  assert.equal(maps[0].options.zoom, 4);
+
+  explorer.showProvince("yunnan");
   explorer.showCity("dali");
-  markers[0].click();
+  assert.equal(maps.length, 1);
+  assert.deepEqual(maps[0].transitions, [
+    [8, [100.3, 25.3]],
+    [11, [100.23, 25.6]],
+  ]);
+  const erhaiMarker = markers.find((marker) => marker.options.title === "洱海");
+  erhaiMarker.click();
 
   assert.equal(root.dataset.mapMode, "amap");
   assert.equal(selections.at(-1).kind, "place");
@@ -201,4 +264,23 @@ test("AMap markers reuse selection callbacks and destroy releases the map", with
   explorer.destroy();
   assert.equal(destroyedMaps, 1);
   assert.equal(root.textContent, "");
+}));
+
+test("persistent breadcrumb and back buttons remain above the AMap canvas", withBrowser(async () => {
+  const { createMapExplorer } = require("../../app/static/map-explorer.js");
+  class Map { setZoomAndCenter() {} destroy() {} }
+  class Marker { on() {} setMap() {} }
+  global.window.AMap = { Map, Marker };
+  const root = new FakeElement("section");
+  const explorer = createMapExplorer(root, { amapKey: "safe-key", securityJsCode: "test-security-code" });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  explorer.showProvince("fujian");
+  const back = findByText(root, "返回全国");
+  assert.equal(back.tagName, "BUTTON");
+  assert.equal(back.type, "button");
+  assert.ok(descendants(root).some((node) => node.className === "map-navigation-overlay"));
+  assert.equal(root.children.at(-1).className, "map-navigation-overlay");
+  await back.dispatch("click");
+  assert.equal(root.dataset.mapLevel, "nation");
 }));

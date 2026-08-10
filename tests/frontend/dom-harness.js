@@ -109,6 +109,7 @@ function buildDocument(html) {
     created.push(element);
   }
   const body = new FakeElement("body", "body");
+  const head = new FakeElement("head", "head");
   const parents = {
     "chat-messages": "chat-panel", "chat-form": "chat-panel", "trip-history-list": "trip-history",
     "profile-fields": "profile-confirmation", "trip-content": "trip-view", "trip-actions": "trip-view",
@@ -117,7 +118,7 @@ function buildDocument(html) {
   for (const [childId, parentId] of Object.entries(parents)) elements.get(parentId).append(elements.get(childId));
   for (const element of elements.values()) if (!element.parentNode) body.append(element);
   const document = {
-    body,
+    body, head,
     getElementById(id) { return elements.get(id) || null; },
     createElement(tag) { const element = new FakeElement(tag); created.push(element); return element; },
     querySelectorAll(selector) {
@@ -169,6 +170,8 @@ async function settle(rounds = 8) {
 function createHarness(options = {}) {
   const root = path.resolve(__dirname, "..", "..");
   const html = fs.readFileSync(path.join(root, "app", "static", "index.html"), "utf8");
+  const exploreDataSource = fs.readFileSync(path.join(root, "app", "static", "data", "explore-data.js"), "utf8");
+  const mapExplorerSource = fs.readFileSync(path.join(root, "app", "static", "map-explorer.js"), "utf8");
   const source = fs.readFileSync(path.join(root, "app", "static", "app.js"), "utf8");
   const { document, elements, created } = buildDocument(html);
   const auth = options.auth || new FakeSupabaseAuth();
@@ -181,7 +184,10 @@ function createHarness(options = {}) {
     location,
     crypto: { randomUUID() { uuid += 1; return `thread-${uuid}`; } },
     confirm: () => true,
-    TRAVEL_ASSISTANT_CONFIG: { supabaseUrl: "https://project.supabase.co", supabaseAnonKey: "public-anon-placeholder" },
+    TRAVEL_ASSISTANT_CONFIG: {
+      amapJsKey: null, amapSecurityJsCode: null,
+      supabaseUrl: "https://project.supabase.co", supabaseAnonKey: "public-anon-placeholder",
+    },
     supabase: {
       createClient(url, key, clientOptions) {
         window.supabaseCreate = { url, key, clientOptions };
@@ -208,6 +214,8 @@ function createHarness(options = {}) {
       return fetchImpl(call, fetchCalls.length - 1);
     },
   };
+  vm.runInNewContext(exploreDataSource, context, { filename: "explore-data.js" });
+  vm.runInNewContext(mapExplorerSource, context, { filename: "map-explorer.js" });
   vm.runInNewContext(source, context, { filename: "app.js" });
   return { auth, document, elements, created, fetchCalls, window, settle, jsonResponse };
 }

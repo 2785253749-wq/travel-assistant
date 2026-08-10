@@ -37,6 +37,7 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_public_repo.ps1
 | `ANON_SESSION_SIGNING_SECRET` | 32 个随机字节的 URL-safe base64，无 `=` 填充 |
 | `DEEPSEEK_API_KEY` | 仅在决定启用 AI 后填写的 DeepSeek key |
 | `AMAP_JS_KEY` | 高德 JavaScript 地图浏览器 Key；仅用于 Explore 地图试点，不填写时自动使用本地离线 SVG 地图 |
+| `AMAP_SECURITY_JS_CODE` | 与 JavaScript API Key 配套的安全密钥；直连模式会交给浏览器，必须同时配置并限制允许域名 |
 | `AI_INPUT_COST_MICROS_PER_MILLION_TOKENS` | 按当前供应商账单维护的每百万输入 token 微元费率；`0` 表示不估算金额 |
 | `AI_OUTPUT_COST_MICROS_PER_MILLION_TOKENS` | 按当前供应商账单维护的每百万输出 token 微元费率；`0` 表示不估算金额 |
 | `REQUEST_ANONYMOUS_PER_MINUTE` | 匿名网络每分钟聊天请求上限 |
@@ -59,12 +60,12 @@ $bytes = New-Object byte[] 32
 
 1. 在高德开放平台创建 **JavaScript API** 的浏览器 Key；本项目不使用 Web 服务 Key，也不会从后端发起高德 Web 服务调用。
 2. 在该 Key 的安全设置中只允许生产域名 `travel-assistant-2cbd.onrender.com` 与本地开发地址 `http://127.0.0.1`。不要使用宽泛的通配域名。
-3. 在 Render 的 **Environment** 页面新增或更新 `AMAP_JS_KEY`，粘贴已轮换的 Key 后保存；不要把 Key 写入 Git、`.env.example`、截图、日志或任何公开文档。
+3. 在 Render 的 **Environment** 页面新增或更新 `AMAP_JS_KEY` 与 `AMAP_SECURITY_JS_CODE`，两项必须同时填写并保存。不要把真实 Key 或安全密钥写入 Git、`.env.example`、截图、日志或任何公开文档。
 4. 触发 Render 重新部署后，访问 <https://travel-assistant-2cbd.onrender.com>，打开 Explore 页面验证地图。
 
-地图以高德 JavaScript 地图为优先实现。若未设置 `AMAP_JS_KEY`、高德脚本被网络策略拦截或初始化失败，页面必须自动降级为本地**离线** SVG 地图；离线模式仍可点击福建/云南、省内城市和景点标记，且不会因此调用 AI。
+地图以高德 JavaScript 地图为优先实现。当前采用浏览器直连模式，运行时会把 Key 与安全密钥交给浏览器；域名限制是必需的安全边界。若未来需要更强保护，应另行设计服务代理，本轮不实现。若两项变量缺少任意一个、高德脚本被网络策略拦截或初始化失败，页面必须自动降级为本地**离线** SVG 地图；离线模式仍可点击福建/云南、省内城市和景点标记，且不会因此调用 AI。
 
-人工验收：先验证福建 → 厦门 → 任一景点可打开本地助手推荐；再暂时移除 Render 的 `AMAP_JS_KEY`（或在浏览器拦截高德脚本）并重新部署，确认离线 SVG 仍可完成同一点击流程。验收后如继续使用高德地图，再恢复该环境变量并重新部署。
+人工验收：同时配置两个已轮换变量并重新部署，先确认全国高德地图首屏，再验证福建 → 厦门 → 任一景点的平滑缩放、鼠标/键盘返回和本地助手推荐；然后暂时移除其中任意一个变量（或在浏览器拦截高德脚本）并重新部署，确认离线 SVG 仍可完成同一点击流程。验收后如继续使用高德地图，再恢复变量并重新部署。
 
 `render.yaml` 还固定设置 `TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip`，并通过 `--no-proxy-headers` 禁止 Uvicorn 信任通用转发头。匿名对话仍由签名 Cookie 隔离，但 AI 单用户额度使用客户端网络前缀的 HMAC 摘要；删除 Cookie 不会重置额度，服务端也不会保存原始 IP。这个模式基于 Render 公网流量经过 Cloudflare 的部署边界，只接受格式严格的单值 `CF-Connecting-IP`，完全忽略可由客户端构造链条的 `X-Forwarded-For`。缺失、重复或非法的可信头会统一落到共享的 fail-closed 额度主体，不会为请求创建新额度。参见 [Render 公网服务边界](https://render.com/docs/web-services)、[Render 的 Cloudflare 入口说明](https://render.com/docs/uptime-best-practices) 和 [Cloudflare 请求头契约](https://developers.cloudflare.com/fundamentals/reference/http-headers/)。
 

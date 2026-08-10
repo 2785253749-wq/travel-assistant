@@ -65,19 +65,29 @@ test("page shell exposes Chinese navigation while the assistant stays initially 
   assert.equal(harness.elements.get("assistant-panel").hidden, true);
 });
 
-test("map selection opens the assistant with a Chinese local recommendation and no chat request", async () => {
+test("real map explorer wiring renders data-driven cards and a selected place without a chat request", async () => {
   const harness = createHarness();
   await harness.settle();
 
   assert.ok(harness.elements.get("explore-page"), "探索页存在");
   assert.ok(harness.elements.get("explore-map"), "地图容器存在");
   assert.ok(harness.elements.get("explore-recommendations"), "推荐区存在");
-  const xiamen = harness.elements.get("explore-city-xiamen");
-  assert.ok(xiamen, "离线页面提供厦门城市入口");
-  await xiamen.dispatch("click");
+  const map = harness.elements.get("explore-map");
+  await findByText(map, "福建").dispatch("click");
+  assert.match(harness.elements.get("recommendations-title").textContent, /福建/);
+  assert.match(harness.elements.get("recommendation-grid").textContent, /厦门/);
+
+  await findByText(map, "厦门").dispatch("click");
+  assert.match(harness.elements.get("recommendations-title").textContent, /厦门/);
+  assert.match(harness.elements.get("recommendation-grid").textContent, /鼓浪屿/);
+
+  await findByText(map, "鼓浪屿").dispatch("click");
 
   assert.equal(harness.elements.get("assistant-panel").hidden, false);
-  assert.match(harness.elements.get("chat-messages").textContent, /厦门适合慢节奏/);
+  assert.match(harness.elements.get("chat-messages").textContent, /鼓浪屿安排半天步行/);
+  assert.equal(harness.elements.get("explore-place-card").hidden, false);
+  assert.match(harness.elements.get("explore-place-card").textContent, /鼓浪屿/);
+  assert.match(harness.elements.get("explore-place-card").textContent, /万国建筑/);
   assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
 });
 
