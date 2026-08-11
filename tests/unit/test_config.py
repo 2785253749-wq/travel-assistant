@@ -1,7 +1,29 @@
 import pytest
 import secrets
 import base64
+from typing import get_type_hints
+
 from pydantic import SecretStr
+
+
+RAG_WEATHER_ENVIRONMENT_VARIABLES = (
+    "APP_ENV",
+    "JINA_API_KEY",
+    "AMAP_WEB_SERVICE_KEY",
+    "AMAP_JS_KEY",
+    "AMAP_SECURITY_JS_CODE",
+    "RAG_EMBEDDING_MODEL",
+    "RAG_SIMILARITY_THRESHOLD",
+    "RAG_DAILY_EMBEDDING_LIMIT",
+    "WEATHER_DAILY_LIMIT",
+    "WEATHER_CACHE_SECONDS",
+    "WEATHER_TIMEOUT_SECONDS",
+)
+
+
+def _clear_rag_weather_environment(monkeypatch):
+    for environment_variable in RAG_WEATHER_ENVIRONMENT_VARIABLES:
+        monkeypatch.delenv(environment_variable, raising=False)
 
 
 def _base64url(raw: bytes) -> str:
@@ -95,8 +117,7 @@ def test_production_accepts_missing_optional_rag_and_weather_keys(monkeypatch):
     """Guards graceful degradation when the optional providers are unconfigured."""
     from app.core.config import Settings
 
-    monkeypatch.delenv("JINA_API_KEY", raising=False)
-    monkeypatch.delenv("AMAP_WEB_SERVICE_KEY", raising=False)
+    _clear_rag_weather_environment(monkeypatch)
     settings = Settings(
         app_env="production",
         supabase_url="https://project.supabase.co",
@@ -110,13 +131,15 @@ def test_production_accepts_missing_optional_rag_and_weather_keys(monkeypatch):
     assert settings.amap_web_service_key is None
 
 
-def test_optional_provider_keys_are_secret_values():
+def test_optional_provider_keys_are_secret_values(monkeypatch):
     """Guards provider credentials from becoming plain-text settings values."""
     from app.core.config import Settings
 
+    _clear_rag_weather_environment(monkeypatch)
     settings = Settings(
         jina_api_key=secrets.token_urlsafe(16),
         amap_web_service_key=secrets.token_urlsafe(16),
+        _env_file=None,
     )
 
     assert isinstance(settings.jina_api_key, SecretStr)
@@ -133,23 +156,50 @@ def test_optional_provider_keys_are_secret_values():
     ],
 )
 def test_rag_and_weather_operational_limits_must_be_positive(
-    field_name, invalid_value
+    monkeypatch, field_name, invalid_value
 ):
     """Guards disabled rate limits or timeouts caused by non-positive settings."""
     from app.core.config import Settings
 
+    _clear_rag_weather_environment(monkeypatch)
     with pytest.raises(ValueError):
         Settings(_env_file=None, **{field_name: invalid_value})
 
 
-def test_rag_and_weather_settings_expose_the_full_operational_contract():
-    """Guards removal of any RAG/weather setting consumed by later tasks."""
+def test_rag_and_weather_settings_expose_the_exact_operational_contract(monkeypatch):
+    """Guards type or optionality regressions in later-task configuration."""
     from app.core.config import Settings
 
+    for environment_variable in RAG_WEATHER_ENVIRONMENT_VARIABLES:
+        monkeypatch.setenv(environment_variable, "configured")
+    _clear_rag_weather_environment(monkeypatch)
     settings = Settings(_env_file=None)
 
-    assert isinstance(settings.jina_api_key, SecretStr | type(None))
-    assert isinstance(settings.amap_web_service_key, SecretStr | type(None))
+    annotations = get_type_hints(Settings)
+    assert {
+        field_name: annotations[field_name]
+        for field_name in (
+            "jina_api_key",
+            "amap_web_service_key",
+            "rag_embedding_model",
+            "rag_similarity_threshold",
+            "rag_daily_embedding_limit",
+            "weather_daily_limit",
+            "weather_cache_seconds",
+            "weather_timeout_seconds",
+        )
+    } == {
+        "jina_api_key": SecretStr | None,
+        "amap_web_service_key": SecretStr | None,
+        "rag_embedding_model": str,
+        "rag_similarity_threshold": float,
+        "rag_daily_embedding_limit": int,
+        "weather_daily_limit": int,
+        "weather_cache_seconds": int,
+        "weather_timeout_seconds": float,
+    }
+    assert settings.jina_api_key is None
+    assert settings.amap_web_service_key is None
     assert settings.rag_embedding_model == "jina-embeddings-v3"
     assert 0.0 <= settings.rag_similarity_threshold <= 1.0
     assert settings.rag_daily_embedding_limit > 0
@@ -160,13 +210,31 @@ def test_rag_and_weather_settings_expose_the_full_operational_contract():
 
 @pytest.mark.parametrize("invalid_threshold", [-0.01, 1.01])
 def test_rag_similarity_threshold_must_stay_within_closed_unit_interval(
+    monkeypatch,
     invalid_threshold,
 ):
     """Guards retrieval from accepting an impossible similarity score cutoff."""
     from app.core.config import Settings
 
+    _clear_rag_weather_environment(monkeypatch)
     with pytest.raises(ValueError):
         Settings(_env_file=None, rag_similarity_threshold=invalid_threshold)
+
+
+@pytest.mark.parametrize("allowed_threshold", [0.0, 1.0])
+def test_rag_similarity_threshold_accepts_closed_interval_endpoints(
+    monkeypatch,
+    allowed_threshold,
+):
+    """Guards strict bounds from accidentally excluding valid cutoff endpoints."""
+    from app.core.config import Settings
+
+    _clear_rag_weather_environment(monkeypatch)
+    assert (
+        Settings(_env_file=None, rag_similarity_threshold=allowed_threshold)
+        .rag_similarity_threshold
+        == allowed_threshold
+    )
 
 
 @pytest.mark.parametrize(
