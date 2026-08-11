@@ -41,6 +41,13 @@ async function dispatchPointer(element, type, properties) {
   for (const listener of element.listeners.get(type) || []) await listener(event);
 }
 
+async function dispatchKey(element, key) {
+  let defaultPrevented = false;
+  const event = { key, target: element, currentTarget: element, preventDefault() { defaultPrevented = true; } };
+  for (const listener of element.listeners.get("keydown") || []) await listener(event);
+  return defaultPrevented;
+}
+
 test("mouse drag handle moves the open assistant and clamps it within 12px viewport margins", async () => {
   const harness = createHarness();
   await settle();
@@ -84,6 +91,57 @@ test("touch drag handle positions the open assistant from its title bar", async 
 
   assert.equal(panel.style.left, "440px");
   assert.equal(panel.style.top, "280px");
+});
+
+test("keyboard arrow keys move the open assistant by 40px and keep every edge within 12px", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handle = harness.elements.get("assistant-drag-handle");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = { left: "12px", top: "12px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({ left: 12, top: 12, width: 390, height: 400 });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+
+  assert.equal(handle.getAttribute("tabindex"), "0");
+  assert.equal(await dispatchKey(handle, "ArrowLeft"), true);
+  assert.equal(await dispatchKey(handle, "ArrowUp"), true);
+  assert.equal(panel.style.left, "12px");
+  assert.equal(panel.style.top, "12px");
+  panel.style.left = "498px";
+  panel.style.top = "288px";
+
+  assert.equal(await dispatchKey(handle, "ArrowRight"), true);
+  assert.equal(await dispatchKey(handle, "ArrowDown"), true);
+  assert.equal(panel.style.left, "498px");
+  assert.equal(panel.style.top, "288px");
+  assert.equal(panel.hidden, false);
+  assert.equal(harness.fetchCalls.length, 0);
+});
+
+test("an active assistant drag cannot be replaced by another primary pointer", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handle = harness.elements.get("assistant-drag-handle");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = {};
+  panel.getBoundingClientRect = () => ({ left: 400, top: 200, width: 390, height: 400 });
+  const capturedPointers = [];
+  handle.setPointerCapture = (pointerId) => capturedPointers.push(pointerId);
+  await harness.elements.get("assistant-toggle").dispatch("click");
+
+  await dispatchPointer(handle, "pointerdown", { pointerId: 10, pointerType: "mouse", isPrimary: true, button: 0, clientX: 460, clientY: 260 });
+  await dispatchPointer(handle, "pointerdown", { pointerId: 11, pointerType: "pen", isPrimary: true, button: 0, clientX: 480, clientY: 280 });
+  await dispatchPointer(handle, "pointermove", { pointerId: 10, pointerType: "mouse", clientX: 500, clientY: 300 });
+
+  assert.deepEqual(capturedPointers, [10]);
+  assert.equal(panel.style.left, "440px");
+  assert.equal(panel.style.top, "240px");
 });
 
 test("assistant drag keeps its coordinates visible when the panel is larger than the viewport", async () => {

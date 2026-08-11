@@ -105,9 +105,12 @@
   function initializeAssistantDrag() {
     const handle = $("assistant-drag-handle");
     let drag = null;
+    const keyboardMoves = {
+      ArrowLeft: [-40, 0], ArrowRight: [40, 0], ArrowUp: [0, -40], ArrowDown: [0, 40],
+    };
 
     handle.addEventListener("pointerdown", (event) => {
-      if (elements.assistantPanel.hidden || event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
+      if (drag || elements.assistantPanel.hidden || event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
       const rect = elements.assistantPanel.getBoundingClientRect();
       drag = {
         pointerId: event.pointerId,
@@ -126,6 +129,17 @@
     handle.addEventListener("pointerup", stopDrag);
     handle.addEventListener("pointercancel", stopDrag);
     handle.addEventListener("lostpointercapture", stopDrag);
+    handle.addEventListener("keydown", (event) => {
+      const move = keyboardMoves[event.key];
+      if (!move || elements.assistantPanel.hidden) return;
+      const rect = elements.assistantPanel.getBoundingClientRect();
+      const left = Number.parseFloat(elements.assistantPanel.style.left);
+      const top = Number.parseFloat(elements.assistantPanel.style.top);
+      event.preventDefault();
+      setAssistantPosition((Number.isFinite(left) ? left : rect.left) + move[0], (Number.isFinite(top) ? top : rect.top) + move[1]);
+    });
+    handle.setAttribute("tabindex", "0");
+    handle.setAttribute("aria-label", "旅行助手位置控制。可拖动，或使用方向键每次移动 40 像素。");
     window.addEventListener("resize", clampAssistantPosition);
     window.addEventListener("orientationchange", clampAssistantPosition);
   }

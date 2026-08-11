@@ -132,6 +132,7 @@ dialog::backdrop { background: rgb(0 0 0 / 45%); }
 .assistant-panel-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding-bottom: .75rem; border-bottom: 1px solid var(--line); }
 #assistant-drag-handle { cursor: grab; touch-action: none; user-select: none; }
 #assistant-drag-handle:active { cursor: grabbing; }
+#assistant-drag-handle:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 .assistant-reset-position { min-height: 2rem; padding: .35rem .55rem; color: var(--brand-dark); background: #e8f2ff; }
 .assistant-panel-header .eyebrow { margin: 0; }
 .assistant-online { color: #15a95a; font-size: .78rem; }
