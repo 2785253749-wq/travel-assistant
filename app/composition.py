@@ -12,7 +12,7 @@ from app.agent.graph import (
 )
 from app.application.chat import ConfirmationStore, TravelChatApplication
 from app.api.auth import CurrentUser
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.usage import InMemoryUsageRepository, UsageGuard, UsageRepository
 from app.infrastructure.repositories import (
     InMemoryTripRepository,
@@ -21,6 +21,14 @@ from app.infrastructure.repositories import (
 )
 from app.infrastructure.usage import SupabaseUsageRepository
 from app.providers.aggregate import ProviderEvidenceAggregator
+from app.rag.embedding import EmbeddingHttpClient, JinaEmbedder
+from app.rag.repository import KnowledgeRepository
+from app.rag.service import (
+    Embedder,
+    KnowledgeAnswerService,
+    SearchRepository,
+    UnavailableKnowledgeAnswerService,
+)
 from app.schemas import TravelProfile
 from app.trips.service import TripService
 
@@ -108,6 +116,46 @@ def get_usage_guard() -> UsageGuard:
 def get_provider_evidence_aggregator() -> ProviderEvidenceAggregator:
     """Keep the short provider cache alive across request-scoped applications."""
     return ProviderEvidenceAggregator()
+
+
+def build_knowledge_answer_service(
+    *,
+    settings: Settings | None = None,
+    repository: SearchRepository | None = None,
+    embedder: Embedder | None = None,
+    http_client: EmbeddingHttpClient | None = None,
+) -> KnowledgeAnswerService | UnavailableKnowledgeAnswerService:
+    """Compose private retrieval only when its server-side dependencies exist."""
+    settings = settings or get_settings()
+    if settings.jina_api_key is None or not settings.jina_api_key.get_secret_value().strip():
+        return UnavailableKnowledgeAnswerService()
+    if repository is None:
+        if (
+            settings.supabase_url is None
+            or settings.supabase_service_key is None
+            or not settings.supabase_service_key.get_secret_value().strip()
+        ):
+            return UnavailableKnowledgeAnswerService()
+        repository = KnowledgeRepository(settings=settings)
+    if embedder is None:
+        embedder = JinaEmbedder(
+            api_key=settings.jina_api_key,
+            model=settings.rag_embedding_model,
+            timeout_seconds=settings.weather_timeout_seconds,
+            daily_limit=settings.rag_daily_embedding_limit,
+            client=http_client,
+        )
+    return KnowledgeAnswerService(
+        repository,
+        embedder,
+        threshold=settings.rag_similarity_threshold,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_knowledge_answer_service(
+) -> KnowledgeAnswerService | UnavailableKnowledgeAnswerService:
+    return build_knowledge_answer_service()
 
 
 def build_chat_application(user: Any | None) -> TravelChatApplication:
