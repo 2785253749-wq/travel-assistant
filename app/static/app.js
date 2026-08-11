@@ -25,7 +25,7 @@
     authHelp: $("auth-help"), status: $("status-message"), providerNotice: $("provider-notice"),
     providerUpdatedAt: $("provider-updated-at"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
-    assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"),
+    assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantReset: $("assistant-reset-position"),
     explorePage: $("explore-page"), exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
     mapBreadcrumb: $("map-breadcrumb"), mapTitle: $("map-title"), exploreShortcuts: $("explore-shortcuts"),
     recommendationsTitle: $("recommendations-title"), recommendationCount: $("recommendation-count"),
@@ -70,6 +70,7 @@
 
   function setAssistantOpen(open, { focusInput = false, restoreFocus = false } = {}) {
     elements.assistantPanel.hidden = !open;
+    if (open) clampAssistantPosition();
     elements.assistantToggle.setAttribute("aria-expanded", String(open));
     elements.assistantToggle.setAttribute("aria-label", open ? "关闭 AI 助手" : "打开 AI 助手");
     if (open && focusInput) elements.message.focus();
@@ -77,7 +78,28 @@
   }
 
   function clamp(value, min, max) {
-    return Math.min(Math.max(value, min), max);
+    return Math.min(Math.max(value, min), Math.max(min, max));
+  }
+
+  function setAssistantPosition(left, top) {
+    const rect = elements.assistantPanel.getBoundingClientRect();
+    const maxLeft = Math.max(12, window.innerWidth - rect.width - 12);
+    const maxTop = Math.max(12, window.innerHeight - rect.height - 12);
+    Object.assign(elements.assistantPanel.style, {
+      left: `${clamp(left, 12, maxLeft)}px`, top: `${clamp(top, 12, maxTop)}px`, right: "auto", bottom: "auto",
+    });
+  }
+
+  function clampAssistantPosition() {
+    if (elements.assistantPanel.hidden) return;
+    const left = Number.parseFloat(elements.assistantPanel.style.left);
+    const top = Number.parseFloat(elements.assistantPanel.style.top);
+    if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+    setAssistantPosition(left, top);
+  }
+
+  function resetAssistantPosition() {
+    Object.assign(elements.assistantPanel.style, { left: "", top: "", right: "", bottom: "" });
   }
 
   function initializeAssistantDrag() {
@@ -85,7 +107,7 @@
     let drag = null;
 
     handle.addEventListener("pointerdown", (event) => {
-      if (elements.assistantPanel.hidden) return;
+      if (elements.assistantPanel.hidden || event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
       const rect = elements.assistantPanel.getBoundingClientRect();
       drag = {
         pointerId: event.pointerId,
@@ -96,18 +118,16 @@
     });
     handle.addEventListener("pointermove", (event) => {
       if (!drag || drag.pointerId !== event.pointerId) return;
-      const rect = elements.assistantPanel.getBoundingClientRect();
-      const left = clamp(event.clientX - drag.offsetX, 12, window.innerWidth - rect.width - 12);
-      const top = clamp(event.clientY - drag.offsetY, 12, window.innerHeight - rect.height - 12);
-      Object.assign(elements.assistantPanel.style, {
-        left: `${left}px`, top: `${top}px`, right: "auto", bottom: "auto",
-      });
+      setAssistantPosition(event.clientX - drag.offsetX, event.clientY - drag.offsetY);
     });
     const stopDrag = (event) => {
       if (drag && drag.pointerId === event.pointerId) drag = null;
     };
     handle.addEventListener("pointerup", stopDrag);
     handle.addEventListener("pointercancel", stopDrag);
+    handle.addEventListener("lostpointercapture", stopDrag);
+    window.addEventListener("resize", clampAssistantPosition);
+    window.addEventListener("orientationchange", clampAssistantPosition);
   }
 
   function clearChildren(node) {
@@ -989,6 +1009,8 @@
   elements.closeShare.addEventListener("click", () => { if (!state.busy) elements.shareDialog.close(); });
   elements.renameForm.addEventListener("submit", renameTrip);
   elements.cancelRename.addEventListener("click", () => { if (!state.busy) elements.renameDialog.close(); });
+  elements.assistantReset.setAttribute("aria-label", "重置 AI 助手位置");
+  elements.assistantReset.addEventListener("click", resetAssistantPosition);
   initializeAssistantDrag();
   setAssistantOpen(false);
   initializeApp();
