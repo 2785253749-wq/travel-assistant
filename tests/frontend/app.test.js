@@ -36,7 +36,7 @@ function assertBefore(events, first, second) {
   assert.ok(events.indexOf(first) < events.indexOf(second), `${first} must precede ${second}: ${events.join(", ")}`);
 }
 
-test("floating assistant opens from its launcher and Escape restores launcher focus", async () => {
+test("assistant toggle opens and closes the panel without a dedicated close button", async () => {
   const harness = createHarness();
   await settle();
 
@@ -44,10 +44,23 @@ test("floating assistant opens from its launcher and Escape restores launcher fo
   const toggle = harness.elements.get("assistant-toggle");
   assert.ok(assistant, "assistant panel is present");
   assert.ok(toggle, "assistant launcher is present");
+  assert.equal(harness.elements.get("assistant-close"), undefined);
   assert.equal(assistant.hidden, true);
 
   await toggle.dispatch("click");
   assert.equal(assistant.hidden, false);
+
+  await toggle.dispatch("click");
+  assert.equal(assistant.hidden, true);
+});
+
+test("Escape closes the assistant and restores launcher focus", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const assistant = harness.elements.get("assistant-panel");
+  const toggle = harness.elements.get("assistant-toggle");
+  await toggle.dispatch("click");
 
   await harness.window.dispatch("keydown", { key: "Escape" });
   assert.equal(assistant.hidden, true);
@@ -83,7 +96,7 @@ test("real map explorer wiring renders data-driven cards and a selected place wi
 
   await findByText(map, "鼓浪屿").dispatch("click");
 
-  assert.equal(harness.elements.get("assistant-panel").hidden, false);
+  assert.equal(harness.elements.get("assistant-panel").hidden, true);
   assert.match(harness.elements.get("chat-messages").textContent, /鼓浪屿安排半天步行/);
   assert.equal(harness.elements.get("explore-place-card").hidden, false);
   assert.match(harness.elements.get("explore-place-card").textContent, /鼓浪屿/);

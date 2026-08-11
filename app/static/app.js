@@ -25,7 +25,7 @@
     authHelp: $("auth-help"), status: $("status-message"), providerNotice: $("provider-notice"),
     providerUpdatedAt: $("provider-updated-at"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
-    assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantClose: $("assistant-close"),
+    assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"),
     explorePage: $("explore-page"), exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
     mapBreadcrumb: $("map-breadcrumb"), mapTitle: $("map-title"), exploreShortcuts: $("explore-shortcuts"),
     recommendationsTitle: $("recommendations-title"), recommendationCount: $("recommendation-count"),
@@ -68,16 +68,11 @@
     elements.progress.textContent = busy ? message || "正在处理，请稍候。" : "";
   }
 
-  function openAssistant() {
-    elements.assistantPanel.hidden = false;
-    elements.assistantToggle.setAttribute("aria-expanded", "true");
-    elements.message.focus();
-  }
-
-  function closeAssistant() {
-    elements.assistantPanel.hidden = true;
-    elements.assistantToggle.setAttribute("aria-expanded", "false");
-    elements.assistantToggle.focus();
+  function setAssistantOpen(open, { focusInput = false, restoreFocus = false } = {}) {
+    elements.assistantPanel.hidden = !open;
+    elements.assistantToggle.setAttribute("aria-expanded", String(open));
+    if (open && focusInput) elements.message.focus();
+    if (!open && restoreFocus) elements.assistantToggle.focus();
   }
 
   function clearChildren(node) {
@@ -93,7 +88,6 @@
   }
 
   function appendExploreRecommendation(selection) {
-    openAssistant();
     addMessage(selection.recommendation, "assistant");
   }
 
@@ -907,7 +901,7 @@
       const trip = await requestJson("/api/shared/resolve", { method: "POST", body: { token } });
       renderTrip(trip, { public: true });
       elements.messages.closest("section").hidden = true;
-      elements.assistantPanel.hidden = true;
+      setAssistantOpen(false);
       elements.assistantToggle.hidden = true;
       elements.explorePage.hidden = true;
       elements.history.hidden = true;
@@ -940,10 +934,13 @@
   }
 
   elements.chatForm.addEventListener("submit", sendMessage);
-  elements.assistantToggle.addEventListener("click", openAssistant);
-  elements.assistantClose.addEventListener("click", () => { if (!state.busy) closeAssistant(); });
+  elements.assistantToggle.addEventListener("click", () => {
+    if (state.busy) return;
+    const open = elements.assistantPanel.hidden;
+    setAssistantOpen(open, { focusInput: open });
+  });
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !state.busy && !elements.assistantPanel.hidden) closeAssistant();
+    if (event.key === "Escape" && !state.busy && !elements.assistantPanel.hidden) setAssistantOpen(false, { restoreFocus: true });
   });
   elements.confirm.addEventListener("click", confirmProfile);
   elements.edit.addEventListener("click", editProfile);
