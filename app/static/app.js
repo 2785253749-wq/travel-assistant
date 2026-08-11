@@ -71,6 +71,7 @@
   function setAssistantOpen(open, { focusInput = false, restoreFocus = false } = {}) {
     elements.assistantPanel.hidden = !open;
     elements.assistantToggle.setAttribute("aria-expanded", String(open));
+    elements.assistantToggle.setAttribute("aria-label", open ? "关闭 AI 助手" : "打开 AI 助手");
     if (open && focusInput) elements.message.focus();
     if (!open && restoreFocus) elements.assistantToggle.focus();
   }
@@ -954,5 +955,6 @@
   elements.closeShare.addEventListener("click", () => { if (!state.busy) elements.shareDialog.close(); });
   elements.renameForm.addEventListener("submit", renameTrip);
   elements.cancelRename.addEventListener("click", () => { if (!state.busy) elements.renameDialog.close(); });
+  setAssistantOpen(false);
   initializeApp();
 })();

@@ -46,12 +46,18 @@ test("assistant toggle opens and closes the panel without a dedicated close butt
   assert.ok(toggle, "assistant launcher is present");
   assert.equal(harness.elements.get("assistant-close"), undefined);
   assert.equal(assistant.hidden, true);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(toggle.getAttribute("aria-label"), "打开 AI 助手");
 
   await toggle.dispatch("click");
   assert.equal(assistant.hidden, false);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(toggle.getAttribute("aria-label"), "关闭 AI 助手");
 
   await toggle.dispatch("click");
   assert.equal(assistant.hidden, true);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(toggle.getAttribute("aria-label"), "打开 AI 助手");
 });
 
 test("Escape closes the assistant and restores launcher focus", async () => {
