@@ -294,23 +294,42 @@ test("assistant toggle opens and closes the panel without a dedicated close butt
 
   const assistant = harness.elements.get("assistant-panel");
   const toggle = harness.elements.get("assistant-toggle");
+  const toggleLabel = harness.elements.get("assistant-toggle-label");
   assistant.style = {};
   assert.ok(assistant, "assistant panel is present");
   assert.ok(toggle, "assistant launcher is present");
+  assert.ok(toggleLabel, "assistant launcher exposes a visible action label");
   assert.equal(harness.elements.get("assistant-close"), undefined);
   assert.equal(assistant.hidden, true);
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.equal(toggle.getAttribute("aria-label"), "打开 AI 助手");
+  assert.equal(toggleLabel.textContent, "打开 AI 助手");
 
   await toggle.dispatch("click");
   assert.equal(assistant.hidden, false);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
   assert.equal(toggle.getAttribute("aria-label"), "关闭 AI 助手");
+  assert.equal(toggleLabel.textContent, "关闭 AI 助手");
 
   await toggle.dispatch("click");
   assert.equal(assistant.hidden, true);
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.equal(toggle.getAttribute("aria-label"), "打开 AI 助手");
+  assert.equal(toggleLabel.textContent, "打开 AI 助手");
+});
+
+test("assistant launcher stays above a dragged panel so the same control can close it", () => {
+  const root = path.resolve(__dirname, "..", "..");
+  const css = fs.readFileSync(path.join(root, "app", "static", "styles.css"), "utf8");
+  const zIndexFor = (selector) => {
+    const rule = css.match(new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`));
+    assert.ok(rule, `${selector} rule is present`);
+    const zIndex = rule[1].match(/z-index:\s*(\d+)/);
+    assert.ok(zIndex, `${selector} declares a z-index`);
+    return Number(zIndex[1]);
+  };
+
+  assert.ok(zIndexFor(".assistant-toggle") > zIndexFor(".assistant-panel"));
 });
 
 test("Escape closes the assistant and restores launcher focus", async () => {

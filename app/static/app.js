@@ -25,7 +25,7 @@
     authHelp: $("auth-help"), status: $("status-message"), providerNotice: $("provider-notice"),
     providerUpdatedAt: $("provider-updated-at"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
-    assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantReset: $("assistant-reset-position"),
+    assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"),
     explorePage: $("explore-page"), exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
     mapBreadcrumb: $("map-breadcrumb"), mapTitle: $("map-title"), exploreShortcuts: $("explore-shortcuts"),
     recommendationsTitle: $("recommendations-title"), recommendationCount: $("recommendation-count"),
@@ -69,10 +69,12 @@
   }
 
   function setAssistantOpen(open, { focusInput = false, restoreFocus = false } = {}) {
+    const actionLabel = open ? "关闭 AI 助手" : "打开 AI 助手";
     elements.assistantPanel.hidden = !open;
     if (open) clampAssistantPosition();
     elements.assistantToggle.setAttribute("aria-expanded", String(open));
-    elements.assistantToggle.setAttribute("aria-label", open ? "关闭 AI 助手" : "打开 AI 助手");
+    elements.assistantToggle.setAttribute("aria-label", actionLabel);
+    elements.assistantToggleLabel.textContent = actionLabel;
     if (open && focusInput) elements.message.focus();
     if (!open && restoreFocus) elements.assistantToggle.focus();
   }

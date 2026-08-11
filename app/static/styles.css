@@ -124,7 +124,7 @@ h3 { margin: .05rem 0 .15rem; font-size: 1.05rem; }
 dialog { width: min(calc(100% - 2rem), 36rem); border: 1px solid var(--line); border-radius: .9rem; color: var(--ink); background: var(--paper); box-shadow: 0 1rem 3rem rgb(0 0 0 / 30%); }
 dialog::backdrop { background: rgb(0 0 0 / 45%); }
 .dialog-content { display: grid; gap: .4rem; }
-.assistant-toggle { position: fixed; z-index: 30; right: 1.25rem; bottom: 1.25rem; border-radius: 999px; box-shadow: 0 .7rem 1.5rem rgb(7 85 181 / 30%); }
+.assistant-toggle { position: fixed; z-index: 32; right: 1.25rem; bottom: 1.25rem; border-radius: 999px; box-shadow: 0 .7rem 1.5rem rgb(7 85 181 / 30%); }
 .assistant-toggle span { padding-right: .25rem; }
 .assistant-panel { position: fixed; z-index: 31; right: 12px; bottom: 5.25rem; width: min(390px, calc(100vw - 24px)); max-height: min(520px, max(0px, calc(100vh - 6rem))); overflow: auto; border: 1px solid var(--line); border-radius: 1.1rem; background: var(--paper); box-shadow: 0 1rem 3rem rgb(23 53 86 / 25%); animation: assistant-enter .18s ease-out; }
 .assistant-panel[hidden] { display: none; }
