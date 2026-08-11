@@ -173,6 +173,24 @@
       });
       elements.recommendationGrid.append(card);
     });
+    renderExploreShortcuts(view.level === "province" ? new Set(view.items.map((item) => item.id)) : new Set());
+  }
+
+  function renderExploreShortcuts(excludedCityIds = new Set()) {
+    const mapModule = window.TravelMapExplorer;
+    clearChildren(elements.exploreShortcuts);
+    (mapModule?.EXPLORE_TRIAL?.cities || []).forEach((city) => {
+      if (excludedCityIds.has(city.id)) return;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.id = `explore-city-${city.id}`;
+      button.className = "map-chip";
+      button.textContent = city.name;
+      button.addEventListener("click", () => mapExplorer ? mapExplorer.showCity(city.id) : handleExploreSelection({
+        kind: "city", id: city.id, name: city.name, recommendation: city.recommendation,
+      }));
+      elements.exploreShortcuts.append(button);
+    });
   }
 
   function initializeExplore() {
@@ -188,17 +206,7 @@
       elements.exploreStatus.textContent = "地图组件暂未加载，可使用热门城市快捷入口。";
     }
 
-    clearChildren(elements.exploreShortcuts);
-    (mapModule?.EXPLORE_TRIAL?.cities || []).forEach((city) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "map-chip";
-      button.textContent = city.name;
-      button.addEventListener("click", () => mapExplorer ? mapExplorer.showCity(city.id) : handleExploreSelection({
-        kind: "city", id: city.id, name: city.name, recommendation: city.recommendation,
-      }));
-      elements.exploreShortcuts.append(button);
-    });
+    renderExploreShortcuts();
   }
 
   function browserAuthConfig() {

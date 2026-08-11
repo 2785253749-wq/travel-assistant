@@ -119,7 +119,9 @@ function buildDocument(html) {
   for (const element of elements.values()) if (!element.parentNode) body.append(element);
   const document = {
     body, head,
-    getElementById(id) { return elements.get(id) || null; },
+    getElementById(id) {
+      return elements.get(id) || descendants(body).find((node) => node.id === id) || null;
+    },
     createElement(tag) { const element = new FakeElement(tag); created.push(element); return element; },
     querySelectorAll(selector) {
       const tags = new Set(selector.split(",").map((value) => value.trim().toUpperCase()));

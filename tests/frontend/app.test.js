@@ -637,3 +637,32 @@ test("private history executes authenticated CRUD and revocable sharing", async 
   assert.ok(privateCalls.every((call) => !call.options.body || !Object.hasOwn(JSON.parse(call.options.body), "itinerary")));
   assert.ok(privateCalls.every((call) => call.options.headers.Authorization === "Bearer access-one"));
 });
+test("Explore city shortcuts expose stable unique ids and the Xiamen selector opens that city", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const xiamen = harness.document.getElementById("explore-city-xiamen");
+  assert.ok(xiamen, "#explore-city-xiamen must remain available to integrations");
+  assert.equal(xiamen.tagName, "BUTTON");
+  assert.equal(
+    descendants(harness.document.body).filter((node) => node.id && node.id.startsWith("explore-city-")).length,
+    4,
+  );
+
+  await xiamen.dispatch("click");
+
+  assert.equal(harness.elements.get("explore-map").dataset.mapLevel, "city");
+});
+
+test("Explore keeps the Xiamen city control selector unique while its map controls are visible", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const fujian = findByText(harness.elements.get("explore-map"), "福建");
+  await fujian.dispatch("click");
+  const xiamenControls = descendants(harness.document.body).filter((node) => node.id === "explore-city-xiamen");
+
+  assert.equal(xiamenControls.length, 1, "#explore-city-xiamen must not be duplicated");
+  await xiamenControls[0].dispatch("click");
+  assert.equal(harness.elements.get("explore-map").dataset.mapLevel, "city");
+});

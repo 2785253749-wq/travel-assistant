@@ -59,6 +59,22 @@ test("offline explorer drills from Fujian to Xiamen places without a network req
   assert.equal(selections.at(-1).kind, "city");
 }));
 
+test("offline city controls expose stable unique ids including #explore-city-xiamen", withBrowser(async () => {
+  const { createMapExplorer } = require("../../app/static/map-explorer.js");
+  const root = new FakeElement("section");
+  const selections = [];
+  const explorer = createMapExplorer(root, { amapKey: null, onSelect: (value) => selections.push(value) });
+
+  explorer.showProvince("fujian");
+  const cityControls = descendants(root).filter((node) => node.id && node.id.startsWith("explore-city-"));
+  const xiamen = cityControls.find((node) => node.id === "explore-city-xiamen");
+  assert.ok(xiamen, "#explore-city-xiamen must remain available to integrations");
+  assert.equal(cityControls.length, new Set(cityControls.map((node) => node.id)).size);
+
+  await xiamen.dispatch("click");
+  assert.equal(selections.at(-1).id, "xiamen");
+}));
+
 test("trial data includes both provinces, all trial cities, and three coordinate places each", withBrowser(async () => {
   const { EXPLORE_TRIAL } = require("../../app/static/map-explorer.js");
   assert.deepEqual(EXPLORE_TRIAL.provinces.map((province) => province.id), ["fujian", "yunnan"]);

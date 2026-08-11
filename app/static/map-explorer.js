@@ -188,7 +188,11 @@
       if (activeLevel === "nation") {
         state.items.forEach((province) => hotspots.append(createButton(province.name, () => showProvince(province.id))));
       } else if (activeLevel === "province") {
-        state.items.forEach((city) => hotspots.append(createButton(city.name, () => showCity(city.id))));
+        state.items.forEach((city) => {
+          const button = createButton(city.name, () => showCity(city.id));
+          button.id = `explore-city-${city.id}`;
+          hotspots.append(button);
+        });
         hotspots.append(createButton(`推荐 ${state.province.name}`, () => emit("province", state.province)));
       } else {
         state.items.forEach((place) => hotspots.append(createButton(place.name, () => emit("place", place))));
