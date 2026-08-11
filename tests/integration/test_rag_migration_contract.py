@@ -12,9 +12,22 @@ def test_rag_migration_keeps_knowledge_table_private_and_enables_vector():
     assert "create extension if not exists vector" in sql
     assert "create table public.knowledge_chunks" in sql
     assert "alter table public.knowledge_chunks enable row level security" in sql
-    assert "grant" not in sql or "to anon" not in sql
     assert "create policy" not in sql
-    assert "to service_role" in sql
+    assert (
+        "revoke all on table public.knowledge_chunks from public, anon, authenticated"
+        in sql
+    )
+    assert (
+        "revoke all on function public.match_knowledge_chunks(vector, text, integer) "
+        "from public, anon, authenticated"
+    ) in sql
+    assert "grant select, insert, update on table public.knowledge_chunks to service_role" in sql
+    assert (
+        "grant execute on function public.match_knowledge_chunks(vector, text, integer) "
+        "to service_role"
+    ) in sql
+    assert "to anon" not in sql
+    assert "to authenticated" not in sql
 
 
 def test_rag_migration_stores_versioned_chunks_with_embeddings_and_provenance():

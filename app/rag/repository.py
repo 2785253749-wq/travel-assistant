@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Protocol, Sequence
+from typing import Protocol, Sequence
 
 from app.core.config import Settings, get_settings
 from app.rag.models import KnowledgeChunk, KnowledgeDocument, RetrievedChunk
@@ -15,24 +15,38 @@ class KnowledgeStore(Protocol):
 class KnowledgeRepository:
     """Private pgvector store, constructed exclusively with Supabase's service key."""
 
-    def __init__(self, *, settings: Settings | None = None, client: Any | None = None) -> None:
+    def __init__(self, *, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
-        if client is None:
-            if self._settings.supabase_url is None or self._settings.supabase_service_key is None:
-                raise RuntimeError("RAG knowledge storage requires Supabase service-role configuration")
-            from supabase import create_client
+        if self._settings.supabase_url is None or self._settings.supabase_service_key is None:
+            raise RuntimeError("RAG knowledge storage requires Supabase service-role configuration")
+        from supabase import create_client
 
-            client = create_client(
-                str(self._settings.supabase_url),
-                self._settings.supabase_service_key.get_secret_value(),
-            )
-        self._client = client
+        self._client = create_client(
+            str(self._settings.supabase_url),
+            self._settings.supabase_service_key.get_secret_value(),
+        )
 
     def upsert_document(
         self, document: KnowledgeDocument, chunks: Sequence[KnowledgeChunk]
     ) -> int:
         del document  # Chunks deliberately contain the only persisted document fields.
-        rows = [chunk.model_dump(mode="json") for chunk in chunks]
+        rows = [
+            {
+                field: chunk.model_dump(mode="json")[field]
+                for field in (
+                    "chunk_id",
+                    "document_id",
+                    "document_version",
+                    "region",
+                    "topic",
+                    "content",
+                    "source_label",
+                    "reviewed_on",
+                    "embedding",
+                )
+            }
+            for chunk in chunks
+        ]
         if not rows:
             return 0
         response = (

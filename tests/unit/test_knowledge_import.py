@@ -1,20 +1,27 @@
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
+import sys
 
+import pytest
+
+from app.core.config import Settings
 from app.rag.models import KnowledgeDocument
-from app.scripts.import_knowledge import KnowledgeImportService, load_documents
+from app.rag.repository import KnowledgeRepository
+from app.scripts.import_knowledge import (
+    KnowledgeImportService,
+    StoredKnowledgeChunk,
+    load_documents,
+)
 
 
-class FakeKnowledgeRepository:
+class RecordingRepository:
     def __init__(self) -> None:
-        self.stored_chunk_ids: set[str] = set()
-        self.chunks = []
+        self.calls = []
 
     def upsert_document(self, document, chunks) -> int:
-        new_chunks = [chunk for chunk in chunks if chunk.chunk_id not in self.stored_chunk_ids]
-        self.stored_chunk_ids.update(chunk.chunk_id for chunk in new_chunks)
-        self.chunks.extend(new_chunks)
-        return len(new_chunks)
+        self.calls.append((document, list(chunks)))
+        return len(chunks)
 
 
 class FakeEmbedder:
@@ -35,29 +42,130 @@ def sample_document() -> KnowledgeDocument:
     )
 
 
-def test_reimport_same_document_version_does_not_write_chunks_twice():
-    """Changing stable IDs or omitting duplicate protection would insert the second run."""
-    repository = FakeKnowledgeRepository()
-    service = KnowledgeImportService(repository, FakeEmbedder())
+class CapturingUpsert:
+    def __init__(self, data) -> None:
+        self.data = data
+        self.rows = None
+        self.conflict_target = None
+        self.ignore_duplicates = None
 
-    assert service.import_documents([sample_document()]) == 2
-    first_chunk_ids = [chunk.chunk_id for chunk in repository.chunks]
-    assert service.import_documents([sample_document()]) == 0
-    assert [chunk.chunk_id for chunk in repository.chunks] == first_chunk_ids
+    def upsert(self, rows, *, on_conflict, ignore_duplicates):
+        self.rows = rows
+        self.conflict_target = on_conflict
+        self.ignore_duplicates = ignore_duplicates
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self.data)
+
+
+class CapturingSupabaseClient:
+    def __init__(self, data) -> None:
+        self.query = CapturingUpsert(data)
+        self.table_name = None
+
+    def table(self, name):
+        self.table_name = name
+        return self.query
+
+
+def _repository_with_service_client(monkeypatch, response_data):
+    client = CapturingSupabaseClient(response_data)
+    calls = []
+
+    def create_client(url, key):
+        calls.append((url, key))
+        return client
+
+    monkeypatch.setitem(sys.modules, "supabase", SimpleNamespace(create_client=create_client))
+    repository = KnowledgeRepository(
+        settings=Settings(
+            supabase_url="https://project.supabase.co",
+            supabase_anon_key="anon-key-must-not-be-used",
+            supabase_service_key="service-role-key",
+        )
+    )
+    return repository, client, calls
+
+
+def _stored_chunk() -> StoredKnowledgeChunk:
+    document = sample_document()
+    return StoredKnowledgeChunk(
+        chunk_id="fujian-test:2026-08-12:0001",
+        document_id=document.document_id,
+        title=document.title,
+        document_version=document.document_version,
+        region=document.region,
+        topic=document.topic,
+        content="第一段用于验证稳定分块。",
+        source_label=document.source_label,
+        reviewed_on=document.reviewed_on,
+        embedding=[0.0] * 1024,
+    )
+
+
+def test_repository_uses_service_key_and_serializes_only_migration_columns(monkeypatch):
+    """Sending title or the anon key would make the real PostgREST import unsafe or fail."""
+    repository, client, calls = _repository_with_service_client(monkeypatch, [{"chunk_id": "x"}])
+
+    assert repository.upsert_document(sample_document(), [_stored_chunk()]) == 1
+
+    assert calls == [("https://project.supabase.co/", "service-role-key")]
+    assert client.table_name == "knowledge_chunks"
+    assert client.query.conflict_target == "chunk_id"
+    assert client.query.ignore_duplicates is True
+    assert set(client.query.rows[0]) == {
+        "chunk_id",
+        "document_id",
+        "document_version",
+        "region",
+        "topic",
+        "content",
+        "source_label",
+        "reviewed_on",
+        "embedding",
+    }
+    assert "title" not in client.query.rows[0]
+
+
+def test_repository_reports_zero_rows_when_database_ignores_same_chunk_id(monkeypatch):
+    """Replacing duplicate-safe upsert or its count must be observable at the repository boundary."""
+    repository, client, _ = _repository_with_service_client(monkeypatch, [])
+
+    assert repository.upsert_document(sample_document(), [_stored_chunk()]) == 0
+    assert (client.query.conflict_target, client.query.ignore_duplicates) == ("chunk_id", True)
+
+
+def test_repository_rejects_arbitrary_client_injection():
+    """Accepting an anon client here would bypass the server-side service-role boundary."""
+    with pytest.raises(TypeError):
+        KnowledgeRepository(client=object())
+
+
+def test_repository_requires_service_role_configuration():
+    """An anon credential alone must never construct the private raw-table client."""
+    with pytest.raises(RuntimeError, match="service-role"):
+        KnowledgeRepository(
+            settings=Settings(
+                supabase_url="https://project.supabase.co",
+                supabase_anon_key="anon-key-must-not-be-used",
+            )
+        )
 
 
 def test_import_chunks_are_stable_and_keep_document_provenance():
     """Replacing content-derived IDs or metadata propagation would corrupt retrieval rows."""
-    repository = FakeKnowledgeRepository()
+    repository = RecordingRepository()
     service = KnowledgeImportService(repository, FakeEmbedder())
 
     assert service.import_documents([sample_document()]) == 2
+    chunks = repository.calls[0][1]
 
-    assert [chunk.chunk_id for chunk in repository.chunks] == [
+    assert [chunk.chunk_id for chunk in chunks] == [
         "fujian-test:2026-08-12:0001",
         "fujian-test:2026-08-12:0002",
     ]
-    assert {(chunk.region, chunk.topic, chunk.source_label) for chunk in repository.chunks} == {
+    assert {(chunk.region, chunk.topic, chunk.source_label) for chunk in chunks} == {
         ("福建", "景点", "福建省文化和旅游厅（试点整理）")
     }
 
@@ -69,8 +177,11 @@ def test_builtin_content_covers_required_topics_for_each_pilot_region():
         "yunnan.yaml": "云南",
         "xiamen.yaml": "厦门",
     }
-    documents = load_documents(Path("app/rag/content"))
+    content_dir = Path("app/rag/content")
+    assert {path.name for path in content_dir.glob("*.yaml")} == set(fixtures)
+    documents = load_documents(content_dir)
 
+    assert len(documents) == 12
     assert {(document.region, document.topic) for document in documents} == {
         (region, topic)
         for region in fixtures.values()

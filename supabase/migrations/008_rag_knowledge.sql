@@ -47,7 +47,7 @@ as $$
   limit least(greatest(match_count, 1), 20)
 $$;
 
-revoke all on table public.knowledge_chunks from public;
-revoke all on function public.match_knowledge_chunks(vector, text, integer) from public;
+revoke all on table public.knowledge_chunks from public, anon, authenticated;
+revoke all on function public.match_knowledge_chunks(vector, text, integer) from public, anon, authenticated;
 grant select, insert, update on table public.knowledge_chunks to service_role;
 grant execute on function public.match_knowledge_chunks(vector, text, integer) to service_role;
