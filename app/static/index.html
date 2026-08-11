@@ -104,11 +104,11 @@
     <aside id="assistant-panel" class="assistant-panel" aria-labelledby="chat-heading" hidden>
       <section id="chat-panel" class="chat-panel" aria-labelledby="chat-heading">
         <div class="assistant-panel-header">
-          <div>
+          <div id="assistant-drag-handle" role="group" tabindex="0" aria-label="旅行助手位置控制。可拖动，或使用方向键每次移动 40 像素。">
             <p class="eyebrow">Voyage AI 助手</p>
             <span class="assistant-online">在线 · 随时为你推荐</span>
           </div>
-          <button id="assistant-close" type="button" class="assistant-close" aria-label="关闭旅行助手">关闭</button>
+          <button id="assistant-reset-position" class="assistant-reset-position" type="button" aria-label="重置 AI 助手位置">重置位置</button>
         </div>
         <div class="section-heading">
           <h2 id="chat-heading">规划对话</h2>
@@ -153,7 +153,7 @@
     </section>
 
     <button id="assistant-toggle" class="assistant-toggle" type="button" aria-controls="assistant-panel" aria-expanded="false">
-      <span aria-hidden="true">✦</span> 打开 AI 助手
+      <span aria-hidden="true">✦</span><span id="assistant-toggle-label">打开 AI 助手</span>
     </button>
   </main>
 

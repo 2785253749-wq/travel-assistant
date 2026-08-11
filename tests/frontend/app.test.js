@@ -36,18 +36,310 @@ function assertBefore(events, first, second) {
   assert.ok(events.indexOf(first) < events.indexOf(second), `${first} must precede ${second}: ${events.join(", ")}`);
 }
 
-test("floating assistant opens from its launcher and Escape restores launcher focus", async () => {
+async function dispatchPointer(element, type, properties) {
+  const event = { preventDefault() {}, target: element, currentTarget: element, ...properties };
+  for (const listener of element.listeners.get(type) || []) await listener(event);
+}
+
+async function dispatchKey(element, key) {
+  let defaultPrevented = false;
+  const event = { key, target: element, currentTarget: element, preventDefault() { defaultPrevented = true; } };
+  for (const listener of element.listeners.get("keydown") || []) await listener(event);
+  return defaultPrevented;
+}
+
+test("mouse drag handle moves the open assistant and clamps it within 12px viewport margins", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handle = harness.elements.get("assistant-drag-handle");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = {};
+  panel.getBoundingClientRect = () => ({ left: 500, top: 300, width: 390, height: 400 });
+  const capturedPointers = [];
+  handle.setPointerCapture = (pointerId) => capturedPointers.push(pointerId);
+  await harness.elements.get("assistant-toggle").dispatch("click");
+
+  await dispatchPointer(handle, "pointerdown", { pointerId: 4, pointerType: "mouse", isPrimary: true, button: 0, clientX: 760, clientY: 420 });
+  assert.deepEqual(capturedPointers, [4]);
+  await dispatchPointer(handle, "pointermove", { pointerId: 4, pointerType: "mouse", clientX: -400, clientY: 2000 });
+  await dispatchPointer(handle, "pointerup", { pointerId: 4, pointerType: "mouse", clientX: -400, clientY: 2000 });
+
+  assert.equal(panel.style.left, "12px");
+  assert.equal(panel.style.top, "288px");
+  assert.equal(panel.hidden, false);
+  assert.equal(harness.fetchCalls.length, 0);
+});
+
+test("touch drag handle positions the open assistant from its title bar", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handle = harness.elements.get("assistant-drag-handle");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = {};
+  panel.getBoundingClientRect = () => ({ left: 400, top: 200, width: 390, height: 400 });
+  handle.setPointerCapture = () => {};
+  await harness.elements.get("assistant-toggle").dispatch("click");
+
+  await dispatchPointer(handle, "pointerdown", { pointerId: 9, pointerType: "touch", clientX: 460, clientY: 260 });
+  await dispatchPointer(handle, "pointermove", { pointerId: 9, pointerType: "touch", clientX: 500, clientY: 340 });
+
+  assert.equal(panel.style.left, "440px");
+  assert.equal(panel.style.top, "280px");
+});
+
+test("keyboard arrow keys move the open assistant by 40px and keep every edge within 12px", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handle = harness.elements.get("assistant-drag-handle");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = { left: "12px", top: "12px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({ left: 12, top: 12, width: 390, height: 400 });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+
+  assert.equal(handle.getAttribute("tabindex"), "0");
+  assert.equal(await dispatchKey(handle, "ArrowLeft"), true);
+  assert.equal(await dispatchKey(handle, "ArrowUp"), true);
+  assert.equal(panel.style.left, "12px");
+  assert.equal(panel.style.top, "12px");
+  panel.style.left = "498px";
+  panel.style.top = "288px";
+
+  assert.equal(await dispatchKey(handle, "ArrowRight"), true);
+  assert.equal(await dispatchKey(handle, "ArrowDown"), true);
+  assert.equal(panel.style.left, "498px");
+  assert.equal(panel.style.top, "288px");
+  assert.equal(panel.hidden, false);
+  assert.equal(harness.fetchCalls.length, 0);
+});
+
+test("an active assistant drag cannot be replaced by another primary pointer", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handle = harness.elements.get("assistant-drag-handle");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = {};
+  panel.getBoundingClientRect = () => ({ left: 400, top: 200, width: 390, height: 400 });
+  const capturedPointers = [];
+  handle.setPointerCapture = (pointerId) => capturedPointers.push(pointerId);
+  await harness.elements.get("assistant-toggle").dispatch("click");
+
+  await dispatchPointer(handle, "pointerdown", { pointerId: 10, pointerType: "mouse", isPrimary: true, button: 0, clientX: 460, clientY: 260 });
+  await dispatchPointer(handle, "pointerdown", { pointerId: 11, pointerType: "pen", isPrimary: true, button: 0, clientX: 480, clientY: 280 });
+  await dispatchPointer(handle, "pointermove", { pointerId: 10, pointerType: "mouse", clientX: 500, clientY: 300 });
+
+  assert.deepEqual(capturedPointers, [10]);
+  assert.equal(panel.style.left, "440px");
+  assert.equal(panel.style.top, "240px");
+});
+
+test("assistant drag keeps its coordinates visible when the panel is larger than the viewport", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handle = harness.elements.get("assistant-drag-handle");
+  harness.window.innerWidth = 300;
+  harness.window.innerHeight = 300;
+  panel.style = {};
+  panel.getBoundingClientRect = () => ({ left: 12, top: 12, width: 400, height: 400 });
+  handle.setPointerCapture = () => {};
+  await harness.elements.get("assistant-toggle").dispatch("click");
+
+  await dispatchPointer(handle, "pointerdown", { pointerId: 5, pointerType: "mouse", isPrimary: true, button: 0, clientX: 30, clientY: 30 });
+  await dispatchPointer(handle, "pointermove", { pointerId: 5, pointerType: "mouse", clientX: -100, clientY: -100 });
+
+  assert.equal(panel.style.left, "12px");
+  assert.equal(panel.style.top, "12px");
+});
+
+test("viewport resize pulls an open assistant back within 12px margins", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = { left: "498px", top: "288px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({ left: 498, top: 288, width: 390, height: 400 });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+  harness.window.innerWidth = 600;
+  harness.window.innerHeight = 500;
+
+  await harness.window.dispatch("resize");
+
+  assert.equal(panel.style.left, "198px");
+  assert.equal(panel.style.top, "88px");
+});
+
+test("orientation change pulls an open assistant back within 12px margins", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = { left: "498px", top: "288px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({ left: 498, top: 288, width: 390, height: 400 });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+  harness.window.innerWidth = 600;
+  harness.window.innerHeight = 500;
+
+  await harness.window.dispatch("orientationchange");
+
+  assert.equal(panel.style.left, "198px");
+  assert.equal(panel.style.top, "88px");
+});
+
+test("reopening the assistant re-clamps its saved inline position", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = { left: "498px", top: "288px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({ left: 498, top: 288, width: 390, height: 400 });
+  const toggle = harness.elements.get("assistant-toggle");
+  await toggle.dispatch("click");
+  await toggle.dispatch("click");
+  harness.window.innerWidth = 600;
+  harness.window.innerHeight = 500;
+
+  await toggle.dispatch("click");
+
+  assert.equal(panel.style.left, "198px");
+  assert.equal(panel.style.top, "88px");
+});
+
+test("an accessible reset control restores the assistant's default position", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const reset = harness.elements.get("assistant-reset-position");
+  panel.style = { left: "300px", top: "200px", right: "auto", bottom: "auto" };
+
+  assert.ok(reset, "a keyboard-focusable reset button is present");
+  assert.equal(reset.tagName, "BUTTON");
+  assert.equal(reset.getAttribute("aria-label"), "重置 AI 助手位置");
+  await reset.dispatch("click");
+
+  assert.equal(panel.style.left, "");
+  assert.equal(panel.style.top, "");
+  assert.equal(panel.style.right, "");
+  assert.equal(panel.style.bottom, "");
+});
+
+test("assistant drag ignores secondary mouse buttons and non-primary pointers", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handle = harness.elements.get("assistant-drag-handle");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = {};
+  panel.getBoundingClientRect = () => ({ left: 400, top: 200, width: 390, height: 400 });
+  const capturedPointers = [];
+  handle.setPointerCapture = (pointerId) => capturedPointers.push(pointerId);
+  await harness.elements.get("assistant-toggle").dispatch("click");
+
+  await dispatchPointer(handle, "pointerdown", { pointerId: 6, pointerType: "mouse", isPrimary: true, button: 2, clientX: 460, clientY: 260 });
+  await dispatchPointer(handle, "pointermove", { pointerId: 6, pointerType: "mouse", clientX: 500, clientY: 300 });
+  await dispatchPointer(handle, "pointerdown", { pointerId: 7, pointerType: "touch", isPrimary: false, clientX: 460, clientY: 260 });
+  await dispatchPointer(handle, "pointermove", { pointerId: 7, pointerType: "touch", clientX: 500, clientY: 300 });
+
+  assert.deepEqual(capturedPointers, []);
+  assert.equal(panel.style.left, undefined);
+  assert.equal(panel.style.top, undefined);
+});
+
+test("lost pointer capture stops later assistant movement", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handle = harness.elements.get("assistant-drag-handle");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = {};
+  panel.getBoundingClientRect = () => ({ left: 400, top: 200, width: 390, height: 400 });
+  handle.setPointerCapture = () => {};
+  await harness.elements.get("assistant-toggle").dispatch("click");
+
+  await dispatchPointer(handle, "pointerdown", { pointerId: 8, pointerType: "mouse", isPrimary: true, button: 0, clientX: 460, clientY: 260 });
+  await dispatchPointer(handle, "pointermove", { pointerId: 8, pointerType: "mouse", clientX: 500, clientY: 300 });
+  await dispatchPointer(handle, "lostpointercapture", { pointerId: 8 });
+  await dispatchPointer(handle, "pointermove", { pointerId: 8, pointerType: "mouse", clientX: 600, clientY: 400 });
+
+  assert.equal(panel.style.left, "440px");
+  assert.equal(panel.style.top, "240px");
+});
+
+test("assistant toggle opens and closes the panel without a dedicated close button", async () => {
   const harness = createHarness();
   await settle();
 
   const assistant = harness.elements.get("assistant-panel");
   const toggle = harness.elements.get("assistant-toggle");
+  const toggleLabel = harness.elements.get("assistant-toggle-label");
+  assistant.style = {};
   assert.ok(assistant, "assistant panel is present");
   assert.ok(toggle, "assistant launcher is present");
+  assert.ok(toggleLabel, "assistant launcher exposes a visible action label");
+  assert.equal(harness.elements.get("assistant-close"), undefined);
   assert.equal(assistant.hidden, true);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(toggle.getAttribute("aria-label"), "打开 AI 助手");
+  assert.equal(toggleLabel.textContent, "打开 AI 助手");
 
   await toggle.dispatch("click");
   assert.equal(assistant.hidden, false);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(toggle.getAttribute("aria-label"), "关闭 AI 助手");
+  assert.equal(toggleLabel.textContent, "关闭 AI 助手");
+
+  await toggle.dispatch("click");
+  assert.equal(assistant.hidden, true);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(toggle.getAttribute("aria-label"), "打开 AI 助手");
+  assert.equal(toggleLabel.textContent, "打开 AI 助手");
+});
+
+test("assistant launcher stays above a dragged panel so the same control can close it", () => {
+  const root = path.resolve(__dirname, "..", "..");
+  const css = fs.readFileSync(path.join(root, "app", "static", "styles.css"), "utf8");
+  const zIndexFor = (selector) => {
+    const rule = css.match(new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`));
+    assert.ok(rule, `${selector} rule is present`);
+    const zIndex = rule[1].match(/z-index:\s*(\d+)/);
+    assert.ok(zIndex, `${selector} declares a z-index`);
+    return Number(zIndex[1]);
+  };
+
+  assert.ok(zIndexFor(".assistant-toggle") > zIndexFor(".assistant-panel"));
+});
+
+test("Escape closes the assistant and restores launcher focus", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const assistant = harness.elements.get("assistant-panel");
+  const toggle = harness.elements.get("assistant-toggle");
+  assistant.style = {};
+  await toggle.dispatch("click");
 
   await harness.window.dispatch("keydown", { key: "Escape" });
   assert.equal(assistant.hidden, true);
@@ -83,7 +375,7 @@ test("real map explorer wiring renders data-driven cards and a selected place wi
 
   await findByText(map, "鼓浪屿").dispatch("click");
 
-  assert.equal(harness.elements.get("assistant-panel").hidden, false);
+  assert.equal(harness.elements.get("assistant-panel").hidden, true);
   assert.match(harness.elements.get("chat-messages").textContent, /鼓浪屿安排半天步行/);
   assert.equal(harness.elements.get("explore-place-card").hidden, false);
   assert.match(harness.elements.get("explore-place-card").textContent, /鼓浪屿/);
