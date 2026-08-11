@@ -91,16 +91,19 @@ def test_production_accepts_a_canonical_random_base64url_session_secret(monkeypa
     assert Settings(_env_file=None).app_env == "production"
 
 
-def test_production_accepts_missing_optional_rag_and_weather_keys():
+def test_production_accepts_missing_optional_rag_and_weather_keys(monkeypatch):
     """Guards graceful degradation when the optional providers are unconfigured."""
     from app.core.config import Settings
 
+    monkeypatch.delenv("JINA_API_KEY", raising=False)
+    monkeypatch.delenv("AMAP_WEB_SERVICE_KEY", raising=False)
     settings = Settings(
         app_env="production",
         supabase_url="https://project.supabase.co",
         supabase_anon_key=secrets.token_urlsafe(16),
         supabase_service_key=secrets.token_urlsafe(16),
         anon_session_signing_secret=secrets.token_urlsafe(32),
+        _env_file=None,
     )
 
     assert settings.jina_api_key is None
@@ -136,7 +139,34 @@ def test_rag_and_weather_operational_limits_must_be_positive(
     from app.core.config import Settings
 
     with pytest.raises(ValueError):
-        Settings(**{field_name: invalid_value})
+        Settings(_env_file=None, **{field_name: invalid_value})
+
+
+def test_rag_and_weather_settings_expose_the_full_operational_contract():
+    """Guards removal of any RAG/weather setting consumed by later tasks."""
+    from app.core.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    assert isinstance(settings.jina_api_key, SecretStr | type(None))
+    assert isinstance(settings.amap_web_service_key, SecretStr | type(None))
+    assert settings.rag_embedding_model == "jina-embeddings-v3"
+    assert 0.0 <= settings.rag_similarity_threshold <= 1.0
+    assert settings.rag_daily_embedding_limit > 0
+    assert settings.weather_daily_limit > 0
+    assert settings.weather_cache_seconds > 0
+    assert settings.weather_timeout_seconds > 0
+
+
+@pytest.mark.parametrize("invalid_threshold", [-0.01, 1.01])
+def test_rag_similarity_threshold_must_stay_within_closed_unit_interval(
+    invalid_threshold,
+):
+    """Guards retrieval from accepting an impossible similarity score cutoff."""
+    from app.core.config import Settings
+
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, rag_similarity_threshold=invalid_threshold)
 
 
 @pytest.mark.parametrize(

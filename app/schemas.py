@@ -21,9 +21,8 @@ class WeatherCard(StrictSchema):
     report_time: datetime | None = None
 
 
-class ItineraryWeather(StrictSchema):
+class ItineraryWeather(WeatherCard):
     date: date
-    weather: WeatherCard
 
 
 ProfileLocation = Annotated[str, Field(max_length=200)]
@@ -131,6 +130,7 @@ class ItineraryDay(StrictSchema):
     morning: Activity
     afternoon: Activity
     evening: Activity
+    weather: ItineraryWeather | None = None
 
     @model_validator(mode="after")
     def _activities_are_chronological(self) -> "ItineraryDay":
