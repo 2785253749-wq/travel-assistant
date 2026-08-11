@@ -123,9 +123,16 @@
     title.textContent = item.name;
     const description = document.createElement("p");
     description.textContent = item.description;
-    copy.append(label, title, description);
+    const recommendation = document.createElement("p");
+    recommendation.textContent = item.recommendation;
+    copy.append(label, title, description, recommendation);
     elements.explorePlaceCard.append(visual, copy);
     elements.explorePlaceCard.hidden = false;
+  }
+
+  function clearSelectedPlace() {
+    clearChildren(elements.explorePlaceCard);
+    elements.explorePlaceCard.hidden = true;
   }
 
   function handleExploreSelection(selection) {
@@ -137,6 +144,7 @@
   }
 
   function renderExploreCards(view) {
+    clearSelectedPlace();
     elements.mapBreadcrumb.textContent = view.breadcrumb.join(" › ");
     elements.mapTitle.textContent = view.title;
     elements.recommendationsTitle.textContent = view.title;

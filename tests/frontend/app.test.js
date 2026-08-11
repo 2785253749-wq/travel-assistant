@@ -88,7 +88,29 @@ test("real map explorer wiring renders data-driven cards and a selected place wi
   assert.equal(harness.elements.get("explore-place-card").hidden, false);
   assert.match(harness.elements.get("explore-place-card").textContent, /鼓浪屿/);
   assert.match(harness.elements.get("explore-place-card").textContent, /万国建筑/);
+  assert.match(harness.elements.get("explore-place-card").textContent, /鼓浪屿安排半天步行/);
   assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
+});
+
+test("real map navigation clears a selected place card before province and city context changes", async () => {
+  const harness = createHarness();
+  await harness.settle();
+  const map = harness.elements.get("explore-map");
+  const card = harness.elements.get("explore-place-card");
+
+  await findByText(map, "福建").dispatch("click");
+  await findByText(map, "厦门").dispatch("click");
+  await findByText(map, "鼓浪屿").dispatch("click");
+  assert.equal(card.hidden, false);
+  assert.match(card.textContent, /鼓浪屿/);
+
+  await findByText(map, "返回省份").dispatch("click");
+  assert.equal(card.hidden, true);
+  assert.equal(card.textContent, "");
+
+  await findByText(map, "福州").dispatch("click");
+  assert.equal(card.hidden, true);
+  assert.equal(card.textContent, "");
 });
 
 test("public shared itinerary hides the assistant launcher", async () => {

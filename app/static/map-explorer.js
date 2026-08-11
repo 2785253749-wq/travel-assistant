@@ -31,14 +31,20 @@
 
     let finish = () => {};
     const loading = new Promise((resolve) => {
-      const script = document.createElement("script");
+      let script = null;
       let timer = null;
       let settled = false;
       const cleanup = () => {
-        if (timer !== null) window.clearTimeout(timer);
-        script.onload = null;
-        script.onerror = null;
-        if (script.parentNode) script.parentNode.removeChild(script);
+        try {
+          if (timer !== null) window.clearTimeout(timer);
+        } catch (_) { /* best effort cleanup */ }
+        try {
+          if (script) {
+            script.onload = null;
+            script.onerror = null;
+            if (script.parentNode) script.parentNode.removeChild(script);
+          }
+        } catch (_) { /* best effort cleanup */ }
       };
       finish = (value) => {
         if (settled) return;
@@ -46,12 +52,13 @@
         cleanup();
         resolve(value);
       };
-      script.async = true;
-      script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(amapKey)}`;
-      script.onload = () => finish(window.AMap && typeof window.AMap.Map === "function" ? window.AMap : null);
-      script.onerror = () => finish(null);
-      timer = window.setTimeout(() => finish(null), 6000);
       try {
+        script = document.createElement("script");
+        script.async = true;
+        script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(amapKey)}`;
+        script.onload = () => finish(window.AMap && typeof window.AMap.Map === "function" ? window.AMap : null);
+        script.onerror = () => finish(null);
+        timer = window.setTimeout(() => finish(null), 6000);
         document.head.append(script);
       } catch (_) {
         finish(null);
@@ -119,10 +126,13 @@
     function emit(kind, item) { onSelect(selection(kind, item)); }
 
     function clearMarkers() {
-      markers.forEach((marker) => {
-        if (typeof marker.setMap === "function") marker.setMap(null);
-      });
+      const currentMarkers = markers;
       markers = [];
+      currentMarkers.forEach((marker) => {
+        try {
+          if (typeof marker.setMap === "function") marker.setMap(null);
+        } catch (_) { /* best effort cleanup */ }
+      });
     }
 
     function markerItems() {
@@ -131,17 +141,24 @@
       return findCity(activeId).places;
     }
 
+    function onlineView() {
+      const item = activeLevel === "province" ? findProvince(activeId) : activeLevel === "city" ? findCity(activeId) : null;
+      return item
+        ? { center: item.coordinates, zoom: activeLevel === "city" ? 11 : 8 }
+        : NATION_VIEW;
+    }
+
     function renderMarkers() {
       clearMarkers();
       markerItems().forEach((item) => {
         const marker = new amap.Marker({ position: item.coordinates, title: item.name });
+        markers.push(marker);
         marker.on("click", () => {
           if (activeLevel === "nation") showProvince(item.id);
           else if (activeLevel === "province") showCity(item.id);
           else emit("place", item);
         });
         marker.setMap(map);
-        markers.push(marker);
       });
     }
 
@@ -183,15 +200,16 @@
 
     function syncOnlineView() {
       if (!map || !amap) return;
-      const item = activeLevel === "province" ? findProvince(activeId) : activeLevel === "city" ? findCity(activeId) : null;
-      const view = item
-        ? { center: item.coordinates, zoom: activeLevel === "city" ? 11 : 8 }
-        : NATION_VIEW;
-      map.setZoomAndCenter(view.zoom, view.center);
-      renderMarkers();
-      canvas.hidden = false;
-      offlineLayer.hidden = true;
-      root.dataset.mapMode = "amap";
+      try {
+        const view = onlineView();
+        map.setZoomAndCenter(view.zoom, view.center);
+        renderMarkers();
+        canvas.hidden = false;
+        offlineLayer.hidden = true;
+        root.dataset.mapMode = "amap";
+      } catch (_) {
+        fallbackOffline();
+      }
     }
 
     function render({ transitionOnline = true } = {}) {
@@ -219,9 +237,10 @@
       if (destroyed || !loaded) return;
       amap = loaded;
       try {
+        const view = onlineView();
         canvas.hidden = false;
         offlineLayer.hidden = true;
-        map = new amap.Map(canvas, { zoom: NATION_VIEW.zoom, center: NATION_VIEW.center, viewMode: "2D" });
+        map = new amap.Map(canvas, { zoom: view.zoom, center: view.center, viewMode: "2D" });
         renderMarkers();
         root.dataset.mapMode = "amap";
       } catch (_) {

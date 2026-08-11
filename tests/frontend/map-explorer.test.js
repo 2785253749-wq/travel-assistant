@@ -204,6 +204,23 @@ test("synchronous script injection errors degrade to null without an unhandled r
   assert.equal(head.children.length, 0);
 }));
 
+test("AMap loader resolves synchronous element creation and source assignment failures to null", withControlledBrowser(async ({ head, clearedTimers }) => {
+  const { loadAmap } = require("../../app/static/map-explorer.js");
+  global.document.createElement = () => { throw new Error("element creation blocked"); };
+
+  assert.equal(await loadAmap("safe-key", "test-security-code"), null);
+  assert.deepEqual(clearedTimers, []);
+  assert.equal(head.children.length, 0);
+
+  const script = new FakeElement("script");
+  Object.defineProperty(script, "src", { set() { throw new Error("source assignment blocked"); } });
+  global.document.createElement = () => script;
+
+  assert.equal(await loadAmap("safe-key", "test-security-code"), null);
+  assert.deepEqual(clearedTimers, []);
+  assert.equal(head.children.length, 0);
+}));
+
 test("AMap initialization failure restores only the offline renderer", withBrowser(async () => {
   const { createMapExplorer } = require("../../app/static/map-explorer.js");
   global.window.AMap = { Map() { throw new Error("initialization failed"); } };
@@ -216,6 +233,61 @@ test("AMap initialization failure restores only the offline renderer", withBrows
   const canvas = descendants(root).find((node) => node.className === "amap-explorer-canvas");
   assert.equal(canvas.hidden, true);
   assert.match(root.textContent, /离线地图/);
+}));
+
+test("late AMap loading initializes the current Xiamen view and its place markers", withBrowser(async ({ head }) => {
+  const { createMapExplorer } = require("../../app/static/map-explorer.js");
+  const maps = [];
+  const markers = [];
+  class Map {
+    constructor(host, options) { this.host = host; this.options = options; maps.push(this); }
+    setZoomAndCenter() {}
+    destroy() {}
+  }
+  class Marker {
+    constructor(options) { this.options = options; markers.push(this); }
+    on() {}
+    setMap() {}
+  }
+  const root = new FakeElement("section");
+  const explorer = createMapExplorer(root, { amapKey: "safe-key", securityJsCode: "test-security-code" });
+
+  explorer.showProvince("fujian");
+  explorer.showCity("xiamen");
+  global.window.AMap = { Map, Marker };
+  head.firstChild.onload();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(maps.length, 1);
+  assert.deepEqual(maps[0].options.center, [118.09, 24.48]);
+  assert.equal(maps[0].options.zoom, 11);
+  assert.deepEqual(markers.map((marker) => marker.options.title), ["鼓浪屿", "南普陀寺", "环岛路"]);
+}));
+
+test("an online province transition error restores the current offline controls", withBrowser(async () => {
+  const { createMapExplorer } = require("../../app/static/map-explorer.js");
+  let shouldThrow = false;
+  class Map {
+    setZoomAndCenter() { if (shouldThrow) throw new Error("SDK transition failed"); }
+    destroy() {}
+  }
+  class Marker {
+    on() {}
+    setMap() {}
+  }
+  global.window.AMap = { Map, Marker };
+  const root = new FakeElement("section");
+  const explorer = createMapExplorer(root, { amapKey: "safe-key", securityJsCode: "test-security-code" });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  shouldThrow = true;
+  explorer.showProvince("fujian");
+
+  assert.equal(root.dataset.mapMode, "offline");
+  assert.equal(root.dataset.mapLevel, "province");
+  assert.ok(findByText(root, "返回全国"));
+  await findByText(root, "厦门").dispatch("click");
+  assert.equal(root.dataset.mapLevel, "city");
 }));
 
 test("one AMap instance starts at China and is reused for province and city transitions", withBrowser(async () => {
