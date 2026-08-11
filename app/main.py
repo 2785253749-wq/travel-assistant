@@ -88,6 +88,16 @@ def health(): return {"status":"ok"}
 def runtime_config() -> Response:
     settings = get_settings()
     public_config = {
+        "amapJsKey": (
+            settings.amap_js_key.get_secret_value()
+            if settings.amap_js_key is not None
+            else None
+        ),
+        "amapSecurityJsCode": (
+            settings.amap_security_js_code.get_secret_value()
+            if settings.amap_security_js_code is not None
+            else None
+        ),
         "supabaseUrl": str(settings.supabase_url) if settings.supabase_url else None,
         "supabaseAnonKey": (
             settings.supabase_anon_key.get_secret_value()

@@ -47,6 +47,8 @@ uvicorn app.main:app --reload
 | `DEEPSEEK_API_KEY` | AI 开启时 | DeepSeek 服务端密钥 |
 | `DEEPSEEK_MODEL` | 否 | `deepseek-v4-flash` |
 | `DEEPSEEK_API_BASE` | 否 | `https://api.deepseek.com` |
+| `AMAP_JS_KEY` | 地图在线模式 | 高德 JavaScript API 浏览器 Key；必须与安全密钥同时配置，否则使用离线地图 |
+| `AMAP_SECURITY_JS_CODE` | 地图在线模式 | 高德 JavaScript API 安全密钥；直连模式会交给浏览器，必须在高德控制台限制允许域名 |
 | `SUPABASE_URL` | 生产必需 | Supabase 项目 URL |
 | `SUPABASE_ANON_KEY` | 生产必需 | 浏览器可用的 anon key，仍受 RLS 保护 |
 | `SUPABASE_SERVICE_KEY` | 生产必需 | 仅服务端使用，绝不能暴露到前端或仓库 |
@@ -71,6 +73,14 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_public_repo.ps1
 固定离线评测包含 80 条用例：20 条完整规划、20 条缺失或矛盾需求、15 条拒绝场景、15 条自然语言变体和 10 条供应商/模型/额度异常。发布门禁检查意图准确率、槽位 micro-F1、澄清召回率、拒绝精确率与召回率、结构和预算有效率、引用覆盖率与有效率、不受支持事实率、任务成功率和降级成功率。80 条门禁明确标记为组件 fixture，不调用网络或付费模型；报告另含生产规则与应用编排的 plan/save/modify/explain/reopen 离线流程、P50/P95 和零调用成本口径，不能冒充线上模型基准。阈值见 `tests/evaluation/baseline.json`，详细口径见 `docs/evaluation/README.md`。
 
 CI 对每次 push 和 pull request 运行完整 pytest、独立的 80 条离线评测以及公开仓库敏感信息扫描，并保存评测报告为构建产物。
+
+## 高德地图 Explore 试点
+
+Explore 页面当前只实现 **福建、云南** 两个省份的地图试点：可从省级地图进入厦门、福州、大理、丽江，并查看各城市的本地热门景点标记。地图优先使用高德 JavaScript 地图；`AMAP_JS_KEY` 与 `AMAP_SECURITY_JS_CODE` 缺少任意一个、脚本加载失败或地图初始化失败时，页面会自动切换到可点击的本地离线 SVG 地图，基础浏览流程仍可运行。
+
+该试点不包含全国地图数据、真实景点图片、实时搜索与路线、票务或酒店支付、社区内容等能力。地图点选只会在前端打开助手并展示本地推荐，不会自动发起 AI 请求。
+
+高德 Key 与安全密钥分别通过 Render 环境变量 `AMAP_JS_KEY`、`AMAP_SECURITY_JS_CODE` 配置，禁止把真实值写入 `.env.example`、源码、文档、日志或 Git 提交记录。当前直连模式会把这两项浏览器配置交给前端，因此必须在高德控制台限制允许域名；若未来需要更强隔离，应另行设计服务代理。具体的生产配置和验收步骤见 [Render + Supabase 免费层部署说明](docs/deployment/free-tier.md)。
 
 ## 免费层部署
 

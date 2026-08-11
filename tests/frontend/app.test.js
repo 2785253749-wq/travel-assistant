@@ -65,6 +65,54 @@ test("page shell exposes Chinese navigation while the assistant stays initially 
   assert.equal(harness.elements.get("assistant-panel").hidden, true);
 });
 
+test("real map explorer wiring renders data-driven cards and a selected place without a chat request", async () => {
+  const harness = createHarness();
+  await harness.settle();
+
+  assert.ok(harness.elements.get("explore-page"), "探索页存在");
+  assert.ok(harness.elements.get("explore-map"), "地图容器存在");
+  assert.ok(harness.elements.get("explore-recommendations"), "推荐区存在");
+  const map = harness.elements.get("explore-map");
+  await findByText(map, "福建").dispatch("click");
+  assert.match(harness.elements.get("recommendations-title").textContent, /福建/);
+  assert.match(harness.elements.get("recommendation-grid").textContent, /厦门/);
+
+  await findByText(map, "厦门").dispatch("click");
+  assert.match(harness.elements.get("recommendations-title").textContent, /厦门/);
+  assert.match(harness.elements.get("recommendation-grid").textContent, /鼓浪屿/);
+
+  await findByText(map, "鼓浪屿").dispatch("click");
+
+  assert.equal(harness.elements.get("assistant-panel").hidden, false);
+  assert.match(harness.elements.get("chat-messages").textContent, /鼓浪屿安排半天步行/);
+  assert.equal(harness.elements.get("explore-place-card").hidden, false);
+  assert.match(harness.elements.get("explore-place-card").textContent, /鼓浪屿/);
+  assert.match(harness.elements.get("explore-place-card").textContent, /万国建筑/);
+  assert.match(harness.elements.get("explore-place-card").textContent, /鼓浪屿安排半天步行/);
+  assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
+});
+
+test("real map navigation clears a selected place card before province and city context changes", async () => {
+  const harness = createHarness();
+  await harness.settle();
+  const map = harness.elements.get("explore-map");
+  const card = harness.elements.get("explore-place-card");
+
+  await findByText(map, "福建").dispatch("click");
+  await findByText(map, "厦门").dispatch("click");
+  await findByText(map, "鼓浪屿").dispatch("click");
+  assert.equal(card.hidden, false);
+  assert.match(card.textContent, /鼓浪屿/);
+
+  await findByText(map, "返回省份").dispatch("click");
+  assert.equal(card.hidden, true);
+  assert.equal(card.textContent, "");
+
+  await findByText(map, "福州").dispatch("click");
+  assert.equal(card.hidden, true);
+  assert.equal(card.textContent, "");
+});
+
 test("public shared itinerary hides the assistant launcher", async () => {
   const harness = createHarness({ hash: "#share=opaque", fetch: async () => jsonResponse(200, {
     id: "trip-1", title: "共享行程", status: "planned", profile: {}, itinerary: { title: "共享行程", days: [] }, updated_at: null,
@@ -588,4 +636,33 @@ test("private history executes authenticated CRUD and revocable sharing", async 
   assert.ok(privateCalls.some((call) => call.options.method === "DELETE"));
   assert.ok(privateCalls.every((call) => !call.options.body || !Object.hasOwn(JSON.parse(call.options.body), "itinerary")));
   assert.ok(privateCalls.every((call) => call.options.headers.Authorization === "Bearer access-one"));
+});
+test("Explore city shortcuts expose stable unique ids and the Xiamen selector opens that city", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const xiamen = harness.document.getElementById("explore-city-xiamen");
+  assert.ok(xiamen, "#explore-city-xiamen must remain available to integrations");
+  assert.equal(xiamen.tagName, "BUTTON");
+  assert.equal(
+    descendants(harness.document.body).filter((node) => node.id && node.id.startsWith("explore-city-")).length,
+    4,
+  );
+
+  await xiamen.dispatch("click");
+
+  assert.equal(harness.elements.get("explore-map").dataset.mapLevel, "city");
+});
+
+test("Explore keeps the Xiamen city control selector unique while its map controls are visible", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const fujian = findByText(harness.elements.get("explore-map"), "福建");
+  await fujian.dispatch("click");
+  const xiamenControls = descendants(harness.document.body).filter((node) => node.id === "explore-city-xiamen");
+
+  assert.equal(xiamenControls.length, 1, "#explore-city-xiamen must not be duplicated");
+  await xiamenControls[0].dispatch("click");
+  assert.equal(harness.elements.get("explore-map").dataset.mapLevel, "city");
 });

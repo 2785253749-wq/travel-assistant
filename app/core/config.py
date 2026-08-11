@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     deepseek_api_key: SecretStr | None = None
     deepseek_model: str = "deepseek-v4-flash"
     deepseek_api_base: AnyHttpUrl = "https://api.deepseek.com"
+    amap_js_key: SecretStr | None = None
+    amap_security_js_code: SecretStr | None = None
     supabase_url: AnyHttpUrl | None = None
     supabase_anon_key: SecretStr | None = None
     supabase_service_key: SecretStr | None = None

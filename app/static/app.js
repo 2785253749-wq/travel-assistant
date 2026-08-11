@@ -26,6 +26,10 @@
     providerUpdatedAt: $("provider-updated-at"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantClose: $("assistant-close"),
+    explorePage: $("explore-page"), exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
+    mapBreadcrumb: $("map-breadcrumb"), mapTitle: $("map-title"), exploreShortcuts: $("explore-shortcuts"),
+    recommendationsTitle: $("recommendations-title"), recommendationCount: $("recommendation-count"),
+    recommendationGrid: $("recommendation-grid"), explorePlaceCard: $("explore-place-card"),
     profileCard: $("profile-confirmation"), profileFields: $("profile-fields"), confirm: $("confirm-profile-button"),
     edit: $("edit-profile-button"), tripView: $("trip-view"), tripTitle: $("trip-title"),
     tripContent: $("trip-content"), tripActions: $("trip-actions"), save: $("save-trip-button"),
@@ -40,6 +44,7 @@
     threadId: makeThreadId(),
   };
   let refreshPromise = null;
+  let mapExplorer = null;
 
   function makeThreadId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
@@ -85,6 +90,123 @@
     message.textContent = String(text || "");
     elements.messages.append(message);
     elements.messages.scrollTop = elements.messages.scrollHeight;
+  }
+
+  function appendExploreRecommendation(selection) {
+    openAssistant();
+    addMessage(selection.recommendation, "assistant");
+  }
+
+  function exploreItem(selection) {
+    const data = window.TravelMapExplorer?.EXPLORE_TRIAL;
+    if (!data || !selection) return null;
+    if (selection.kind === "province") return data.provinces.find((item) => item.id === selection.id) || null;
+    if (selection.kind === "city") return data.cities.find((item) => item.id === selection.id) || null;
+    for (const city of data.cities) {
+      const place = city.places.find((item) => item.id === selection.id);
+      if (place) return place;
+    }
+    return null;
+  }
+
+  function renderSelectedPlace(item) {
+    if (!item) return;
+    clearChildren(elements.explorePlaceCard);
+    const visual = document.createElement("div");
+    visual.className = `selected-place-visual ${item.visual}`;
+    visual.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("div");
+    const label = document.createElement("p");
+    label.className = "eyebrow";
+    label.textContent = "本地景点推荐";
+    const title = document.createElement("h3");
+    title.textContent = item.name;
+    const description = document.createElement("p");
+    description.textContent = item.description;
+    const recommendation = document.createElement("p");
+    recommendation.textContent = item.recommendation;
+    copy.append(label, title, description, recommendation);
+    elements.explorePlaceCard.append(visual, copy);
+    elements.explorePlaceCard.hidden = false;
+  }
+
+  function clearSelectedPlace() {
+    clearChildren(elements.explorePlaceCard);
+    elements.explorePlaceCard.hidden = true;
+  }
+
+  function handleExploreSelection(selection) {
+    if (!selection || typeof selection.recommendation !== "string") return;
+    const item = exploreItem(selection);
+    elements.exploreStatus.textContent = `已选择${selection.name}，Voyage AI 助手已准备本地建议。`;
+    if (selection.kind === "place") renderSelectedPlace(item);
+    appendExploreRecommendation(selection);
+  }
+
+  function renderExploreCards(view) {
+    clearSelectedPlace();
+    elements.mapBreadcrumb.textContent = view.breadcrumb.join(" › ");
+    elements.mapTitle.textContent = view.title;
+    elements.recommendationsTitle.textContent = view.title;
+    elements.recommendationCount.textContent = `${view.items.length} 个推荐`;
+    clearChildren(elements.recommendationGrid);
+    view.items.forEach((item) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "destination-card";
+      const visual = document.createElement("span");
+      visual.className = `destination-visual ${item.visual}`;
+      visual.setAttribute("aria-hidden", "true");
+      visual.textContent = item.name.slice(0, 2);
+      const copy = document.createElement("span");
+      copy.className = "destination-copy";
+      const title = document.createElement("strong");
+      title.textContent = item.name;
+      const description = document.createElement("span");
+      description.textContent = item.description;
+      copy.append(title, description);
+      card.append(visual, copy);
+      card.addEventListener("click", () => {
+        if (view.level === "nation") mapExplorer.showProvince(item.id);
+        else if (view.level === "province") mapExplorer.showCity(item.id);
+        else handleExploreSelection({ kind: "place", id: item.id, name: item.name, recommendation: item.recommendation });
+      });
+      elements.recommendationGrid.append(card);
+    });
+    renderExploreShortcuts(view.level === "province" ? new Set(view.items.map((item) => item.id)) : new Set());
+  }
+
+  function renderExploreShortcuts(excludedCityIds = new Set()) {
+    const mapModule = window.TravelMapExplorer;
+    clearChildren(elements.exploreShortcuts);
+    (mapModule?.EXPLORE_TRIAL?.cities || []).forEach((city) => {
+      if (excludedCityIds.has(city.id)) return;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.id = `explore-city-${city.id}`;
+      button.className = "map-chip";
+      button.textContent = city.name;
+      button.addEventListener("click", () => mapExplorer ? mapExplorer.showCity(city.id) : handleExploreSelection({
+        kind: "city", id: city.id, name: city.name, recommendation: city.recommendation,
+      }));
+      elements.exploreShortcuts.append(button);
+    });
+  }
+
+  function initializeExplore() {
+    const mapModule = window.TravelMapExplorer;
+    if (mapModule && typeof mapModule.createMapExplorer === "function") {
+      mapExplorer = mapModule.createMapExplorer(elements.exploreMap, {
+        amapKey: window.TRAVEL_ASSISTANT_CONFIG?.amapJsKey || null,
+        securityJsCode: window.TRAVEL_ASSISTANT_CONFIG?.amapSecurityJsCode || null,
+        onSelect: handleExploreSelection,
+        onStateChange: renderExploreCards,
+      });
+    } else {
+      elements.exploreStatus.textContent = "地图组件暂未加载，可使用热门城市快捷入口。";
+    }
+
+    renderExploreShortcuts();
   }
 
   function browserAuthConfig() {
@@ -787,6 +909,7 @@
       elements.messages.closest("section").hidden = true;
       elements.assistantPanel.hidden = true;
       elements.assistantToggle.hidden = true;
+      elements.explorePage.hidden = true;
       elements.history.hidden = true;
       setStatus("这是只读分享视图，不包含账户信息或聊天记录。", false);
     } catch (error) { showError(error); } finally { setBusy(false); }
@@ -812,6 +935,7 @@
 
   async function initializeApp() {
     if (await showPublicShare()) return;
+    initializeExplore();
     await initializeAuth();
   }
 

@@ -34,6 +34,10 @@ services:
         value: cf-connecting-ip
       - key: DEEPSEEK_API_KEY
         sync: false
+      - key: AMAP_JS_KEY
+        sync: false
+      - key: AMAP_SECURITY_JS_CODE
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
