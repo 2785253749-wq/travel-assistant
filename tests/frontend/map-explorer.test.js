@@ -290,6 +290,43 @@ test("an online province transition error restores the current offline controls"
   assert.equal(root.dataset.mapLevel, "city");
 }));
 
+test("a failed old marker detach falls back to offline without leaving visible online markers", withBrowser(async () => {
+  const { createMapExplorer } = require("../../app/static/map-explorer.js");
+  const maps = [];
+  const markers = [];
+  class Map {
+    constructor() { this.destroyed = false; maps.push(this); }
+    setZoomAndCenter() {}
+    destroy() { this.destroyed = true; }
+  }
+  class Marker {
+    constructor(options) { this.options = options; this.map = null; markers.push(this); }
+    on() {}
+    setMap(map) {
+      if (map === null && this.options.title === "福建") throw new Error("old marker detach failed");
+      this.map = map;
+    }
+  }
+  global.window.AMap = { Map, Marker };
+  const root = new FakeElement("section");
+  const explorer = createMapExplorer(root, { amapKey: "safe-key", securityJsCode: "test-security-code" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const originalMap = maps[0];
+  const fujianMarker = markers.find((marker) => marker.options.title === "福建");
+  assert.equal(fujianMarker.map, originalMap);
+
+  explorer.showProvince("fujian");
+
+  const canvas = descendants(root).find((node) => node.className === "amap-explorer-canvas");
+  assert.equal(root.dataset.mapMode, "offline");
+  assert.equal(canvas.hidden, true);
+  assert.equal(originalMap.destroyed, true);
+  assert.deepEqual(markers.filter((marker) => marker.map && !marker.map.destroyed), []);
+  assert.ok(findByText(root, "返回全国"));
+  await findByText(root, "厦门").dispatch("click");
+  assert.equal(root.dataset.mapLevel, "city");
+}));
+
 test("one AMap instance starts at China and is reused for province and city transitions", withBrowser(async () => {
   const { createMapExplorer } = require("../../app/static/map-explorer.js");
   const markers = [];

@@ -125,14 +125,18 @@
 
     function emit(kind, item) { onSelect(selection(kind, item)); }
 
-    function clearMarkers() {
+    function clearMarkers({ tolerateErrors = false } = {}) {
       const currentMarkers = markers;
       markers = [];
+      let cleanupError = null;
       currentMarkers.forEach((marker) => {
         try {
           if (typeof marker.setMap === "function") marker.setMap(null);
-        } catch (_) { /* best effort cleanup */ }
+        } catch (error) {
+          if (!cleanupError) cleanupError = error;
+        }
       });
+      if (cleanupError && !tolerateErrors) throw cleanupError;
     }
 
     function markerItems() {
@@ -224,7 +228,7 @@
     }
 
     function fallbackOffline() {
-      clearMarkers();
+      clearMarkers({ tolerateErrors: true });
       if (map && typeof map.destroy === "function") {
         try { map.destroy(); } catch (_) { /* best effort cleanup */ }
       }
@@ -277,7 +281,7 @@
       destroy() {
         destroyed = true;
         amapLoading.cancel();
-        clearMarkers();
+        clearMarkers({ tolerateErrors: true });
         if (map && typeof map.destroy === "function") {
           try { map.destroy(); } catch (_) { /* best effort cleanup */ }
         }
