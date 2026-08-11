@@ -4,11 +4,12 @@ import argparse
 from pathlib import Path
 from typing import Protocol, Sequence
 
-import httpx
 import yaml
 from pydantic import Field
 
 from app.core.config import Settings, get_settings
+from app.rag.embedding import JinaEmbedder as SharedJinaEmbedder
+from app.rag.embedding import NoopEmbeddingQuota
 from app.rag.models import KnowledgeChunk, KnowledgeDocument
 from app.rag.repository import KnowledgeStore, KnowledgeRepository
 
@@ -23,26 +24,20 @@ class StoredKnowledgeChunk(KnowledgeChunk):
     embedding: list[float] = Field(min_length=1024, max_length=1024)
 
 
-class JinaEmbedder:
-    def __init__(self, settings: Settings) -> None:
+class JinaEmbedder(SharedJinaEmbedder):
+    """Operator-only importer using the same Jina transport and validation."""
+
+    def __init__(self, settings: Settings, *, client=None) -> None:
         if settings.jina_api_key is None:
             raise RuntimeError("Knowledge import requires JINA_API_KEY")
-        self._api_key = settings.jina_api_key.get_secret_value()
-        self._model = settings.rag_embedding_model
-
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        response = httpx.post(
-            "https://api.jina.ai/v1/embeddings",
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            json={"model": self._model, "input": list(texts)},
-            timeout=30.0,
+        super().__init__(
+            api_key=settings.jina_api_key,
+            model=settings.rag_embedding_model,
+            timeout_seconds=settings.weather_timeout_seconds,
+            daily_limit=settings.rag_daily_embedding_limit,
+            quota=NoopEmbeddingQuota(),
+            client=client,
         )
-        response.raise_for_status()
-        payload = response.json()
-        vectors = [item["embedding"] for item in payload["data"]]
-        if len(vectors) != len(texts) or any(len(vector) != 1024 for vector in vectors):
-            raise RuntimeError("Jina returned an unexpected embedding shape")
-        return vectors
 
 
 class KnowledgeImportService:

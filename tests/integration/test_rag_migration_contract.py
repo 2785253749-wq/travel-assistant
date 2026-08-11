@@ -47,3 +47,18 @@ def test_rag_migration_stores_versioned_chunks_with_embeddings_and_provenance():
         "embedding vector(1024) not null",
     ):
         assert column in sql
+
+
+def test_rag_migration_reserves_daily_embedding_quota_atomically_for_service_role():
+    sql = MIGRATION.read_text(encoding="utf-8").lower()
+
+    assert "create table public.rag_embedding_daily_usage" in sql
+    assert "usage_date date primary key" in sql
+    assert "create function public.reserve_rag_embedding_quota" in sql
+    assert "insert into public.rag_embedding_daily_usage" in sql
+    assert "on conflict (usage_date) do update" in sql
+    assert "where rag_embedding_daily_usage.used + requested <= daily_limit" in sql
+    assert "timezone('utc', now())::date" in sql
+    assert "revoke all on table public.rag_embedding_daily_usage from public, anon, authenticated" in sql
+    assert "grant execute on function public.reserve_rag_embedding_quota" in sql
+    assert "to service_role" in sql

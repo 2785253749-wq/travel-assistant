@@ -1,9 +1,26 @@
 from datetime import date
+import json
+from threading import Lock
 
 import httpx
 import pytest
 
 from app.rag.embedding import JinaEmbedder, RagUnavailable
+
+
+class SharedQuota:
+    """Process-independent test double for the private atomic quota RPC."""
+
+    def __init__(self) -> None:
+        self._used = 0
+        self._lock = Lock()
+
+    def reserve(self, requested: int, limit: int) -> bool:
+        with self._lock:
+            if self._used + requested > limit:
+                return False
+            self._used += requested
+            return True
 
 
 def _embedding_payload(*vectors: list[float]) -> dict:
@@ -31,6 +48,7 @@ def test_jina_uses_bearer_auth_configured_timeout_and_model() -> None:
         model="jina-embeddings-v3",
         timeout_seconds=7.5,
         daily_limit=10,
+        quota=SharedQuota(),
         client=client,
     )
 
@@ -64,8 +82,8 @@ def test_daily_embedding_quota_refuses_before_an_extra_http_request() -> None:
         model="jina-embeddings-v3",
         timeout_seconds=3.0,
         daily_limit=1,
+        quota=SharedQuota(),
         client=httpx.Client(transport=httpx.MockTransport(handler)),
-        today=lambda: date(2026, 8, 12),
     )
 
     embedder.embed(["first"])
@@ -75,35 +93,84 @@ def test_daily_embedding_quota_refuses_before_an_extra_http_request() -> None:
     assert calls == 1
 
 
-def test_daily_quota_does_not_reset_when_clock_moves_backwards() -> None:
+def test_two_embedder_instances_share_a_persistent_daily_quota() -> None:
     calls = 0
-    dates = iter(
-        [
-            date(2026, 8, 13),
-            date(2026, 8, 13),
-            date(2026, 8, 12),
-        ]
-    )
+    quota = SharedQuota()
 
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
         return httpx.Response(200, json=_embedding_payload([0.0] * 1024))
 
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    first_process = JinaEmbedder(
+        api_key="server-secret",
+        model="jina-embeddings-v3",
+        timeout_seconds=3.0,
+        daily_limit=2,
+        quota=quota,
+        client=client,
+    )
+    restarted_process = JinaEmbedder(
+        api_key="server-secret",
+        model="jina-embeddings-v3",
+        timeout_seconds=3.0,
+        daily_limit=2,
+        quota=quota,
+        client=client,
+    )
+
+    first_process.embed(["first"])
+    restarted_process.embed(["second"])
+    with pytest.raises(RagUnavailable):
+        restarted_process.embed(["third"])
+
+    assert calls == 2
+
+
+def test_quota_rejection_happens_before_the_jina_transport_is_called() -> None:
+    class ClosedQuota:
+        def reserve(self, _requested, _limit) -> bool:
+            return False
+
+    called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        raise AssertionError("quota rejection must not contact Jina")
+
     embedder = JinaEmbedder(
         api_key="server-secret",
         model="jina-embeddings-v3",
         timeout_seconds=3.0,
         daily_limit=1,
+        quota=ClosedQuota(),
         client=httpx.Client(transport=httpx.MockTransport(handler)),
-        today=lambda: next(dates),
     )
 
-    embedder.embed(["first"])
     with pytest.raises(RagUnavailable):
-        embedder.embed(["stale-clock"])
+        embedder.embed(["blocked"])
 
-    assert calls == 1
+    assert called is False
+
+
+def test_programming_error_from_transport_is_not_disguised_as_unavailable() -> None:
+    class BrokenClient:
+        def post(self, *_args, **_kwargs):
+            raise TypeError("wrong internal call signature")
+
+    embedder = JinaEmbedder(
+        api_key="server-secret",
+        model="jina-embeddings-v3",
+        timeout_seconds=3.0,
+        daily_limit=1,
+        quota=SharedQuota(),
+        client=BrokenClient(),
+    )
+
+    with pytest.raises(TypeError, match="wrong internal call signature"):
+        embedder.embed(["broken"])
 
 
 @pytest.mark.parametrize(
@@ -118,15 +185,21 @@ def test_daily_quota_does_not_reset_when_clock_moves_backwards() -> None:
     ],
 )
 def test_bad_or_wrong_dimension_payload_is_unavailable(payload: dict) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=json.dumps(payload, allow_nan=True).encode("utf-8"),
+            headers={"content-type": "application/json"},
+        )
+
     embedder = JinaEmbedder(
         api_key="server-secret",
         model="jina-embeddings-v3",
         timeout_seconds=3.0,
         daily_limit=10,
+        quota=SharedQuota(),
         client=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(200, json=payload)
-            )
+            transport=httpx.MockTransport(handler)
         ),
     )
 
@@ -153,6 +226,7 @@ def test_upstream_failure_is_unavailable(outcome) -> None:
         model="jina-embeddings-v3",
         timeout_seconds=3.0,
         daily_limit=10,
+        quota=SharedQuota(),
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 

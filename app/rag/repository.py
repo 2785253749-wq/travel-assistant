@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Protocol, Sequence
 
+import httpx
+from postgrest.exceptions import APIError
+from pydantic import ValidationError
+
 from app.core.config import Settings, get_settings
+from app.rag.embedding import RagUnavailable
 from app.rag.models import KnowledgeChunk, KnowledgeDocument, RetrievedChunk
 
 
@@ -10,6 +15,10 @@ class KnowledgeStore(Protocol):
     def upsert_document(
         self, document: KnowledgeDocument, chunks: Sequence[KnowledgeChunk]
     ) -> int: ...
+
+
+class EmbeddingQuotaStore(Protocol):
+    def reserve(self, requested: int, limit: int) -> bool: ...
 
 
 class KnowledgeRepository:
@@ -63,12 +72,43 @@ class KnowledgeRepository:
             raise ValueError("limit must be between 1 and 20")
         if len(query_vector) != 1024:
             raise ValueError("query_vector must contain 1024 dimensions")
-        response = self._client.rpc(
-            "match_knowledge_chunks",
-            {
-                "query_embedding": list(query_vector),
-                "filter_region": region,
-                "match_count": limit,
-            },
-        ).execute()
-        return [RetrievedChunk.model_validate(row) for row in response.data or []]
+        try:
+            response = self._client.rpc(
+                "match_knowledge_chunks",
+                {
+                    "query_embedding": list(query_vector),
+                    "filter_region": region,
+                    "match_count": limit,
+                },
+            ).execute()
+            if not isinstance(response.data, list):
+                raise RagUnavailable
+            return [RetrievedChunk.model_validate(row) for row in response.data]
+        except (APIError, httpx.HTTPError, ValidationError):
+            raise RagUnavailable from None
+
+    def reserve(self, requested: int, limit: int) -> bool:
+        if requested <= 0 or limit <= 0:
+            raise ValueError("requested and limit must be positive")
+        try:
+            response = self._client.rpc(
+                "reserve_rag_embedding_quota",
+                {"requested": requested, "daily_limit": limit},
+            ).execute()
+        except (APIError, httpx.HTTPError):
+            raise RagUnavailable from None
+        return _reserved(response.data)
+
+
+def _reserved(data: object) -> bool:
+    if data is True or data is False:
+        return data
+    if isinstance(data, list) and len(data) == 1:
+        value = data[0]
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, dict):
+            reserved = value.get("reserve_rag_embedding_quota")
+            if isinstance(reserved, bool):
+                return reserved
+    raise RagUnavailable

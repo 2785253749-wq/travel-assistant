@@ -73,7 +73,7 @@ class KnowledgeAnswerService:
             if len(embeddings) != 1 or len(embeddings[0]) != EMBEDDING_DIMENSIONS:
                 raise RagUnavailable
             chunks = self._repository.search(embeddings[0], region, limit=4)
-        except Exception:
+        except RagUnavailable:
             return RagAnswer.refused()
         grounded = tuple(
             chunk for chunk in chunks[:4] if chunk.score >= self._threshold

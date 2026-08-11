@@ -4,15 +4,18 @@ from types import SimpleNamespace
 import sys
 
 import pytest
+import httpx
 
 from app.core.config import Settings
 from app.rag.models import KnowledgeDocument
 from app.rag.repository import KnowledgeRepository
 from app.scripts.import_knowledge import (
+    JinaEmbedder as ImportJinaEmbedder,
     KnowledgeImportService,
     StoredKnowledgeChunk,
     load_documents,
 )
+from app.rag.embedding import RagUnavailable
 
 
 class RecordingRepository:
@@ -66,6 +69,26 @@ class CapturingSupabaseClient:
 
     def table(self, name):
         self.table_name = name
+        return self.query
+
+
+class CapturingQuotaRpc:
+    def __init__(self, data) -> None:
+        self.data = data
+        self.name = None
+        self.arguments = None
+
+    def execute(self):
+        return SimpleNamespace(data=self.data)
+
+
+class CapturingQuotaClient:
+    def __init__(self, data) -> None:
+        self.query = CapturingQuotaRpc(data)
+
+    def rpc(self, name, arguments):
+        self.query.name = name
+        self.query.arguments = arguments
         return self.query
 
 
@@ -153,6 +176,26 @@ def test_repository_requires_service_role_configuration():
         )
 
 
+def test_repository_reserves_embedding_quota_through_private_atomic_rpc(monkeypatch):
+    client = CapturingQuotaClient(True)
+    monkeypatch.setitem(
+        sys.modules, "supabase", SimpleNamespace(create_client=lambda _url, _key: client)
+    )
+    repository = KnowledgeRepository(
+        settings=Settings(
+            supabase_url="https://project.supabase.co",
+            supabase_service_key="service-role-key",
+        )
+    )
+
+    assert repository.reserve(requested=2, limit=5) is True
+    assert client.query.name == "reserve_rag_embedding_quota"
+    assert client.query.arguments == {
+        "requested": 2,
+        "daily_limit": 5,
+    }
+
+
 def test_import_chunks_are_stable_and_keep_document_provenance():
     """Replacing content-derived IDs or metadata propagation would corrupt retrieval rows."""
     repository = RecordingRepository()
@@ -188,3 +231,19 @@ def test_builtin_content_covers_required_topics_for_each_pilot_region():
         for topic in ("景点", "交通", "餐饮", "季节与避坑")
     }
     assert all(document.source_label and document.reviewed_on for document in documents)
+
+
+def test_import_embedder_uses_shared_jina_payload_validation(monkeypatch):
+    """A response with a wrong index must fail identically to runtime retrieval."""
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200, json={"data": [{"index": 9, "embedding": [0.0] * 1024}]}
+        )
+    )
+    embedder = ImportJinaEmbedder(
+        Settings(jina_api_key="test-only-placeholder", weather_timeout_seconds=4.0),
+        client=httpx.Client(transport=transport),
+    )
+
+    with pytest.raises(RagUnavailable):
+        embedder.embed(["导入资料"])

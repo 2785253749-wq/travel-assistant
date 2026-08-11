@@ -1,3 +1,5 @@
+import pytest
+
 from app.rag.embedding import RagUnavailable
 from app.rag.models import RetrievedChunk
 from app.rag.service import KnowledgeAnswerService
@@ -40,8 +42,20 @@ class FakeRepository:
 
 
 class FailingRepository:
-    def search(self, _vector, _region, _limit):
-        raise RuntimeError("private database detail")
+    def search(self, _vector, _region, limit):
+        del limit
+        raise RagUnavailable("private database detail")
+
+
+class BrokenEmbedder:
+    def embed(self, _texts: list[str]) -> list[list[float]]:
+        raise TypeError("programming defect")
+
+
+class BrokenRepository:
+    def search(self, _vector, _region, limit):
+        del limit
+        raise AttributeError("repository programming defect")
 
 
 def test_lowest_ranked_chunk_below_threshold_is_not_returned() -> None:
@@ -80,6 +94,18 @@ def test_repository_failure_returns_fixed_chinese_refusal() -> None:
     assert answer.status == "refused"
     assert answer.reply == FIXED_REFUSAL
     assert answer.chunks == ()
+
+
+def test_programming_error_is_not_disguised_as_a_knowledge_refusal() -> None:
+    with pytest.raises(TypeError, match="programming defect"):
+        KnowledgeAnswerService(FakeRepository(), BrokenEmbedder()).answer(
+            "福建交通", region="福建"
+        )
+
+    with pytest.raises(AttributeError, match="repository programming defect"):
+        KnowledgeAnswerService(BrokenRepository(), FakeEmbedder()).answer(
+            "福建交通", region="福建"
+        )
 
 
 def test_no_chunk_at_or_above_threshold_returns_fixed_refusal() -> None:

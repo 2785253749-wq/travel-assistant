@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import date
+from json import JSONDecodeError
 from math import isfinite
-from threading import Lock
 from typing import Protocol
 
 import httpx
@@ -22,44 +20,40 @@ class EmbeddingHttpClient(Protocol):
     def post(self, url: str, **kwargs) -> httpx.Response: ...
 
 
-class JinaEmbedder:
+class EmbeddingQuota(Protocol):
+    def reserve(self, requested: int, limit: int) -> bool: ...
+
+
+class NoopEmbeddingQuota:
+    """Explicitly unlimited quota for the operator-only knowledge import path."""
+
+    def reserve(self, requested: int, limit: int) -> bool:
+        del requested, limit
+        return True
+
+
+class JinaEmbeddingTransport:
+    """Shared Jina wire adapter and payload validator for runtime and import."""
+
     def __init__(
         self,
         *,
         api_key: str | SecretStr,
         model: str,
         timeout_seconds: float,
-        daily_limit: int,
         client: EmbeddingHttpClient | None = None,
-        today: Callable[[], date] = date.today,
     ) -> None:
-        key = (
-            api_key.get_secret_value()
-            if isinstance(api_key, SecretStr)
-            else api_key
-        )
+        key = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
         if not key.strip():
             raise ValueError("api_key must be configured")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
-        if daily_limit <= 0:
-            raise ValueError("daily_limit must be positive")
         self._api_key = key
         self._model = model
         self._timeout_seconds = timeout_seconds
-        self._daily_limit = daily_limit
         self._client = client or httpx.Client()
-        self._today = today
-        self._quota_date = today()
-        self._quota_used = 0
-        self._quota_lock = Lock()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
-        if any(not isinstance(text, str) or not text.strip() for text in texts):
-            raise RagUnavailable
-        self._reserve_quota(len(texts))
         try:
             response = self._client.post(
                 JINA_EMBEDDINGS_URL,
@@ -69,21 +63,41 @@ class JinaEmbedder:
             )
             response.raise_for_status()
             payload = response.json()
-            return _validated_embeddings(payload, expected_count=len(texts))
-        except RagUnavailable:
-            raise
-        except Exception:
+        except (httpx.HTTPError, JSONDecodeError):
             raise RagUnavailable from None
+        return _validated_embeddings(payload, expected_count=len(texts))
 
-    def _reserve_quota(self, requested: int) -> None:
-        with self._quota_lock:
-            current_date = self._today()
-            if current_date > self._quota_date:
-                self._quota_date = current_date
-                self._quota_used = 0
-            if self._quota_used + requested > self._daily_limit:
-                raise RagUnavailable
-            self._quota_used += requested
+
+class JinaEmbedder:
+    def __init__(
+        self,
+        *,
+        api_key: str | SecretStr,
+        model: str,
+        timeout_seconds: float,
+        daily_limit: int,
+        quota: EmbeddingQuota,
+        client: EmbeddingHttpClient | None = None,
+    ) -> None:
+        if daily_limit <= 0:
+            raise ValueError("daily_limit must be positive")
+        self._daily_limit = daily_limit
+        self._quota = quota
+        self._transport = JinaEmbeddingTransport(
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            client=client,
+        )
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        if any(not isinstance(text, str) or not text.strip() for text in texts):
+            raise RagUnavailable
+        if not self._quota.reserve(len(texts), self._daily_limit):
+            raise RagUnavailable
+        return self._transport.embed(texts)
 
 
 def _validated_embeddings(payload: object, *, expected_count: int) -> list[list[float]]:

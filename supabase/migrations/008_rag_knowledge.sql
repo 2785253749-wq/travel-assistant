@@ -16,6 +16,13 @@ create table public.knowledge_chunks (
 
 alter table public.knowledge_chunks enable row level security;
 
+create table public.rag_embedding_daily_usage (
+  usage_date date primary key,
+  used integer not null default 0 check (used >= 0)
+);
+
+alter table public.rag_embedding_daily_usage enable row level security;
+
 create index knowledge_chunks_region_idx on public.knowledge_chunks (region);
 create index knowledge_chunks_embedding_idx on public.knowledge_chunks
   using ivfflat (embedding vector_cosine_ops) with (lists = 10);
@@ -47,7 +54,38 @@ as $$
   limit least(greatest(match_count, 1), 20)
 $$;
 
+create function public.reserve_rag_embedding_quota(
+  requested integer,
+  daily_limit integer
+)
+returns boolean
+language plpgsql
+volatile
+security definer
+set search_path = public
+as $$
+declare
+  reserved boolean;
+begin
+  if requested <= 0 or daily_limit <= 0 then
+    return false;
+  end if;
+
+  insert into public.rag_embedding_daily_usage (usage_date, used)
+  values (timezone('UTC', now())::date, requested)
+  on conflict (usage_date) do update
+  set used = rag_embedding_daily_usage.used + excluded.used
+  where rag_embedding_daily_usage.used + requested <= daily_limit
+  returning true into reserved;
+
+  return coalesce(reserved, false);
+end;
+$$;
+
 revoke all on table public.knowledge_chunks from public, anon, authenticated;
+revoke all on table public.rag_embedding_daily_usage from public, anon, authenticated;
 revoke all on function public.match_knowledge_chunks(vector, text, integer) from public, anon, authenticated;
+revoke all on function public.reserve_rag_embedding_quota(integer, integer) from public, anon, authenticated;
 grant select, insert, update on table public.knowledge_chunks to service_role;
 grant execute on function public.match_knowledge_chunks(vector, text, integer) to service_role;
+grant execute on function public.reserve_rag_embedding_quota(integer, integer) to service_role;

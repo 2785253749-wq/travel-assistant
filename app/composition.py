@@ -143,6 +143,7 @@ def build_knowledge_answer_service(
             model=settings.rag_embedding_model,
             timeout_seconds=settings.weather_timeout_seconds,
             daily_limit=settings.rag_daily_embedding_limit,
+            quota=repository,
             client=http_client,
         )
     return KnowledgeAnswerService(
