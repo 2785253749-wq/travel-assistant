@@ -36,6 +36,54 @@ function assertBefore(events, first, second) {
   assert.ok(events.indexOf(first) < events.indexOf(second), `${first} must precede ${second}: ${events.join(", ")}`);
 }
 
+async function dispatchPointer(element, type, properties) {
+  const event = { preventDefault() {}, target: element, currentTarget: element, ...properties };
+  for (const listener of element.listeners.get(type) || []) await listener(event);
+}
+
+test("mouse drag handle moves the open assistant and clamps it within 12px viewport margins", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handle = harness.elements.get("assistant-drag-handle");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = {};
+  panel.getBoundingClientRect = () => ({ left: 500, top: 300, width: 390, height: 400 });
+  handle.setPointerCapture = () => {};
+  await harness.elements.get("assistant-toggle").dispatch("click");
+
+  await dispatchPointer(handle, "pointerdown", { pointerId: 4, pointerType: "mouse", clientX: 760, clientY: 420 });
+  await dispatchPointer(handle, "pointermove", { pointerId: 4, pointerType: "mouse", clientX: -400, clientY: 2000 });
+  await dispatchPointer(handle, "pointerup", { pointerId: 4, pointerType: "mouse", clientX: -400, clientY: 2000 });
+
+  assert.equal(panel.style.left, "12px");
+  assert.equal(panel.style.top, "288px");
+  assert.equal(panel.hidden, false);
+  assert.equal(harness.fetchCalls.length, 0);
+});
+
+test("touch drag handle positions the open assistant from its title bar", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handle = harness.elements.get("assistant-drag-handle");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = {};
+  panel.getBoundingClientRect = () => ({ left: 400, top: 200, width: 390, height: 400 });
+  handle.setPointerCapture = () => {};
+  await harness.elements.get("assistant-toggle").dispatch("click");
+
+  await dispatchPointer(handle, "pointerdown", { pointerId: 9, pointerType: "touch", clientX: 460, clientY: 260 });
+  await dispatchPointer(handle, "pointermove", { pointerId: 9, pointerType: "touch", clientX: 500, clientY: 340 });
+
+  assert.equal(panel.style.left, "440px");
+  assert.equal(panel.style.top, "280px");
+});
+
 test("assistant toggle opens and closes the panel without a dedicated close button", async () => {
   const harness = createHarness();
   await settle();

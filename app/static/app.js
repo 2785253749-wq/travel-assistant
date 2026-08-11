@@ -76,6 +76,40 @@
     if (!open && restoreFocus) elements.assistantToggle.focus();
   }
 
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function initializeAssistantDrag() {
+    const handle = $("assistant-drag-handle");
+    let drag = null;
+
+    handle.addEventListener("pointerdown", (event) => {
+      if (elements.assistantPanel.hidden) return;
+      const rect = elements.assistantPanel.getBoundingClientRect();
+      drag = {
+        pointerId: event.pointerId,
+        offsetX: event.clientX - rect.left,
+        offsetY: event.clientY - rect.top,
+      };
+      handle.setPointerCapture(event.pointerId);
+    });
+    handle.addEventListener("pointermove", (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const rect = elements.assistantPanel.getBoundingClientRect();
+      const left = clamp(event.clientX - drag.offsetX, 12, window.innerWidth - rect.width - 12);
+      const top = clamp(event.clientY - drag.offsetY, 12, window.innerHeight - rect.height - 12);
+      Object.assign(elements.assistantPanel.style, {
+        left: `${left}px`, top: `${top}px`, right: "auto", bottom: "auto",
+      });
+    });
+    const stopDrag = (event) => {
+      if (drag && drag.pointerId === event.pointerId) drag = null;
+    };
+    handle.addEventListener("pointerup", stopDrag);
+    handle.addEventListener("pointercancel", stopDrag);
+  }
+
   function clearChildren(node) {
     while (node.firstChild) node.removeChild(node.firstChild);
   }
@@ -955,6 +989,7 @@
   elements.closeShare.addEventListener("click", () => { if (!state.busy) elements.shareDialog.close(); });
   elements.renameForm.addEventListener("submit", renameTrip);
   elements.cancelRename.addEventListener("click", () => { if (!state.busy) elements.renameDialog.close(); });
+  initializeAssistantDrag();
   setAssistantOpen(false);
   initializeApp();
 })();
