@@ -14,6 +14,18 @@ class StrictSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class WeatherCard(StrictSchema):
+    city: str = Field(min_length=1, max_length=80)
+    status: Literal["available", "unavailable", "seasonal"]
+    summary: str = Field(min_length=1, max_length=500)
+    report_time: datetime | None = None
+
+
+class ItineraryWeather(StrictSchema):
+    date: date
+    weather: WeatherCard
+
+
 ProfileLocation = Annotated[str, Field(max_length=200)]
 ProfileDate = Annotated[str, Field(max_length=32)]
 ProfileListItem = Annotated[str, Field(max_length=500)]

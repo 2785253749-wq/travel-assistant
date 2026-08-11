@@ -1,6 +1,7 @@
 import pytest
 import secrets
 import base64
+from pydantic import SecretStr
 
 
 def _base64url(raw: bytes) -> str:
@@ -88,6 +89,54 @@ def test_production_accepts_a_canonical_random_base64url_session_secret(monkeypa
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "service-key")
     monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", secrets.token_urlsafe(32))
     assert Settings(_env_file=None).app_env == "production"
+
+
+def test_production_accepts_missing_optional_rag_and_weather_keys():
+    """Guards graceful degradation when the optional providers are unconfigured."""
+    from app.core.config import Settings
+
+    settings = Settings(
+        app_env="production",
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key=secrets.token_urlsafe(16),
+        supabase_service_key=secrets.token_urlsafe(16),
+        anon_session_signing_secret=secrets.token_urlsafe(32),
+    )
+
+    assert settings.jina_api_key is None
+    assert settings.amap_web_service_key is None
+
+
+def test_optional_provider_keys_are_secret_values():
+    """Guards provider credentials from becoming plain-text settings values."""
+    from app.core.config import Settings
+
+    settings = Settings(
+        jina_api_key=secrets.token_urlsafe(16),
+        amap_web_service_key=secrets.token_urlsafe(16),
+    )
+
+    assert isinstance(settings.jina_api_key, SecretStr)
+    assert isinstance(settings.amap_web_service_key, SecretStr)
+
+
+@pytest.mark.parametrize(
+    "field_name, invalid_value",
+    [
+        ("rag_daily_embedding_limit", 0),
+        ("weather_daily_limit", 0),
+        ("weather_cache_seconds", 0),
+        ("weather_timeout_seconds", 0.0),
+    ],
+)
+def test_rag_and_weather_operational_limits_must_be_positive(
+    field_name, invalid_value
+):
+    """Guards disabled rate limits or timeouts caused by non-positive settings."""
+    from app.core.config import Settings
+
+    with pytest.raises(ValueError):
+        Settings(**{field_name: invalid_value})
 
 
 @pytest.mark.parametrize(
