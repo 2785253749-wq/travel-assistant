@@ -1,0 +1,33 @@
+documents:
+  - document_id: fujian-attractions
+    title: 福建景点试点提示
+    document_version: "2026-08-12"
+    region: 福建
+    topic: 景点
+    source_label: 福建省文化和旅游厅公开信息（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 武夷山适合安排山水步道与九曲溪体验；福州三坊七巷适合与城市漫步结合。热门假日景区入口和接驳排队时间会增加，出发前应核对预约与开放安排。
+  - document_id: fujian-transport
+    title: 福建交通试点提示
+    document_version: "2026-08-12"
+    region: 福建
+    topic: 交通
+    source_label: 福建省交通运输厅公开信息（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 福州、厦门之间可优先比较铁路班次；山区景区的末端接驳需要预留换乘时间。节假日自驾应留意山路天气和停车容量，不把地图预估时间当作唯一依据。
+  - document_id: fujian-food
+    title: 福建餐饮试点提示
+    document_version: "2026-08-12"
+    region: 福建
+    topic: 餐饮
+    source_label: 福建省文化和旅游厅公开信息（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 可按行程尝试闽菜、海鲜和地方小吃。点海鲜前先确认当日价格、做法与过敏原；沿海夜市客流高峰时，优先选择明码标价并保留消费凭证。
+  - document_id: fujian-seasonal
+    title: 福建季节与避坑试点提示
+    document_version: "2026-08-12"
+    region: 福建
+    topic: 季节与避坑
+    source_label: 福建省应急管理厅公开提示（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 夏秋季可能有强降雨、台风和沿海大风，户外及海上活动须以官方预警、景区公告和交通运行信息为准。雨天山地步道湿滑，准备防雨装备并避免进入封闭区域。

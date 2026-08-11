@@ -1,0 +1,53 @@
+create extension if not exists vector;
+
+create table public.knowledge_chunks (
+  chunk_id text primary key,
+  document_id text not null,
+  document_version text not null,
+  region text not null,
+  topic text not null,
+  content text not null,
+  source_label text not null,
+  reviewed_on date not null,
+  embedding vector(1024) not null,
+  imported_at timestamptz not null default now(),
+  unique (document_id, document_version, chunk_id)
+);
+
+alter table public.knowledge_chunks enable row level security;
+
+create index knowledge_chunks_region_idx on public.knowledge_chunks (region);
+create index knowledge_chunks_embedding_idx on public.knowledge_chunks
+  using ivfflat (embedding vector_cosine_ops) with (lists = 10);
+
+create function public.match_knowledge_chunks(
+  query_embedding vector(1024),
+  filter_region text default null,
+  match_count integer default 5
+)
+returns table (
+  chunk_id text,
+  content text,
+  source_label text,
+  score real
+)
+language sql
+stable
+security invoker
+set search_path = public
+as $$
+  select
+    knowledge_chunks.chunk_id,
+    knowledge_chunks.content,
+    knowledge_chunks.source_label,
+    (1 - (knowledge_chunks.embedding <=> query_embedding))::real as score
+  from public.knowledge_chunks
+  where filter_region is null or knowledge_chunks.region = filter_region
+  order by knowledge_chunks.embedding <=> query_embedding
+  limit least(greatest(match_count, 1), 20)
+$$;
+
+revoke all on table public.knowledge_chunks from public;
+revoke all on function public.match_knowledge_chunks(vector, text, integer) from public;
+grant select, insert, update on table public.knowledge_chunks to service_role;
+grant execute on function public.match_knowledge_chunks(vector, text, integer) to service_role;
