@@ -72,7 +72,7 @@ begin
   end if;
 
   insert into public.rag_embedding_daily_usage (usage_date, used)
-  values (timezone('UTC', now())::date, requested)
+  select timezone('UTC', now())::date, requested where requested <= daily_limit
   on conflict (usage_date) do update
   set used = rag_embedding_daily_usage.used + excluded.used
   where rag_embedding_daily_usage.used + requested <= daily_limit

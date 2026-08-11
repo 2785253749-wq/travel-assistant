@@ -17,10 +17,6 @@ class KnowledgeStore(Protocol):
     ) -> int: ...
 
 
-class EmbeddingQuotaStore(Protocol):
-    def reserve(self, requested: int, limit: int) -> bool: ...
-
-
 class KnowledgeRepository:
     """Private pgvector store, constructed exclusively with Supabase's service key."""
 
@@ -90,6 +86,8 @@ class KnowledgeRepository:
     def reserve(self, requested: int, limit: int) -> bool:
         if requested <= 0 or limit <= 0:
             raise ValueError("requested and limit must be positive")
+        if requested > limit:
+            return False
         try:
             response = self._client.rpc(
                 "reserve_rag_embedding_quota",

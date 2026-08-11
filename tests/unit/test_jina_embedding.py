@@ -174,6 +174,80 @@ def test_programming_error_from_transport_is_not_disguised_as_unavailable() -> N
 
 
 @pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, content=b"\xff", headers={"content-type": "application/json"}),
+        httpx.Response(200, json=[]),
+    ],
+)
+def test_invalid_upstream_json_or_non_object_payload_is_unavailable(response) -> None:
+    embedder = JinaEmbedder(
+        api_key="server-secret",
+        model="jina-embeddings-v3",
+        timeout_seconds=3.0,
+        daily_limit=1,
+        quota=SharedQuota(),
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda _request: response)
+        ),
+    )
+
+    with pytest.raises(RagUnavailable):
+        embedder.embed(["bad-upstream"])
+
+
+def test_huge_numeric_value_from_upstream_is_unavailable() -> None:
+    class HugeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {"index": 0, "embedding": [10**100_000] * 1024}
+                ]
+            }
+
+    class HugeNumberClient:
+        def post(self, *_args, **_kwargs):
+            return HugeResponse()
+
+    embedder = JinaEmbedder(
+        api_key="server-secret",
+        model="jina-embeddings-v3",
+        timeout_seconds=3.0,
+        daily_limit=1,
+        quota=SharedQuota(),
+        client=HugeNumberClient(),
+    )
+
+    with pytest.raises(RagUnavailable):
+        embedder.embed(["huge-number"])
+
+
+def test_json_number_exceeding_decoder_limits_is_unavailable() -> None:
+    huge_number = b"1" * 5_000
+    payload = b'{"data":[{"index":0,"embedding":[' + huge_number + b"]}]}"
+    embedder = JinaEmbedder(
+        api_key="server-secret",
+        model="jina-embeddings-v3",
+        timeout_seconds=3.0,
+        daily_limit=1,
+        quota=SharedQuota(),
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    200, content=payload, headers={"content-type": "application/json"}
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(RagUnavailable):
+        embedder.embed(["decoder-limit"])
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         {},

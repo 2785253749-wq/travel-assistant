@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from app.agent.graph import (
@@ -21,7 +21,7 @@ from app.infrastructure.repositories import (
 )
 from app.infrastructure.usage import SupabaseUsageRepository
 from app.providers.aggregate import ProviderEvidenceAggregator
-from app.rag.embedding import EmbeddingHttpClient, JinaEmbedder
+from app.rag.embedding import EmbeddingHttpClient, EmbeddingQuota, JinaEmbedder
 from app.rag.repository import KnowledgeRepository
 from app.rag.service import (
     Embedder,
@@ -35,6 +35,10 @@ from app.trips.service import TripService
 
 _confirmation_store = ConfirmationStore()
 _usage_repository = InMemoryUsageRepository()
+
+
+class KnowledgeRepositoryGateway(SearchRepository, EmbeddingQuota, Protocol):
+    """Private runtime dependency providing both retrieval and atomic quota reserve."""
 
 
 def _uses_supabase() -> bool:
@@ -121,7 +125,7 @@ def get_provider_evidence_aggregator() -> ProviderEvidenceAggregator:
 def build_knowledge_answer_service(
     *,
     settings: Settings | None = None,
-    repository: SearchRepository | None = None,
+    repository: KnowledgeRepositoryGateway | None = None,
     embedder: Embedder | None = None,
     http_client: EmbeddingHttpClient | None = None,
 ) -> KnowledgeAnswerService | UnavailableKnowledgeAnswerService:

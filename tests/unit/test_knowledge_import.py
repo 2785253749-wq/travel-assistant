@@ -196,6 +196,23 @@ def test_repository_reserves_embedding_quota_through_private_atomic_rpc(monkeypa
     }
 
 
+def test_repository_rejects_a_first_embedding_batch_larger_than_the_daily_limit(
+    monkeypatch,
+):
+    client = object()
+    monkeypatch.setitem(
+        sys.modules, "supabase", SimpleNamespace(create_client=lambda _url, _key: client)
+    )
+    repository = KnowledgeRepository(
+        settings=Settings(
+            supabase_url="https://project.supabase.co",
+            supabase_service_key="service-role-key",
+        )
+    )
+
+    assert repository.reserve(requested=2, limit=1) is False
+
+
 def test_import_chunks_are_stable_and_keep_document_provenance():
     """Replacing content-derived IDs or metadata propagation would corrupt retrieval rows."""
     repository = RecordingRepository()

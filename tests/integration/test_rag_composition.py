@@ -1,6 +1,7 @@
 from app.core.config import Settings
 from app.rag.models import RetrievedChunk
 from app.rag.service import KnowledgeAnswerService, UnavailableKnowledgeAnswerService
+from typing import get_type_hints
 
 
 class FakeEmbedder:
@@ -82,3 +83,11 @@ def test_missing_private_repository_configuration_degrades_without_http_call() -
     assert isinstance(service, UnavailableKnowledgeAnswerService)
     assert service.answer("福建交通", "福建").status == "refused"
     assert called is False
+
+
+def test_composition_requires_a_combined_search_and_quota_repository_protocol() -> None:
+    from app.composition import KnowledgeRepositoryGateway, build_knowledge_answer_service
+
+    assert get_type_hints(build_knowledge_answer_service)["repository"] == (
+        KnowledgeRepositoryGateway | None
+    )

@@ -56,6 +56,7 @@ def test_rag_migration_reserves_daily_embedding_quota_atomically_for_service_rol
     assert "usage_date date primary key" in sql
     assert "create function public.reserve_rag_embedding_quota" in sql
     assert "insert into public.rag_embedding_daily_usage" in sql
+    assert "select timezone('utc', now())::date, requested where requested <= daily_limit" in sql
     assert "on conflict (usage_date) do update" in sql
     assert "where rag_embedding_daily_usage.used + requested <= daily_limit" in sql
     assert "timezone('utc', now())::date" in sql

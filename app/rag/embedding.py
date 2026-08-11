@@ -63,9 +63,12 @@ class JinaEmbeddingTransport:
             )
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, JSONDecodeError):
+        except (httpx.HTTPError, JSONDecodeError, UnicodeDecodeError, ValueError):
             raise RagUnavailable from None
-        return _validated_embeddings(payload, expected_count=len(texts))
+        try:
+            return _validated_embeddings(payload, expected_count=len(texts))
+        except OverflowError:
+            raise RagUnavailable from None
 
 
 class JinaEmbedder:
