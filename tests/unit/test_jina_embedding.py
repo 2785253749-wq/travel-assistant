@@ -173,6 +173,24 @@ def test_programming_error_from_transport_is_not_disguised_as_unavailable() -> N
         embedder.embed(["broken"])
 
 
+def test_value_error_from_local_transport_code_is_not_disguised_as_unavailable() -> None:
+    class BrokenClient:
+        def post(self, *_args, **_kwargs):
+            raise ValueError("local client bug")
+
+    embedder = JinaEmbedder(
+        api_key="server-secret",
+        model="jina-embeddings-v3",
+        timeout_seconds=3.0,
+        daily_limit=1,
+        quota=SharedQuota(),
+        client=BrokenClient(),
+    )
+
+    with pytest.raises(ValueError, match="local client bug"):
+        embedder.embed(["broken"])
+
+
 @pytest.mark.parametrize(
     "response",
     [

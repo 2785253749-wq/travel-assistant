@@ -62,8 +62,11 @@ class JinaEmbeddingTransport:
                 timeout=self._timeout_seconds,
             )
             response.raise_for_status()
+        except httpx.HTTPError:
+            raise RagUnavailable from None
+        try:
             payload = response.json()
-        except (httpx.HTTPError, JSONDecodeError, UnicodeDecodeError, ValueError):
+        except (JSONDecodeError, UnicodeDecodeError, ValueError):
             raise RagUnavailable from None
         try:
             return _validated_embeddings(payload, expected_count=len(texts))
