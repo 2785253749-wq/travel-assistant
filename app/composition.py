@@ -11,7 +11,7 @@ from app.agent.graph import (
     SafeTravelAgent,
 )
 from app.application.chat import ConfirmationStore, TravelChatApplication
-from app.application.weather import WeatherService
+from app.application.weather import UnavailableWeatherService, WeatherService
 from app.api.auth import CurrentUser
 from app.core.config import Settings, get_settings
 from app.core.usage import InMemoryUsageRepository, UsageGuard, UsageRepository
@@ -166,8 +166,15 @@ def get_knowledge_answer_service(
     return build_knowledge_answer_service()
 
 
-def build_weather_service(*, settings: Settings | None = None) -> WeatherService:
+def build_weather_service(
+    *, settings: Settings | None = None
+) -> WeatherService | UnavailableWeatherService:
     settings = settings or get_settings()
+    if (
+        settings.amap_web_service_key is None
+        or not settings.amap_web_service_key.get_secret_value().strip()
+    ):
+        return UnavailableWeatherService()
     quota = None
     if settings.app_env == "production":
         if settings.supabase_url is None or settings.supabase_service_key is None:
@@ -189,7 +196,7 @@ def build_weather_service(*, settings: Settings | None = None) -> WeatherService
 
 
 @lru_cache(maxsize=1)
-def get_weather_service() -> WeatherService:
+def get_weather_service() -> WeatherService | UnavailableWeatherService:
     return build_weather_service()
 
 

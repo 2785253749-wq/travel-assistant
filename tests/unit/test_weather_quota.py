@@ -129,3 +129,50 @@ def test_production_weather_wiring_uses_a_service_role_quota_repository(monkeypa
 
     assert weather._quota._client is client
     assert calls == [("https://project.supabase.co/", "service-role-key")]
+
+
+def test_production_without_a_weather_key_returns_unavailable_without_reserving_quota(
+    monkeypatch,
+) -> None:
+    from app import composition
+    from app.core.config import get_settings
+
+    calls = []
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-key")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "service-role-key")
+    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", secrets.token_urlsafe(32))
+    monkeypatch.delenv("AMAP_WEB_SERVICE_KEY", raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "supabase",
+        SimpleNamespace(create_client=lambda *_args: calls.append("reserved")),
+    )
+    get_settings.cache_clear()
+
+    try:
+        weather = composition.build_weather_service()
+        card = weather.city_card("xiamen")
+    finally:
+        get_settings.cache_clear()
+
+    assert card.status == "unavailable"
+    assert calls == []
+
+
+def test_weather_quota_migration_keeps_table_and_rpc_private_to_service_role() -> None:
+    from pathlib import Path
+
+    sql = (
+        Path(__file__).parents[2] / "supabase" / "migrations" / "009_weather_quota.sql"
+    ).read_text(encoding="utf-8")
+    normalized = " ".join(sql.lower().split())
+
+    assert "alter table public.weather_daily_usage enable row level security;" in normalized
+    assert "security definer" in normalized
+    assert "set search_path = public" in normalized
+    assert "revoke all on table public.weather_daily_usage from public, anon, authenticated;" in normalized
+    assert "revoke all on function public.reserve_weather_quota(date, integer) from public, anon, authenticated;" in normalized
+    assert "grant execute on function public.reserve_weather_quota(date, integer) to service_role;" in normalized

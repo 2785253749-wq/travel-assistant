@@ -46,6 +46,18 @@ class WeatherQuota(Protocol):
     def reserve(self, usage_date: date, daily_limit: int) -> bool: ...
 
 
+class UnavailableWeatherService:
+    """Configured absence is a safe, quota-free weather degradation."""
+
+    def city_card(self, city_id: str) -> WeatherCard:
+        city = _pilot_city(city_id)
+        return _unavailable_card(city[1] if city is not None else city_id)
+
+    def daily_weather(self, destination: str, travel_date: date) -> None:
+        del destination, travel_date
+        return None
+
+
 class WeatherService:
     def __init__(
         self,
