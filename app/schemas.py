@@ -97,6 +97,7 @@ class SourceCitation(StrictSchema):
     fetched_at: datetime
     freshness: str = Field(min_length=1, max_length=500)
     fact: str = Field(default="", max_length=1000)
+    source_label: str | None = Field(default=None, min_length=1, max_length=200)
 
     @property
     def source(self) -> str:
@@ -130,6 +131,7 @@ class ItineraryDay(StrictSchema):
     morning: Activity
     afternoon: Activity
     evening: Activity
+    weather: ItineraryWeather | None = None
 
     @model_validator(mode="after")
     def _activities_are_chronological(self) -> "ItineraryDay":

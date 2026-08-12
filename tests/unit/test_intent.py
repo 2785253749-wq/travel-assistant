@@ -1,5 +1,6 @@
 import pytest
 
+from app.agent.graph import RuleIntentClassifier
 from app.agent.intent import IntentResult, classify_intent, route_intent
 
 
@@ -52,3 +53,14 @@ def test_trip_dependent_intents_start_a_plan_when_no_trip_exists(intent):
     result = route_intent(IntentResult(intent=intent, confidence=0.9), has_trip=False)
 
     assert result == "plan_trip"
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("厦门今天的天气怎么样", "weather_query"),
+        ("厦门去鼓浪屿怎么安排", "travel_knowledge"),
+    ],
+)
+def test_rule_classifier_routes_weather_and_grounded_travel_questions(message, expected):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == expected
