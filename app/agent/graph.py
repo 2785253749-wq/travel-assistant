@@ -176,8 +176,17 @@ class ModelIntentClassifier:
 class RuleIntentClassifier:
     """Credential-free pre-confirmation routing; paid models are planning-only."""
 
+    _COMPLETE_PLAN_ROUTE = re.compile(r"(?:从|from)\s*[^\s，,。]{1,30}?\s*(?:到|去|to)\s*[^\s，,。]{1,30}", re.IGNORECASE)
+    _PLAN_DATE = re.compile(r"\b20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
+    _PLAN_TRAVELERS = re.compile(r"(?<!\d)[1-9]\d?\s*(?:人|travellers?|travelers?)", re.IGNORECASE)
+    _PLAN_BUDGET = re.compile(r"(?:预算|budget)\s*(?:为|是|约)?\s*[:：]?\s*\d{1,8}", re.IGNORECASE)
+
     def classify(self, message: str, has_trip: bool) -> IntentResult:
         normalized = message.strip().lower()
+        # A fully specified trip request owns routing even when it also says
+        # “weather”, “attractions”, or “food”: those are planning preferences.
+        if self._is_complete_plan_request(normalized):
+            return IntentResult(intent="plan_trip", confidence=1.0)
         if any(
             term in normalized
             for term in ("天气", "气温", "温度", "下雨", "降雨", "风力", "风况", "weather")
@@ -218,6 +227,15 @@ class RuleIntentClassifier:
         ):
             return IntentResult(intent="unsupported", confidence=1.0)
         return IntentResult(intent="plan_trip", confidence=1.0)
+
+    @classmethod
+    def _is_complete_plan_request(cls, message: str) -> bool:
+        return (
+            cls._COMPLETE_PLAN_ROUTE.search(message) is not None
+            and len(cls._PLAN_DATE.findall(message)) >= 2
+            and cls._PLAN_TRAVELERS.search(message) is not None
+            and cls._PLAN_BUDGET.search(message) is not None
+        )
 
 
 def model() -> ChatDeepSeek:

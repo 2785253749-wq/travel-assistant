@@ -64,3 +64,14 @@ def test_trip_dependent_intents_start_a_plan_when_no_trip_exists(intent):
 )
 def test_rule_classifier_routes_weather_and_grounded_travel_questions(message, expected):
     assert RuleIntentClassifier().classify(message, has_trip=False).intent == expected
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "从北京到厦门，2026-10-01 到 2026-10-03，2人，预算4000元，想看景点和吃美食",
+        "从北京到厦门，2026-10-01 到 2026-10-03，2人，预算4000元，请把天气作为行程参考",
+    ],
+)
+def test_rule_classifier_keeps_complete_plan_requests_on_planning_flow(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "plan_trip"
