@@ -180,7 +180,7 @@ class RuleIntentClassifier:
     _PLAN_DATE = re.compile(r"\b20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
     _PLAN_TRAVELERS = re.compile(r"(?<!\d)[1-9]\d?\s*(?:人|travellers?|travelers?)", re.IGNORECASE)
     _PLAN_BUDGET = re.compile(r"(?:预算|budget)\s*(?:为|是|约)?\s*[:：]?\s*\d{1,8}", re.IGNORECASE)
-    _PLAN_CONTEXT = re.compile(r"(?:行程|规划|自由行|从[^，,。]{1,30}(?:出发)?\s*(?:到|去)|\d+\s*(?:天|日)|[一二三四五六七]\s*(?:天|日))", re.IGNORECASE)
+    _PLAN_CONTEXT = re.compile(r"(?:行程|规划|自由行|旅游|出游|游玩|想安排|从[^，,。]{1,30}(?:出发)?\s*(?:到|去))", re.IGNORECASE)
 
     def classify(self, message: str, has_trip: bool) -> IntentResult:
         normalized = message.strip().lower()

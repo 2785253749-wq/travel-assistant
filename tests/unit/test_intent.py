@@ -86,3 +86,8 @@ def test_rule_classifier_keeps_complete_plan_requests_on_planning_flow(message):
 )
 def test_rule_classifier_keeps_partial_plan_requests_on_collection_flow(message):
     assert RuleIntentClassifier().classify(message, has_trip=False).intent == "plan_trip"
+
+
+@pytest.mark.parametrize("message", ["厦门未来三天天气怎么样？", "厦门三天天气如何"])
+def test_rule_classifier_keeps_standalone_multi_day_weather_questions_on_weather_route(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "weather_query"

@@ -101,6 +101,34 @@ def test_knowledge_question_returns_chinese_source_labels_without_planner_call()
     planner.invoke.assert_not_called()
 
 
+def test_standalone_multi_day_weather_question_calls_weather_only() -> None:
+    class Classifier:
+        def classify(self, *_args):
+            return IntentResult(intent="weather_query", confidence=1.0)
+
+    planner = Mock()
+    knowledge = Mock()
+
+    class Weather:
+        calls = []
+
+        def city_card(self, city_id):
+            self.calls.append(city_id)
+            from app.schemas import WeatherCard
+
+            return WeatherCard(city="厦门", status="available", summary="晴，25°C")
+
+    weather = Weather()
+    result = SafeTravelAgent(
+        classifier=Classifier(), planner=planner, knowledge=knowledge, weather=weather
+    ).run("厦门未来三天天气怎么样？", trip=None, user_id=None)
+
+    assert result.intent == "weather_query"
+    assert weather.calls == ["厦门"]
+    planner.invoke.assert_not_called()
+    knowledge.answer.assert_not_called()
+
+
 def test_fourth_itinerary_day_uses_marked_seasonal_advice_not_live_forecast() -> None:
     base = itinerary_factory(days=[
         ItineraryDay(
