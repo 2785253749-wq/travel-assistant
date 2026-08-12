@@ -11,6 +11,7 @@ from app.agent.graph import (
     SafeTravelAgent,
 )
 from app.application.chat import ConfirmationStore, TravelChatApplication
+from app.application.weather import WeatherService
 from app.api.auth import CurrentUser
 from app.core.config import Settings, get_settings
 from app.core.usage import InMemoryUsageRepository, UsageGuard, UsageRepository
@@ -20,7 +21,9 @@ from app.infrastructure.repositories import (
     create_user_scoped_supabase_repository,
 )
 from app.infrastructure.usage import SupabaseUsageRepository
+from app.infrastructure.weather import SupabaseWeatherQuotaRepository
 from app.providers.aggregate import ProviderEvidenceAggregator
+from app.providers.amap_weather import AmapWeatherProvider
 from app.rag.embedding import EmbeddingHttpClient, EmbeddingQuota, JinaEmbedder
 from app.rag.repository import KnowledgeRepository
 from app.rag.service import (
@@ -161,6 +164,33 @@ def build_knowledge_answer_service(
 def get_knowledge_answer_service(
 ) -> KnowledgeAnswerService | UnavailableKnowledgeAnswerService:
     return build_knowledge_answer_service()
+
+
+def build_weather_service(*, settings: Settings | None = None) -> WeatherService:
+    settings = settings or get_settings()
+    quota = None
+    if settings.app_env == "production":
+        if settings.supabase_url is None or settings.supabase_service_key is None:
+            raise RuntimeError("server-side weather quota storage is not configured")
+        from supabase import create_client
+
+        quota = SupabaseWeatherQuotaRepository(
+            create_client(
+                str(settings.supabase_url),
+                settings.supabase_service_key.get_secret_value()
+            )
+        )
+    return WeatherService(
+        provider=AmapWeatherProvider(settings=settings),
+        cache_ttl_seconds=settings.weather_cache_seconds,
+        daily_limit=settings.weather_daily_limit,
+        quota=quota,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_weather_service() -> WeatherService:
+    return build_weather_service()
 
 
 def build_chat_application(user: Any | None) -> TravelChatApplication:

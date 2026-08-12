@@ -14,6 +14,7 @@ from app.core.logging import configure_logging, operational_context, request_con
 from app.api.auth import CurrentUser
 from app.api.trips import router as trips_router
 from app.api.chat import router as chat_router
+from app.api.weather import router as weather_router
 
 BASE = Path(__file__).resolve().parent
 configure_logging()
@@ -118,3 +119,4 @@ def api_me(user: CurrentUser):
 
 app.include_router(trips_router)
 app.include_router(chat_router)
+app.include_router(weather_router)
