@@ -41,10 +41,11 @@
   const state = {
     name: "signed_out", busy: false, session: null, authClient: null, user: null, profile: null,
     pendingResult: null, currentTrip: null, renameTripId: null, shareTripId: null,
-    threadId: makeThreadId(),
+    threadId: makeThreadId(), cityWeather: new Map(), cityWeatherRequests: new Map(), selectedExploreCityId: null,
   };
   let refreshPromise = null;
   let mapExplorer = null;
+  let cityWeatherCard = null;
 
   function makeThreadId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
@@ -200,16 +201,58 @@
     elements.explorePlaceCard.hidden = true;
   }
 
+  function clearCityWeatherCard() {
+    if (cityWeatherCard && cityWeatherCard.parentNode) cityWeatherCard.parentNode.removeChild(cityWeatherCard);
+    cityWeatherCard = null;
+  }
+
+  function renderCityWeatherCard(weather, fallbackCity) {
+    clearCityWeatherCard();
+    const card = document.createElement("article");
+    card.className = "city-weather-card";
+    const summary = document.createElement("p");
+    const city = typeof weather?.city === "string" && weather.city.trim() ? weather.city : fallbackCity;
+    const details = typeof weather?.summary === "string" && weather.summary.trim() ? weather.summary : "天气暂不可用";
+    summary.textContent = `${city}：${details}`;
+    card.append(summary);
+    elements.explorePlaceCard.parentNode.append(card);
+    cityWeatherCard = card;
+  }
+
+  async function renderCityWeather(cityId, fallbackCity) {
+    let weather = state.cityWeather.get(cityId);
+    if (!weather) {
+      let weatherRequest = state.cityWeatherRequests.get(cityId);
+      if (!weatherRequest) {
+        weatherRequest = requestJson(`/api/weather/cities/${encodeURIComponent(cityId)}`)
+          .catch(() => ({ city: fallbackCity, status: "unavailable", summary: "天气暂不可用" }));
+        state.cityWeatherRequests.set(cityId, weatherRequest);
+      }
+      weather = await weatherRequest;
+      state.cityWeather.set(cityId, weather);
+      state.cityWeatherRequests.delete(cityId);
+    }
+    if (state.selectedExploreCityId === cityId) renderCityWeatherCard(weather, fallbackCity);
+  }
+
   function handleExploreSelection(selection) {
     if (!selection || typeof selection.recommendation !== "string") return;
     const item = exploreItem(selection);
     elements.exploreStatus.textContent = `已选择${selection.name}，Voyage AI 助手已准备本地建议。`;
+    if (selection.kind === "city") {
+      state.selectedExploreCityId = selection.id;
+      renderCityWeather(selection.id, selection.name);
+    }
     if (selection.kind === "place") renderSelectedPlace(item);
     appendExploreRecommendation(selection);
   }
 
   function renderExploreCards(view) {
     clearSelectedPlace();
+    if (view.level !== "city") {
+      state.selectedExploreCityId = null;
+      clearCityWeatherCard();
+    }
     elements.mapBreadcrumb.textContent = view.breadcrumb.join(" › ");
     elements.mapTitle.textContent = view.title;
     elements.recommendationsTitle.textContent = view.title;
@@ -478,6 +521,14 @@
       const card = document.createElement("article");
       card.className = "day-card";
       appendTextBlock(card, "h3", `日期：${day.date || "待确认"}`);
+      if (day.weather && typeof day.weather === "object") {
+        const weather = document.createElement("p");
+        weather.className = "itinerary-weather";
+        const summary = typeof day.weather.summary === "string" && day.weather.summary.trim()
+          ? day.weather.summary : "天气暂不可用";
+        weather.textContent = `天气：${summary}`;
+        card.append(weather);
+      }
       const slots = document.createElement("ul");
       for (const slot of ["morning", "afternoon", "evening"]) {
         const activity = day[slot];

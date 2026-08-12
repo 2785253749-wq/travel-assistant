@@ -384,6 +384,80 @@ test("real map explorer wiring renders data-driven cards and a selected place wi
   assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
 });
 
+test("selecting Xiamen fetches one weather card without opening the assistant or calling chat", async () => {
+  const harness = createHarness({ fetch: async (call) => {
+    if (call.url === "/api/weather/cities/xiamen") {
+      return jsonResponse(200, { city: "厦门", status: "available", summary: "晴 26℃", report_time: "2026-08-13T09:00:00+08:00" });
+    }
+    throw new Error(`unexpected ${call.url}`);
+  } });
+  await harness.settle();
+
+  await findByText(harness.elements.get("explore-map"), "福建").dispatch("click");
+  await findByText(harness.elements.get("explore-map"), "厦门").dispatch("click");
+  await harness.settle();
+
+  const weatherCalls = harness.fetchCalls.filter((call) => call.url === "/api/weather/cities/xiamen");
+  assert.equal(weatherCalls.length, 1);
+  assert.equal(harness.elements.get("assistant-panel").hidden, true);
+  assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
+  assert.equal(descendants(harness.document.body).find((node) => node.className === "city-weather-card").textContent, "厦门：晴 26℃");
+});
+
+test("repeated city selections share one in-flight weather request", async () => {
+  let releaseWeather;
+  const weatherPending = new Promise((resolve) => { releaseWeather = resolve; });
+  const harness = createHarness({ fetch: async (call) => {
+    if (call.url === "/api/weather/cities/xiamen") return weatherPending;
+    throw new Error(`unexpected ${call.url}`);
+  } });
+  await harness.settle();
+
+  await findByText(harness.elements.get("explore-map"), "福建").dispatch("click");
+  const xiamen = findByText(harness.elements.get("explore-map"), "厦门");
+  await Promise.all([xiamen.dispatch("click"), xiamen.dispatch("click")]);
+  assert.equal(harness.fetchCalls.filter((call) => call.url === "/api/weather/cities/xiamen").length, 1);
+
+  releaseWeather(jsonResponse(200, { city: "厦门", status: "available", summary: "晴 26℃" }));
+  await harness.settle();
+});
+
+test("weather endpoint failure shows unavailable copy while the city map stays usable", async () => {
+  const harness = createHarness({ fetch: async (call) => {
+    if (call.url === "/api/weather/cities/xiamen") throw new Error("offline");
+    throw new Error(`unexpected ${call.url}`);
+  } });
+  await harness.settle();
+
+  await findByText(harness.elements.get("explore-map"), "福建").dispatch("click");
+  await findByText(harness.elements.get("explore-map"), "厦门").dispatch("click");
+  await harness.settle();
+
+  assert.match(descendants(harness.document.body).find((node) => node.className === "city-weather-card").textContent, /天气暂不可用/);
+  assert.equal(harness.elements.get("explore-map").dataset.mapLevel, "city");
+  assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
+});
+
+test("itinerary renders only its structured daily weather with Chinese labels", async () => {
+  const itinerary = {
+    title: "厦门两日行程",
+    days: [{
+      date: "2026-08-13",
+      weather: { status: "available", summary: "晴 26℃", report_time: "2026-08-13T09:00:00+08:00" },
+      morning: { title: "鼓浪屿", start_time: "09:00", end_time: "11:00", citations: [] },
+    }],
+    citations: [],
+  };
+  const harness = createHarness({ hash: "#share=opaque", fetch: async () => jsonResponse(200, {
+    id: "trip-1", title: itinerary.title, status: "planned", profile: {}, itinerary, updated_at: null,
+  }) });
+  await harness.settle();
+
+  const weather = descendants(harness.document.body).find((node) => node.className === "itinerary-weather");
+  assert.equal(weather.textContent, "天气：晴 26℃");
+  assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
+});
+
 test("real map navigation clears a selected place card before province and city context changes", async () => {
   const harness = createHarness();
   await harness.settle();

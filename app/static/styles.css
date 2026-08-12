@@ -98,6 +98,8 @@ h3 { margin: .05rem 0 .15rem; font-size: 1.05rem; }
 .selected-place-visual { min-height: 7.5rem; border-radius: .75rem; background: linear-gradient(145deg, #0878d8, #8bd0e7); }
 .selected-place-card h3 { margin-bottom: .35rem; }
 .selected-place-card p:last-child { margin-bottom: 0; color: var(--muted); font-size: .88rem; }
+.city-weather-card { margin: 0 .9rem .9rem; padding: .75rem; border: 1px solid #b9d6ff; border-radius: 1rem; color: #1558a6; background: #f3f8ff; }
+.city-weather-card > p:last-child { margin: 0; font-weight: 700; }
 
 .workspace { display: grid; gap: 1rem; margin-top: 1rem; }
 .auth-panel form { margin: 0; }
@@ -118,6 +120,7 @@ h3 { margin: .05rem 0 .15rem; font-size: 1.05rem; }
 .itinerary-days { display: grid; gap: .75rem; }
 .day-card, .budget-card, .source-list, .search-links { margin-top: .75rem; padding: .8rem; border-radius: .75rem; background: var(--surface); }
 .day-card ul, .source-list { padding-left: 1.2rem; }
+.itinerary-weather { width: fit-content; margin: .55rem 0; padding: .35rem .6rem; border-radius: 999px; color: #1558a6; background: var(--surface-blue); font-size: .92rem; font-weight: 700; }
 .source-list a, .search-links a { color: #064fa6; overflow-wrap: anywhere; }
 .empty-state { color: var(--muted); }
 
