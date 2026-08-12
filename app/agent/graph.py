@@ -180,26 +180,13 @@ class RuleIntentClassifier:
     _PLAN_DATE = re.compile(r"\b20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
     _PLAN_TRAVELERS = re.compile(r"(?<!\d)[1-9]\d?\s*(?:人|travellers?|travelers?)", re.IGNORECASE)
     _PLAN_BUDGET = re.compile(r"(?:预算|budget)\s*(?:为|是|约)?\s*[:：]?\s*\d{1,8}", re.IGNORECASE)
+    _PLAN_CONTEXT = re.compile(r"(?:行程|规划|自由行|从[^，,。]{1,30}(?:出发)?\s*(?:到|去)|\d+\s*(?:天|日)|[一二三四五六七]\s*(?:天|日))", re.IGNORECASE)
 
     def classify(self, message: str, has_trip: bool) -> IntentResult:
         normalized = message.strip().lower()
-        # A fully specified trip request owns routing even when it also says
-        # “weather”, “attractions”, or “food”: those are planning preferences.
-        if self._is_complete_plan_request(normalized):
-            return IntentResult(intent="plan_trip", confidence=1.0)
-        if any(
-            term in normalized
-            for term in ("天气", "气温", "温度", "下雨", "降雨", "风力", "风况", "weather")
-        ):
-            return IntentResult(intent="weather_query", confidence=1.0)
-        if any(
-            term in normalized
-            for term in (
-                "鼓浪屿", "景点", "攻略", "怎么去", "交通", "美食", "吃什么",
-                "季节", "避坑", "轮渡", "古城", "洱海",
-            )
-        ):
-            return IntentResult(intent="travel_knowledge", confidence=1.0)
+        # Existing-trip operations have the highest rule priority. In
+        # particular, “第一天为什么这样安排” is an explanation, not a new
+        # one-day planning request.
         if has_trip and any(term in normalized for term in ("为什么", "为何", "解释", "理由", "why", "explain")):
             return IntentResult(intent="explain_trip", confidence=1.0)
         if has_trip and any(
@@ -218,23 +205,41 @@ class RuleIntentClassifier:
             )
         ):
             return IntentResult(intent="modify_trip", confidence=1.0)
-        greeting = re.sub(r"[\s,.!?，。！？]+", "", normalized)
-        if greeting in {"你好", "您好", "嗨", "哈喽", "侬好", "hello", "hi"}:
-            return IntentResult(intent="smalltalk", confidence=1.0)
         if any(
             term in normalized
             for term in ("作业", "裁员", "写代码", "编程", "homework", "write my")
         ):
             return IntentResult(intent="unsupported", confidence=1.0)
+        # Planning context owns routing even when it also says “weather”,
+        # “attractions”, or “food”: incomplete profiles must reach collection.
+        if self._has_planning_context(normalized):
+            return IntentResult(intent="plan_trip", confidence=1.0)
+        if any(
+            term in normalized
+            for term in ("天气", "气温", "温度", "下雨", "降雨", "风力", "风况", "weather")
+        ):
+            return IntentResult(intent="weather_query", confidence=1.0)
+        if any(
+            term in normalized
+            for term in (
+                "鼓浪屿", "景点", "攻略", "怎么去", "交通", "美食", "吃什么",
+                "季节", "避坑", "轮渡", "古城", "洱海",
+            )
+        ):
+            return IntentResult(intent="travel_knowledge", confidence=1.0)
+        greeting = re.sub(r"[\s,.!?，。！？]+", "", normalized)
+        if greeting in {"你好", "您好", "嗨", "哈喽", "侬好", "hello", "hi"}:
+            return IntentResult(intent="smalltalk", confidence=1.0)
         return IntentResult(intent="plan_trip", confidence=1.0)
 
     @classmethod
-    def _is_complete_plan_request(cls, message: str) -> bool:
+    def _has_planning_context(cls, message: str) -> bool:
         return (
             cls._COMPLETE_PLAN_ROUTE.search(message) is not None
-            and len(cls._PLAN_DATE.findall(message)) >= 2
-            and cls._PLAN_TRAVELERS.search(message) is not None
-            and cls._PLAN_BUDGET.search(message) is not None
+            or len(cls._PLAN_DATE.findall(message)) > 0
+            or cls._PLAN_TRAVELERS.search(message) is not None
+            or cls._PLAN_BUDGET.search(message) is not None
+            or cls._PLAN_CONTEXT.search(message) is not None
         )
 
 

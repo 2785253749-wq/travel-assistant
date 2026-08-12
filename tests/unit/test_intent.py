@@ -75,3 +75,14 @@ def test_rule_classifier_routes_weather_and_grounded_travel_questions(message, e
 )
 def test_rule_classifier_keeps_complete_plan_requests_on_planning_flow(message):
     assert RuleIntentClassifier().classify(message, has_trip=False).intent == "plan_trip"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "从北京到厦门，想安排景点和美食，也想参考天气",
+        "厦门三天，2人预算4000元，想了解天气和景点",
+    ],
+)
+def test_rule_classifier_keeps_partial_plan_requests_on_collection_flow(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "plan_trip"
