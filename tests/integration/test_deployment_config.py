@@ -113,6 +113,24 @@ def test_deployment_document_describes_amap_key_and_offline_fallback():
     assert "福建 → 厦门 → 任一景点" in text
 
 
+def test_deployment_document_keeps_rag_weather_server_secrets_and_safe_downgrades():
+    """Removing the RAG/weather release safeguards must make the linked guide fail."""
+    text = Path("docs/deployment/free-tier.md").read_text(encoding="utf-8")
+
+    for required_text in (
+        "008_rag_knowledge.sql",
+        "009_weather_quota.sql",
+        "JINA_API_KEY",
+        "AMAP_WEB_SERVICE_KEY",
+        "不得填入浏览器、日志或提交记录",
+        "资料库没有足够依据，无法可靠回答。",
+        "天气信息暂不可用",
+        "行程仍可正常生成",
+    ):
+        assert required_text in text
+    assert "当前为 `001` 至 `006`" not in text
+
+
 def test_ci_runs_tests_offline_evaluation_and_public_repo_gate():
     workflow = _load_yaml(".github/workflows/ci.yml")
 

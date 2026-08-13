@@ -19,3 +19,8 @@
 - 未在 Render 写入任何变量，未进行线上浏览器验收。
 
 线上验收应由部署负责人按 README 的人工验收清单执行，并且只保存状态码、用例 ID 与可公开摘要。
+
+## 复审修正
+
+- 同步修订 README 链接的 `docs/deployment/free-tier.md`：补充 008/009 迁移、`JINA_API_KEY` 与 `AMAP_WEB_SERVICE_KEY` 的 Render 后端私有变量边界，以及 RAG/天气不可用时不阻塞行程的降级说明。
+- 新增部署指南合约测试，防止链接文档再次遗漏上述上线前置条件。
