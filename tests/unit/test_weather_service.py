@@ -150,6 +150,25 @@ def test_city_card_maps_xiamen_to_adcode_and_builds_public_summary() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("city_id", "expected_adcode"),
+    [
+        ("fuzhou", "350100"),
+        ("dali", "532900"),
+        ("lijiang", "530700"),
+    ],
+)
+def test_city_card_maps_every_visible_trial_city_to_its_city_adcode(
+    city_id: str, expected_adcode: str
+) -> None:
+    provider = FakeWeatherProvider([live_result()])
+
+    card = service(provider).city_card(city_id)
+
+    assert card.status == "available"
+    assert provider.calls == [(expected_adcode, "base")]
+
+
 def test_city_card_uses_ttl_cache_then_refreshes_at_expiry() -> None:
     clock = FakeClock()
     provider = FakeWeatherProvider([live_result("31"), live_result("32")])

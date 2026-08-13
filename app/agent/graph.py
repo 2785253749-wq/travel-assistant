@@ -276,10 +276,13 @@ class RuleTravelExtractor:
     """Conservatively extracts explicit profile fields without any model call."""
 
     _ROUTE = re.compile(
-        r"(?:\u4ece|from)\s*([^\s\uff0c,\u3002]{1,30}?)(?:\u51fa\u53d1)?\s*(?:\u5230|\u53bb|to)\s*([^\s\uff0c,\u30020-9]{1,30})",
+        r"(?:(?:\u4ece|from)\s*)?([^\s\uff0c,\u3002]{1,30}?)(?:\u51fa\u53d1)?\s*(?:\u5230|\u53bb|to)\s*([^\s\uff0c,\u30020-9]{1,30})",
         re.IGNORECASE,
     )
-    _DATE = re.compile(r"\b20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
+    _DATE = re.compile(
+        r"(?<!\d)(20\d{2})\s*(?:[-./\u5e74])\s*(0?[1-9]|1[0-2])\s*"
+        r"(?:[-./\u6708])\s*([12]\d|3[01]|0?[1-9])\s*\u65e5?"
+    )
     _TRAVELERS = re.compile(r"(?<!\d)([1-9]\d?)\s*(?:\u4eba|travellers?|travelers?)", re.IGNORECASE)
     _BUDGET = re.compile(
         r"(?:\u9884\u7b97(?:\u6539\u4e3a|\u8c03\u6574\u4e3a|\u4e3a|\u662f|\u7ea6)?|budget(?:\s+(?:to|is))?)\s*[:\uff1a]?\s*(\d{1,8})",
@@ -291,7 +294,10 @@ class RuleTravelExtractor:
         route = self._ROUTE.search(message)
         if route:
             updates.update(origin=route.group(1).strip(), destination=route.group(2).strip())
-        dates = self._DATE.findall(message)
+        dates = [
+            f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+            for match in self._DATE.finditer(message)
+        ]
         if dates:
             updates["start_date"] = dates[0]
         if len(dates) > 1:

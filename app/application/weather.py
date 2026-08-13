@@ -12,16 +12,28 @@ from app.schemas import ItineraryWeather, WeatherCard
 
 _PILOT_CITIES = {
     "xiamen": ("350200", "厦门"),
+    "fuzhou": ("350100", "福州"),
     "fujian": ("350000", "福建"),
+    "dali": ("532900", "大理"),
+    "lijiang": ("530700", "丽江"),
     "yunnan": ("530000", "云南"),
 }
 _DESTINATION_IDS = {
     "xiamen": "xiamen",
     "厦门": "xiamen",
     "厦门市": "xiamen",
+    "fuzhou": "fuzhou",
+    "福州": "fuzhou",
+    "福州市": "fuzhou",
     "fujian": "fujian",
     "福建": "fujian",
     "福建省": "fujian",
+    "dali": "dali",
+    "大理": "dali",
+    "大理市": "dali",
+    "lijiang": "lijiang",
+    "丽江": "lijiang",
+    "丽江市": "lijiang",
     "yunnan": "yunnan",
     "云南": "yunnan",
     "云南省": "yunnan",
