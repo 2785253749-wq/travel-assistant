@@ -20,6 +20,22 @@ def test_rule_extractor_reads_explicit_chinese_and_english_routes(message, origi
     assert profile.destination == destination
 
 
+@pytest.mark.parametrize(
+    ("message", "start_date", "end_date"),
+    [
+        ("福州到厦门，2026.8.16到2026.8.18，2人，预算5000", "2026-08-16", "2026-08-18"),
+        ("从福州到厦门，2026年8月16日至2026年8月18日", "2026-08-16", "2026-08-18"),
+    ],
+)
+def test_rule_extractor_normalizes_common_route_and_date_formats(message, start_date, end_date):
+    profile = RuleTravelExtractor().extract(message, TravelProfile())
+
+    assert profile.origin == "福州"
+    assert profile.destination == "厦门"
+    assert profile.start_date == start_date
+    assert profile.end_date == end_date
+
+
 class _StructuredExtractionModel:
     def __init__(self, payload: dict[str, object]) -> None:
         self._payload = payload
