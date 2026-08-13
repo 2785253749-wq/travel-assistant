@@ -209,6 +209,51 @@ def test_public_repo_check_rejects_new_server_secret_assignments(
     assert "credential" in result.stdout.lower()
 
 
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        ('Settings(jina_api' + '_key="__JINA_INLINE_SECRET__")\n', "Jina API key"),
+        ('configure(\n    amap_web_service' + '_key="__AMAP_INLINE_SECRET__",\n)\n', "AMap Web Service key"),
+    ],
+)
+def test_public_repo_check_rejects_python_inline_server_key_arguments(
+    tmp_path: Path,
+    source: str,
+    name: str,
+):
+    secret = "fixture" + "-private-value"
+    repo = _tracked_repo(
+        tmp_path,
+        "app/configuration.py",
+        source.replace("__JINA_INLINE_SECRET__", secret).replace("__AMAP_INLINE_SECRET__", secret),
+    )
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert name in result.stdout
+
+
+def test_public_repo_check_does_not_mistake_python_comparisons_or_annotations_for_assignments(
+    tmp_path: Path,
+):
+    source = 'jina_api' + '_key: str | None = None\nassert amap_web_service' + '_key == "configured"\n'
+    repo = _tracked_repo(tmp_path, "app/configuration.py", source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_public_repo_check_accepts_test_only_python_constructor_key_value(tmp_path: Path):
+    source = 'Settings(jina_api' + '_key="test-key")\nnext_test()\n'
+    repo = _tracked_repo(tmp_path, "tests/test_configuration.py", source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_public_repo_check_accepts_unicode_tracked_placeholder(tmp_path: Path):
     placeholder = "DEEPSEEK_API" + "_KEY=your_deepseek_api_key_here\n"
     repo = _tracked_repo(tmp_path, "资料/占位符.txt", placeholder)

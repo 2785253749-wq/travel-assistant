@@ -17,6 +17,8 @@ from tests.evaluation.runner import (
     rag_weather_gate_passes,
     run_case,
     score,
+    run_rag_weather_case,
+    score_rag_weather,
 )
 from tests.evaluation.offline_fixtures import OfflineModel, SCENARIO_BY_MESSAGE, model_factory
 
@@ -84,6 +86,32 @@ def test_rag_weather_case_distribution_is_exact() -> None:
         "weather_boundary": 10,
     }
     assert len({case.id for case in cases}) == 80
+
+
+def test_grounded_rag_cases_declare_topic_and_required_evidence() -> None:
+    cases = [case for case in load_rag_weather_cases() if case.category == "grounded"]
+
+    assert all(case.expected_topic for case in cases)
+    assert all(case.expected_evidence for case in cases)
+
+
+def test_rag_weather_score_rejects_source_correct_but_topic_wrong_evidence() -> None:
+    case = next(case for case in load_rag_weather_cases() if case.category == "grounded")
+    prediction = run_rag_weather_case(case)
+
+    wrong = replace(prediction, topics=("交通",), evidence=("省内交通",))
+    report = score_rag_weather([wrong], [case])
+
+    assert report.grounded_source_rate == 0.0
+    assert "grounded_source: missing, unexpected, or irrelevant evidence" in report.failures[case.id]
+
+
+def test_rag_weather_case_status_must_match_its_category() -> None:
+    original = load_rag_weather_cases()[0]
+    conflicting = replace(original, expected_status="refused")
+
+    with pytest.raises(ValueError, match="expected_status"):
+        runner._validate_rag_weather_cases([conflicting] + load_rag_weather_cases()[1:])
 
 
 def test_rag_weather_release_metrics_are_fail_closed_at_one() -> None:

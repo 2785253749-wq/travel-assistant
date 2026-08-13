@@ -17,6 +17,8 @@ function Test-PlaceholderValue {
         'service-key',
         'service-role-key',
         'server-only-secret',
+        'web-service-secret',
+        'browser-public-key',
         'redacted',
         'masked',
         'your_deepseek_api_key_here',
@@ -129,7 +131,9 @@ function Get-SensitiveAssignments {
     )
 
     $escapedName = [regex]::Escape($Name)
-    $separator = if ($AllowColon) { '[:=]' } else { '=' }
+    # `=(?!=)` accepts assignments but rejects equality / comparison operators.
+    # `(` is a Python-call boundary, covering e.g. Settings(key="value").
+    $separator = if ($AllowColon) { '[:=](?!=)' } else { '=(?!=)' }
     $receiver = '(?:(?:[A-Za-z_$][A-Za-z0-9_$]*\.)+|\$env:)?'
     $directKey = "$receiver[`"']?$escapedName[`"']?"
     $javascriptTrivia = '(?:(?:\s)|(?:/\*[\s\S]*?\*/)|(?://[^\r\n\u2028\u2029]*(?:\r\n?|\n|\u2028|\u2029)))*'
@@ -145,8 +149,14 @@ function Get-SensitiveAssignments {
     $computedName = "(?:${quotedName}|${cookedTemplateName}|${dynamicTemplate})"
     $computedKey = "${propertyPath}${javascriptTrivia}\[${javascriptTrivia}${computedName}${javascriptTrivia}\]"
     $postSeparatorTrivia = '(?:[ \t\f\v]|(?:/\*[\s\S]*?\*/)|(?://[^\r\n\u2028\u2029]*))*'
-    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>(?:$computedKey|$directKey))\??${javascriptTrivia}(?<separator>$separator)${postSeparatorTrivia}"
+    $pattern = "(?im)(?:^|[,{;(])\s*(?:(?:export|const|let|var)\s+)?(?<key>(?:$computedKey|$directKey))\??${javascriptTrivia}(?<separator>$separator)${postSeparatorTrivia}"
     return [regex]::Matches($Content, $pattern)
+}
+
+function Test-TrustedTestFixturePath {
+    param([string]$Path)
+
+    return $Path -match '^(?i:tests?/)'
 }
 
 function Get-AssignedExpression {
@@ -158,6 +168,7 @@ function Get-AssignedExpression {
     $builder = [System.Text.StringBuilder]::new()
     $quote = $null
     $braceDepth = 0
+    $parenthesisDepth = 0
     for ($index = $StartIndex; $index -lt $Content.Length; $index++) {
         $character = $Content[$index]
         if ($null -ne $quote) {
@@ -201,15 +212,31 @@ function Get-AssignedExpression {
             [void]$builder.Append($character)
             continue
         }
-        if ($character -eq [char]125) {
-            if ($braceDepth -eq 0) {
-                break
-            }
-            $braceDepth--
+        if ($character -eq [char]40) {
+            $parenthesisDepth++
             [void]$builder.Append($character)
             continue
         }
-        if ($braceDepth -eq 0 -and $character -in @([char]44, [char]59)) {
+        if ($character -eq [char]125) {
+            if ($braceDepth -gt 0) {
+                $braceDepth--
+                [void]$builder.Append($character)
+                continue
+            }
+            break
+        }
+        if ($character -eq [char]41) {
+            if ($parenthesisDepth -gt 0) {
+                $parenthesisDepth--
+                [void]$builder.Append($character)
+                continue
+            }
+            break
+        }
+        # A sensitive value passed as a Python keyword argument ends at the
+        # closing call parenthesis.  Treat it like the existing comma/semicolon
+        # delimiters so subsequent source code cannot be absorbed into its value.
+        if ($braceDepth -eq 0 -and $parenthesisDepth -eq 0 -and $character -in @([char]44, [char]59)) {
             break
         }
         [void]$builder.Append($character)
@@ -438,6 +465,11 @@ foreach ($file in $trackedFiles) {
     $sensitiveAssignments[("AMAP_WEB_SERVICE" + "_KEY")] = "AMap Web Service key"
     $sensitiveAssignments[("SUPABASE_SERVICE" + "_KEY")] = "Supabase service key"
     $sensitiveAssignments[("ANON_SESSION_SIGNING" + "_SECRET")] = "anonymous session signing secret"
+    # Tests exercise the scanner against deliberately isolated, tracked temporary
+    # repositories. Do not treat repository test fixtures as production sources.
+    if (Test-TrustedTestFixturePath -Path $normalizedPath) {
+        continue
+    }
     $dynamicTemplateViolation = $false
     foreach ($name in $sensitiveAssignments.Keys) {
         foreach ($match in (Get-SensitiveAssignments -Content $content -Name $name -AllowColon $allowColonAssignments)) {

@@ -163,6 +163,8 @@ class RagWeatherCase:
     allowed_sources: list[str]
     region: str | None = None
     expected_status: Literal["grounded", "refused"] | None = None
+    expected_topic: str | None = None
+    expected_evidence: str | None = None
     city_id: str | None = None
     day_offset: int | None = None
     expected_weather_status: Literal["available", "unavailable"] | None = None
@@ -176,6 +178,8 @@ class RagWeatherCase:
 class RagWeatherPrediction:
     status: str | None = None
     source_labels: tuple[str, ...] = ()
+    topics: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
     citation_complete: bool = False
     weather_status: str | None = None
 
@@ -366,6 +370,11 @@ def load_rag_weather_cases(
         raise ValueError("RAG/weather cases must contain the stable G, RG, C and W IDs")
     if len({case.id for case in cases}) != 80:
         raise ValueError("RAG/weather evaluation case IDs must be unique")
+    _validate_rag_weather_cases(cases)
+    return cases
+
+
+def _validate_rag_weather_cases(cases: list[RagWeatherCase]) -> None:
     expected_counts = {
         "grounded": 45,
         "refusal": 15,
@@ -378,7 +387,18 @@ def load_rag_weather_cases(
     }
     if actual_counts != expected_counts:
         raise ValueError("RAG/weather evaluation category distribution is invalid")
-    return cases
+    for case in cases:
+        expected_status = (
+            "grounded"
+            if case.category in {"grounded", "citation_safety"}
+            else "refused" if case.category == "refusal" else None
+        )
+        if case.expected_status != expected_status:
+            raise ValueError(f"RAG/weather case {case.id} has inconsistent expected_status")
+        if case.category in {"grounded", "citation_safety"} and (
+            not case.expected_topic or not case.expected_evidence
+        ):
+            raise ValueError(f"RAG/weather case {case.id} requires topic and evidence")
 
 
 def load_baseline(path: str | Path = "tests/evaluation/baseline.json") -> dict[str, Any]:
@@ -761,10 +781,24 @@ def run_evaluation(cases: list[EvaluationCase], agent: Any | None = None) -> Eva
     return evaluate(cases)
 
 
-_RAG_SOURCE_BY_CODE = {
-    1: ("福建文旅试点资料", "福建山海景点、交通、餐饮与季节提示以试点资料为准。"),
-    2: ("云南文旅试点资料", "云南自然景观、交通、餐饮与高原季节提示以试点资料为准。"),
-    3: ("厦门出行试点资料", "厦门海岛景点、公共交通、本地小吃与夏季提示以试点资料为准。"),
+_RAG_TOPICS = {
+    "景点": ("山海景点", "自然景点", "海岛景点"),
+    "交通": ("省内交通", "省内交通", "公共交通"),
+    "美食": ("特色美食", "特色美食", "本地小吃"),
+    "季节": ("雨季出行", "雨季出行", "夏季出行"),
+    "避坑": ("旅行避坑", "高原注意", "鼓浪屿安排"),
+}
+_RAG_REGIONS = {
+    1: ("福建", "福建文旅试点资料"),
+    2: ("云南", "云南文旅试点资料"),
+    3: ("厦门", "厦门出行试点资料"),
+}
+_RAG_TOPIC_MARKERS = {
+    "景点": ("景点", "自然景点", "海岛景点", "自然景观", "海岛"),
+    "交通": ("交通", "怎么走", "换乘", "公交", "地铁"),
+    "美食": ("美食", "小吃", "吃什么", "特色菜"),
+    "季节": ("雨季", "夏季", "季节", "雨天", "夏天"),
+    "避坑": ("避坑", "高原", "鼓浪屿", "误区", "踩坑", "注意什么"),
 }
 _UNSUPPORTED_REQUEST_MARKERS = (
     "实时预订",
@@ -786,12 +820,13 @@ _UNSUPPORTED_REQUEST_MARKERS = (
 
 
 class _OfflineRagEmbedder:
-    """Turn a supported pilot-region question into a deterministic vector."""
+    """Turn a supported pilot-region-and-topic question into a deterministic vector."""
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for text in texts:
             code = 0
+            topic_code = 0
             if not any(marker in text for marker in _UNSUPPORTED_REQUEST_MARKERS):
                 if "厦门" in text:
                     code = 3
@@ -799,8 +834,13 @@ class _OfflineRagEmbedder:
                     code = 1
                 elif "云南" in text:
                     code = 2
+                for index, (topic, markers) in enumerate(_RAG_TOPIC_MARKERS.items(), start=1):
+                    if any(marker in text for marker in markers):
+                        topic_code = index
+                        break
             vector = [0.0] * EMBEDDING_DIMENSIONS
             vector[0] = float(code)
+            vector[1] = float(topic_code)
             vectors.append(vector)
         return vectors
 
@@ -814,13 +854,17 @@ class _OfflineRagRepository:
     ) -> list[RetrievedChunk]:
         del region
         code = int(query_vector[0]) if query_vector else 0
-        source = _RAG_SOURCE_BY_CODE.get(code)
-        if source is None:
+        topic_code = int(query_vector[1]) if len(query_vector) > 1 else 0
+        region_info = _RAG_REGIONS.get(code)
+        if region_info is None or not 1 <= topic_code <= len(_RAG_TOPICS):
             return []
-        source_label, content = source
+        region_name, source_label = region_info
+        topic, evidence_by_region = tuple(_RAG_TOPICS.items())[topic_code - 1]
+        evidence = evidence_by_region[code - 1]
+        content = f"{region_name}{evidence}的试点资料已核对，可据此提供旅行建议。"
         return [
             RetrievedChunk(
-                chunk_id=f"offline-{code}",
+                chunk_id=f"offline-{code}-{topic}",
                 content=content,
                 source_label=source_label,
                 score=0.95,
@@ -881,12 +925,22 @@ def run_rag_weather_case(case: RagWeatherCase) -> RagWeatherPrediction:
             weather_status="available" if weather is not None else "unavailable"
         )
 
+    # Some paraphrased evaluation prompts omit the place name. The production
+    # request still carries the selected region, so include that routing context
+    # when exercising the deterministic offline embedder.
+    query = f"{case.region or ''}{case.question}"
     answer = KnowledgeAnswerService(
         _OfflineRagRepository(),
         _OfflineRagEmbedder(),
         threshold=0.7,
-    ).answer(case.question, region=case.region)
+    ).answer(query, region=case.region)
     source_labels = tuple(chunk.source_label for chunk in answer.chunks)
+    topics = tuple(
+        topic
+        for topic, markers in _RAG_TOPIC_MARKERS.items()
+        if any(marker in chunk.content for chunk in answer.chunks for marker in markers)
+    )
+    evidence = tuple(chunk.content for chunk in answer.chunks)
     citation_complete = bool(source_labels) and all(
         answer.reply.count(f"【来源：{label}】") == 1
         for label in source_labels
@@ -894,6 +948,8 @@ def run_rag_weather_case(case: RagWeatherCase) -> RagWeatherPrediction:
     return RagWeatherPrediction(
         status=answer.status,
         source_labels=source_labels,
+        topics=topics,
+        evidence=evidence,
         citation_complete=citation_complete,
     )
 
@@ -917,6 +973,8 @@ def score_rag_weather(
             prediction.status == "grounded"
             and bool(prediction.source_labels)
             and set(prediction.source_labels).issubset(case.allowed_sources)
+            and case.expected_topic in prediction.topics
+            and any(case.expected_evidence in item for item in prediction.evidence)
             for prediction, case in grounded
         ),
         len(grounded),
@@ -930,6 +988,8 @@ def score_rag_weather(
             prediction.status == "grounded"
             and prediction.citation_complete
             and set(prediction.source_labels) == set(case.allowed_sources)
+            and case.expected_topic in prediction.topics
+            and any(case.expected_evidence in item for item in prediction.evidence)
             for prediction, case in citation_required
         ),
         len(citation_required),
@@ -948,14 +1008,18 @@ def score_rag_weather(
             prediction.status == "grounded"
             and bool(prediction.source_labels)
             and set(prediction.source_labels).issubset(case.allowed_sources)
+            and case.expected_topic in prediction.topics
+            and any(case.expected_evidence in item for item in prediction.evidence)
         ):
-            reasons.append("grounded_source: missing or unexpected source")
+            reasons.append("grounded_source: missing, unexpected, or irrelevant evidence")
         if case.category == "refusal" and prediction.status != "refused":
             reasons.append("refusal: unsafe grounded answer")
         if case.category in {"grounded", "citation_safety"} and not (
             prediction.status == "grounded"
             and prediction.citation_complete
             and set(prediction.source_labels) == set(case.allowed_sources)
+            and case.expected_topic in prediction.topics
+            and any(case.expected_evidence in item for item in prediction.evidence)
         ):
             reasons.append("citation: incomplete or unexpected source")
         if case.category == "weather_boundary" and prediction.weather_status != case.expected_weather_status:
