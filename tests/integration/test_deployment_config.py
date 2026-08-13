@@ -113,6 +113,33 @@ def test_deployment_document_describes_amap_key_and_offline_fallback():
     assert "福建 → 厦门 → 任一景点" in text
 
 
+def test_deployment_document_keeps_rag_weather_server_secrets_and_safe_downgrades():
+    """Removing the RAG/weather release safeguards must make the linked guide fail."""
+    text = Path("docs/deployment/free-tier.md").read_text(encoding="utf-8")
+
+    for required_text in (
+        "008_rag_knowledge.sql",
+        "009_weather_quota.sql",
+        "JINA_API_KEY",
+        "AMAP_WEB_SERVICE_KEY",
+        "不得填入浏览器、日志或提交记录",
+        "资料库没有足够依据，无法可靠回答。",
+        "天气信息暂不可用",
+        "行程仍可正常生成",
+    ):
+        assert required_text in text
+    assert "当前为 `001` 至 `006`" not in text
+
+
+def test_deployment_document_distinguishes_browser_map_key_from_backend_weather_key():
+    """An unqualified no-Web-Service-Key claim would hide weather configuration."""
+    text = Path("docs/deployment/free-tier.md").read_text(encoding="utf-8")
+
+    assert "本项目不使用 Web 服务 Key" not in text
+    assert "浏览器地图直连模式不使用 `AMAP_WEB_SERVICE_KEY`" in text
+    assert "后端天气服务使用 `AMAP_WEB_SERVICE_KEY`" in text
+
+
 def test_ci_runs_tests_offline_evaluation_and_public_repo_gate():
     workflow = _load_yaml(".github/workflows/ci.yml")
 
@@ -162,6 +189,132 @@ def test_public_repo_check_accepts_tracked_placeholders(tmp_path: Path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Public repository check passed" in result.stdout
+
+
+def test_public_repo_check_accepts_empty_new_key_declarations(tmp_path: Path):
+    content = "JINA_API_KEY=\nAMAP_WEB_SERVICE_KEY=\n"
+    repo = _tracked_repo(tmp_path, ".env.example", content)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Public repository check passed" in result.stdout
+
+
+def test_example_environment_lists_server_keys_without_secret_values():
+    content = Path(".env.example").read_text(encoding="utf-8")
+
+    assert "JINA_API_KEY=" in content
+    assert "AMAP_WEB_SERVICE_KEY=" in content
+    assert "JINA_API_KEY=your_" not in content
+    assert "AMAP_WEB_SERVICE_KEY=your_" not in content
+    assert "sk-" not in content
+
+
+def test_readme_documents_rag_weather_safe_deployment_order_and_fallbacks():
+    content = Path("README.md").read_text(encoding="utf-8")
+
+    assert "008_rag_knowledge.sql" in content
+    assert "python -m app.scripts.import_knowledge" in content
+    assert "JINA_API_KEY" in content
+    assert "AMAP_WEB_SERVICE_KEY" in content
+    assert "资料库没有足够依据，无法可靠回答。" in content
+    assert "天气信息暂不可用" in content
+    assert "行程仍可正常生成" in content
+
+
+@pytest.mark.parametrize("name", ["JINA_API_KEY", "AMAP_WEB_SERVICE_KEY"])
+def test_public_repo_check_rejects_new_server_secret_assignments(
+    tmp_path: Path,
+    name: str,
+):
+    repo = _tracked_repo(tmp_path, "config/settings.env", f"{name}=live-production-value\n")
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        ('Settings(jina_api' + '_key="__JINA_INLINE_SECRET__")\n', "Jina API key"),
+        ('configure(\n    amap_web_service' + '_key="__AMAP_INLINE_SECRET__",\n)\n', "AMap Web Service key"),
+    ],
+)
+def test_public_repo_check_rejects_python_inline_server_key_arguments(
+    tmp_path: Path,
+    source: str,
+    name: str,
+):
+    secret = "fixture" + "-private-value"
+    repo = _tracked_repo(
+        tmp_path,
+        "app/configuration.py",
+        source.replace("__JINA_INLINE_SECRET__", secret).replace("__AMAP_INLINE_SECRET__", secret),
+    )
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert name in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        ('Settings(jina_api' + '_key="__JINA_TEST_SECRET__")\n', "Jina API key"),
+        ('configure(amap_web_service' + '_key="__AMAP_TEST_SECRET__")\n', "AMap Web Service key"),
+    ],
+)
+def test_public_repo_check_rejects_real_inline_keys_inside_test_paths(
+    tmp_path: Path,
+    source: str,
+    name: str,
+):
+    secret = "fixture" + "-private-value"
+    repo = _tracked_repo(
+        tmp_path,
+        "tests/test_credentials.py",
+        source.replace("__JINA_TEST_SECRET__", secret).replace("__AMAP_TEST_SECRET__", secret),
+    )
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert name in result.stdout
+
+
+@pytest.mark.parametrize("path", ["app/configuration.py", "tests/test_credentials.py"])
+def test_public_repo_check_rejects_values_that_only_contain_test_key(path: str, tmp_path: Path):
+    source = 'Settings(jina_api' + '_key="live-test-key-production-value")\n'
+    repo = _tracked_repo(tmp_path, path, source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "Jina API key" in result.stdout
+
+
+def test_public_repo_check_does_not_mistake_python_comparisons_or_annotations_for_assignments(
+    tmp_path: Path,
+):
+    source = 'jina_api' + '_key: str | None = None\nassert amap_web_service' + '_key == "configured"\n'
+    repo = _tracked_repo(tmp_path, "app/configuration.py", source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_public_repo_check_accepts_test_only_python_constructor_key_value(tmp_path: Path):
+    source = 'Settings(jina_api' + '_key="test-key")\nnext_test()\n'
+    repo = _tracked_repo(tmp_path, "tests/test_configuration.py", source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_public_repo_check_accepts_unicode_tracked_placeholder(tmp_path: Path):

@@ -8,7 +8,8 @@ from app.core.config import get_settings
 from app.core.usage import ModelGateway, get_model_gateway
 
 Intent = Literal[
-    "plan_trip", "modify_trip", "explain_trip", "smalltalk", "unsupported"
+    "plan_trip", "modify_trip", "explain_trip", "travel_knowledge",
+    "weather_query", "smalltalk", "unsupported"
 ]
 
 
@@ -51,6 +52,8 @@ _INTENT_PROMPT = """你只负责识别用户消息的意图，并返回符合 JS
 - plan_trip：开始规划中国境内 2 至 7 天、1 至 6 人的自由行，或补充这类行程资料。
 - modify_trip：修改已有行程的内容。
 - explain_trip：解释已有行程的推荐或安排。
+- travel_knowledge：询问试点目的地的景点、交通、餐饮、季节或避坑资料。
+- weather_query：询问某个试点目的地的天气、气温、降雨或风况。
 - smalltalk：问候、闲聊且不要求旅行服务。
 - unsupported：任何非国内自由行需求，包括作业、代码、跨境旅行、预订或支付。
 只分类；不要生成行程、事实、建议或最终用户回复。信息不明确时降低 confidence。"""

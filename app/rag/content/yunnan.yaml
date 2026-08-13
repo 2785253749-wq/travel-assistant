@@ -1,0 +1,33 @@
+documents:
+  - document_id: yunnan-attractions
+    title: 云南景点试点提示
+    document_version: "2026-08-12"
+    region: 云南
+    topic: 景点
+    source_label: 云南省文化和旅游厅公开信息（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 昆明、丽江、大理等目的地风貌差异明显，可按城市与自然景观拆分行程。高海拔或长距离徒步项目应结合个人身体状况，景区临时管制以现场公告为准。
+  - document_id: yunnan-transport
+    title: 云南交通试点提示
+    document_version: "2026-08-12"
+    region: 云南
+    topic: 交通
+    source_label: 云南省交通运输厅公开信息（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 跨城市优先比较铁路和航空的实际到达时间；山区道路弯多且天气变化快，包车或自驾不要压缩休息与换乘时间。进出景区的末班车和接驳规则需在当天确认。
+  - document_id: yunnan-food
+    title: 云南餐饮试点提示
+    document_version: "2026-08-12"
+    region: 云南
+    topic: 餐饮
+    source_label: 云南省文化和旅游厅公开信息（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 可尝试过桥米线、菌类菜肴和地方风味。野生菌餐饮要选择正规经营者，充分加热，不自行采食或购买来源不明的野生菌。
+  - document_id: yunnan-seasonal
+    title: 云南季节与避坑试点提示
+    document_version: "2026-08-12"
+    region: 云南
+    topic: 季节与避坑
+    source_label: 云南省应急管理厅公开提示（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 雨季局地降雨和山地道路状况变化较快，关注预警并为行程保留弹性。昼夜温差可能较大，分层着装；高海拔区域如出现不适应及时下撤并寻求医疗帮助。

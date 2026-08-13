@@ -15,8 +15,12 @@
   });
   const ALLOWED_EXTERNAL_HOSTS = new Set([
     "api.open-meteo.com", "geocoding-api.open-meteo.com", "photon.komoot.io",
-    "www.12306.cn", "www.ctrip.com",
+    "www.12306.cn", "www.ctrip.com", "www.gov.cn", "www.xm.gov.cn",
+    "www.fujian.gov.cn", "www.yn.gov.cn",
   ]);
+  const WEATHER_STATUS_LABELS = Object.freeze({
+    available: "实时天气", seasonal: "非实时天气", unavailable: "天气不可用",
+  });
   const $ = (id) => document.getElementById(id);
   const elements = {
     body: document.body, authForm: $("auth-form"), email: $("email"), password: $("password"),
@@ -41,10 +45,11 @@
   const state = {
     name: "signed_out", busy: false, session: null, authClient: null, user: null, profile: null,
     pendingResult: null, currentTrip: null, renameTripId: null, shareTripId: null,
-    threadId: makeThreadId(),
+    threadId: makeThreadId(), cityWeather: new Map(), cityWeatherRequests: new Map(), selectedExploreCityId: null,
   };
   let refreshPromise = null;
   let mapExplorer = null;
+  let cityWeatherCard = null;
 
   function makeThreadId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
@@ -200,16 +205,70 @@
     elements.explorePlaceCard.hidden = true;
   }
 
+  function clearCityWeatherCard() {
+    if (cityWeatherCard && cityWeatherCard.parentNode) cityWeatherCard.parentNode.removeChild(cityWeatherCard);
+    cityWeatherCard = null;
+  }
+
+  function renderCityWeatherCard(weather, fallbackCity) {
+    clearCityWeatherCard();
+    const card = document.createElement("article");
+    card.className = "city-weather-card";
+    const summary = document.createElement("p");
+    const city = typeof weather?.city === "string" && weather.city.trim() ? weather.city : fallbackCity;
+    const details = typeof weather?.summary === "string" && weather.summary.trim() ? weather.summary : "天气暂不可用";
+    const status = WEATHER_STATUS_LABELS[weather?.status] || WEATHER_STATUS_LABELS.unavailable;
+    const reportTime = formatWeatherReportTime(weather?.report_time);
+    summary.textContent = `${city}：${status}；${details}；报告时间：${reportTime}`;
+    card.append(summary);
+    elements.explorePlaceCard.parentNode.append(card);
+    cityWeatherCard = card;
+  }
+
+  function formatWeatherReportTime(value) {
+    if (typeof value !== "string" || !value.trim()) return "无实时报告";
+    const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(value.trim());
+    if (!match) return "无实时报告";
+    const zone = match[3] === "Z"
+      ? "GMT+0"
+      : `GMT${match[3].replace(":00", "").replace(/^\+0?/, "+").replace(/^-0?/, "-")}`;
+    return `${match[1]} ${match[2]} ${zone}`;
+  }
+
+  async function renderCityWeather(cityId, fallbackCity) {
+    let weather = state.cityWeather.get(cityId);
+    if (!weather) {
+      let weatherRequest = state.cityWeatherRequests.get(cityId);
+      if (!weatherRequest) {
+        weatherRequest = requestJson(`/api/weather/cities/${encodeURIComponent(cityId)}`)
+          .catch(() => ({ city: fallbackCity, status: "unavailable", summary: "天气暂不可用" }));
+        state.cityWeatherRequests.set(cityId, weatherRequest);
+      }
+      weather = await weatherRequest;
+      state.cityWeather.set(cityId, weather);
+      state.cityWeatherRequests.delete(cityId);
+    }
+    if (state.selectedExploreCityId === cityId) renderCityWeatherCard(weather, fallbackCity);
+  }
+
   function handleExploreSelection(selection) {
     if (!selection || typeof selection.recommendation !== "string") return;
     const item = exploreItem(selection);
     elements.exploreStatus.textContent = `已选择${selection.name}，Voyage AI 助手已准备本地建议。`;
+    if (selection.kind === "city") {
+      state.selectedExploreCityId = selection.id;
+      renderCityWeather(selection.id, selection.name);
+    }
     if (selection.kind === "place") renderSelectedPlace(item);
     appendExploreRecommendation(selection);
   }
 
   function renderExploreCards(view) {
     clearSelectedPlace();
+    if (view.level !== "city") {
+      state.selectedExploreCityId = null;
+      clearCityWeatherCard();
+    }
     elements.mapBreadcrumb.textContent = view.breadcrumb.join(" › ");
     elements.mapTitle.textContent = view.title;
     elements.recommendationsTitle.textContent = view.title;
@@ -478,6 +537,15 @@
       const card = document.createElement("article");
       card.className = "day-card";
       appendTextBlock(card, "h3", `日期：${day.date || "待确认"}`);
+      if (day.weather && typeof day.weather === "object") {
+        const weather = document.createElement("p");
+        weather.className = "itinerary-weather";
+        const summary = typeof day.weather.summary === "string" && day.weather.summary.trim()
+          ? day.weather.summary : "天气暂不可用";
+        const status = WEATHER_STATUS_LABELS[day.weather.status] || WEATHER_STATUS_LABELS.unavailable;
+        weather.textContent = `天气类型：${status}；${summary}；报告时间：${formatWeatherReportTime(day.weather.report_time)}`;
+        card.append(weather);
+      }
       const slots = document.createElement("ul");
       for (const slot of ["morning", "afternoon", "evening"]) {
         const activity = day[slot];

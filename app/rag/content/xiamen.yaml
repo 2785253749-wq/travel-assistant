@@ -1,0 +1,33 @@
+documents:
+  - document_id: xiamen-attractions
+    title: 厦门景点试点提示
+    document_version: "2026-08-12"
+    region: 厦门
+    topic: 景点
+    source_label: 厦门市文化和旅游局公开信息（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 鼓浪屿、环岛路和园林植物园可分日安排，减少往返。鼓浪屿登岛船票、码头和航班安排应以官方渠道当日信息为准，避免购买不明来源的票务服务。
+  - document_id: xiamen-transport
+    title: 厦门交通试点提示
+    document_version: "2026-08-12"
+    region: 厦门
+    topic: 交通
+    source_label: 厦门市交通运输局公开信息（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 岛内景点间可结合地铁、公交和步行；前往鼓浪屿需提前核对码头与航线。高峰时段过海、机场和车站接驳应预留时间，不以单一导航预估替代现场安排。
+  - document_id: xiamen-food
+    title: 厦门餐饮试点提示
+    document_version: "2026-08-12"
+    region: 厦门
+    topic: 餐饮
+    source_label: 厦门市文化和旅游局公开信息（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 可按街区体验沙茶面、海蛎煎和闽南小吃。海鲜与小吃点单前确认价格、份量和过敏信息；在旅游热点选择证照、标价清晰的商户。
+  - document_id: xiamen-seasonal
+    title: 厦门季节与避坑试点提示
+    document_version: "2026-08-12"
+    region: 厦门
+    topic: 季节与避坑
+    source_label: 厦门市应急管理局公开提示（试点整理）
+    reviewed_on: "2026-08-12"
+    content: 夏秋季留意台风、暴雨和海上大风预警，滨海步道、轮渡及涉水活动可能调整或关闭。炎热时段补水防晒，遇到雷雨不要在空旷海边或树下停留。

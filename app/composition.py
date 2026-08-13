@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from app.agent.graph import (
@@ -11,8 +11,9 @@ from app.agent.graph import (
     SafeTravelAgent,
 )
 from app.application.chat import ConfirmationStore, TravelChatApplication
+from app.application.weather import UnavailableWeatherService, WeatherService
 from app.api.auth import CurrentUser
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.usage import InMemoryUsageRepository, UsageGuard, UsageRepository
 from app.infrastructure.repositories import (
     InMemoryTripRepository,
@@ -20,13 +21,27 @@ from app.infrastructure.repositories import (
     create_user_scoped_supabase_repository,
 )
 from app.infrastructure.usage import SupabaseUsageRepository
+from app.infrastructure.weather import SupabaseWeatherQuotaRepository
 from app.providers.aggregate import ProviderEvidenceAggregator
+from app.providers.amap_weather import AmapWeatherProvider
+from app.rag.embedding import EmbeddingHttpClient, EmbeddingQuota, JinaEmbedder
+from app.rag.repository import KnowledgeRepository
+from app.rag.service import (
+    Embedder,
+    KnowledgeAnswerService,
+    SearchRepository,
+    UnavailableKnowledgeAnswerService,
+)
 from app.schemas import TravelProfile
 from app.trips.service import TripService
 
 
 _confirmation_store = ConfirmationStore()
 _usage_repository = InMemoryUsageRepository()
+
+
+class KnowledgeRepositoryGateway(SearchRepository, EmbeddingQuota, Protocol):
+    """Private runtime dependency providing both retrieval and atomic quota reserve."""
 
 
 def _uses_supabase() -> bool:
@@ -110,6 +125,81 @@ def get_provider_evidence_aggregator() -> ProviderEvidenceAggregator:
     return ProviderEvidenceAggregator()
 
 
+def build_knowledge_answer_service(
+    *,
+    settings: Settings | None = None,
+    repository: KnowledgeRepositoryGateway | None = None,
+    embedder: Embedder | None = None,
+    http_client: EmbeddingHttpClient | None = None,
+) -> KnowledgeAnswerService | UnavailableKnowledgeAnswerService:
+    """Compose private retrieval only when its server-side dependencies exist."""
+    settings = settings or get_settings()
+    if settings.jina_api_key is None or not settings.jina_api_key.get_secret_value().strip():
+        return UnavailableKnowledgeAnswerService()
+    if repository is None:
+        if (
+            settings.supabase_url is None
+            or settings.supabase_service_key is None
+            or not settings.supabase_service_key.get_secret_value().strip()
+        ):
+            return UnavailableKnowledgeAnswerService()
+        repository = KnowledgeRepository(settings=settings)
+    if embedder is None:
+        embedder = JinaEmbedder(
+            api_key=settings.jina_api_key,
+            model=settings.rag_embedding_model,
+            timeout_seconds=settings.weather_timeout_seconds,
+            daily_limit=settings.rag_daily_embedding_limit,
+            quota=repository,
+            client=http_client,
+        )
+    return KnowledgeAnswerService(
+        repository,
+        embedder,
+        threshold=settings.rag_similarity_threshold,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_knowledge_answer_service(
+) -> KnowledgeAnswerService | UnavailableKnowledgeAnswerService:
+    return build_knowledge_answer_service()
+
+
+def build_weather_service(
+    *, settings: Settings | None = None
+) -> WeatherService | UnavailableWeatherService:
+    settings = settings or get_settings()
+    if (
+        settings.amap_web_service_key is None
+        or not settings.amap_web_service_key.get_secret_value().strip()
+    ):
+        return UnavailableWeatherService()
+    quota = None
+    if settings.app_env == "production":
+        if settings.supabase_url is None or settings.supabase_service_key is None:
+            raise RuntimeError("server-side weather quota storage is not configured")
+        from supabase import create_client
+
+        quota = SupabaseWeatherQuotaRepository(
+            create_client(
+                str(settings.supabase_url),
+                settings.supabase_service_key.get_secret_value()
+            )
+        )
+    return WeatherService(
+        provider=AmapWeatherProvider(settings=settings),
+        cache_ttl_seconds=settings.weather_cache_seconds,
+        daily_limit=settings.weather_daily_limit,
+        quota=quota,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_weather_service() -> WeatherService | UnavailableWeatherService:
+    return build_weather_service()
+
+
 def build_chat_application(user: Any | None) -> TravelChatApplication:
     """The sole concrete composition root for the public chat use case."""
     providers = get_provider_evidence_aggregator()
@@ -120,6 +210,8 @@ def build_chat_application(user: Any | None) -> TravelChatApplication:
             extractor=RuleTravelExtractor(),
             planner=ModelStructuredPlanner(),
             evidence_provider=providers,
+            knowledge=get_knowledge_answer_service(),
+            weather=get_weather_service(),
             initial_profile=initial_profile,
         )
 

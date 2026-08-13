@@ -384,6 +384,102 @@ test("real map explorer wiring renders data-driven cards and a selected place wi
   assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
 });
 
+test("selecting Xiamen fetches one weather card without opening the assistant or calling chat", async () => {
+  const harness = createHarness({ fetch: async (call) => {
+    if (call.url === "/api/weather/cities/xiamen") {
+      return jsonResponse(200, { city: "厦门", status: "available", summary: "晴 26℃", report_time: "2026-08-13T09:00:00+08:00" });
+    }
+    throw new Error(`unexpected ${call.url}`);
+  } });
+  await harness.settle();
+
+  await findByText(harness.elements.get("explore-map"), "福建").dispatch("click");
+  await findByText(harness.elements.get("explore-map"), "厦门").dispatch("click");
+  await harness.settle();
+
+  const weatherCalls = harness.fetchCalls.filter((call) => call.url === "/api/weather/cities/xiamen");
+  assert.equal(weatherCalls.length, 1);
+  assert.equal(harness.elements.get("assistant-panel").hidden, true);
+  assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
+  assert.equal(
+    descendants(harness.document.body).find((node) => node.className === "city-weather-card").textContent,
+    "厦门：实时天气；晴 26℃；报告时间：2026-08-13 09:00:00 GMT+8",
+  );
+});
+
+test("repeated city selections share one in-flight weather request", async () => {
+  let releaseWeather;
+  const weatherPending = new Promise((resolve) => { releaseWeather = resolve; });
+  const harness = createHarness({ fetch: async (call) => {
+    if (call.url === "/api/weather/cities/xiamen") return weatherPending;
+    throw new Error(`unexpected ${call.url}`);
+  } });
+  await harness.settle();
+
+  await findByText(harness.elements.get("explore-map"), "福建").dispatch("click");
+  const xiamen = findByText(harness.elements.get("explore-map"), "厦门");
+  await Promise.all([xiamen.dispatch("click"), xiamen.dispatch("click")]);
+  assert.equal(harness.fetchCalls.filter((call) => call.url === "/api/weather/cities/xiamen").length, 1);
+
+  releaseWeather(jsonResponse(200, { city: "厦门", status: "available", summary: "晴 26℃" }));
+  await harness.settle();
+});
+
+test("weather endpoint failure shows unavailable copy while the city map stays usable", async () => {
+  const harness = createHarness({ fetch: async (call) => {
+    if (call.url === "/api/weather/cities/xiamen") throw new Error("offline");
+    throw new Error(`unexpected ${call.url}`);
+  } });
+  await harness.settle();
+
+  await findByText(harness.elements.get("explore-map"), "福建").dispatch("click");
+  await findByText(harness.elements.get("explore-map"), "厦门").dispatch("click");
+  await harness.settle();
+
+  assert.match(descendants(harness.document.body).find((node) => node.className === "city-weather-card").textContent, /天气暂不可用/);
+  assert.equal(harness.elements.get("explore-map").dataset.mapLevel, "city");
+  assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
+});
+
+test("itinerary renders only its structured daily weather with Chinese labels", async () => {
+  const itinerary = {
+    title: "厦门两日行程",
+    days: [{
+      date: "2026-08-13",
+      weather: { status: "available", summary: "晴 26℃", report_time: "2026-08-13T09:00:00+08:00" },
+      morning: { title: "鼓浪屿", start_time: "09:00", end_time: "11:00", citations: [] },
+    }],
+    citations: [],
+  };
+  const harness = createHarness({ hash: "#share=opaque", fetch: async () => jsonResponse(200, {
+    id: "trip-1", title: itinerary.title, status: "planned", profile: {}, itinerary, updated_at: null,
+  }) });
+  await harness.settle();
+
+  const weather = descendants(harness.document.body).find((node) => node.className === "itinerary-weather");
+  assert.equal(weather.textContent, "天气类型：实时天气；晴 26℃；报告时间：2026-08-13 09:00:00 GMT+8");
+  assert.equal(harness.fetchCalls.some((call) => call.url === "/api/chat"), false);
+});
+
+test("seasonal itinerary weather is explicitly marked non-live without a report time", async () => {
+  const itinerary = {
+    title: "厦门四日行程",
+    days: [{
+      date: "2026-08-16",
+      weather: { status: "seasonal", summary: "非实时天气：夏秋季留意台风。", report_time: null },
+      morning: { title: "城市漫步", start_time: "09:00", end_time: "11:00", citations: [] },
+    }],
+    citations: [],
+  };
+  const harness = createHarness({ hash: "#share=opaque", fetch: async () => jsonResponse(200, {
+    id: "trip-1", title: itinerary.title, status: "planned", profile: {}, itinerary, updated_at: null,
+  }) });
+  await harness.settle();
+
+  const weather = descendants(harness.document.body).find((node) => node.className === "itinerary-weather");
+  assert.equal(weather.textContent, "天气类型：非实时天气；非实时天气：夏秋季留意台风。；报告时间：无实时报告");
+});
+
 test("real map navigation clears a selected place card before province and city context changes", async () => {
   const harness = createHarness();
   await harness.settle();
@@ -769,6 +865,27 @@ test("Task 7 activity citations render canonical freshness and reject malicious 
   assert.doesNotMatch(harness.elements.get("trip-content").textContent, /2099|2098|FORGED-FRESHNESS-MARKER|FORGED-ALLOWED-HOST-MARKER/);
   assert.equal(nodes.some((node) => node.tagName === "IMG"), false);
   assert.equal(links.some((link) => link.href.includes("evil.example") || link.href.includes("user@") || link.href.includes(":444") || link.href.includes("unknown.example")), false);
+});
+
+test("RAG government citations accept the canonical freshness protocol", async () => {
+  const root = path.resolve(__dirname, "..", "..");
+  const itinerary = JSON.parse(fs.readFileSync(path.join(root, "tests", "fixtures", "task7_itinerary.json"), "utf8"));
+  itinerary.days[0].morning.citations = [{
+    evidence_id: "rag:xiamen-attractions:2026-08-12:0001",
+    source_url: "https://www.xm.gov.cn/",
+    source_type: "government",
+    fetched_at: "2026-08-13T01:00:00Z",
+    freshness: "Fetched 2026-08-13T01:00:00Z; reference only.",
+    fact: "鼓浪屿需核对官方航班安排。",
+    source_label: "厦门市文化和旅游局公开信息（试点整理）",
+  }];
+  const harness = createHarness({ hash: "#share=opaque", fetch: async () => jsonResponse(200, {
+    id: "trip-1", title: "shared", status: "planned", profile: {}, itinerary, updated_at: null,
+  }) });
+  await settle();
+  const links = descendants(harness.elements.get("trip-content")).filter((node) => node.tagName === "A");
+  assert.equal(links.some((link) => link.href === "https://www.xm.gov.cn/"), true);
+  assert.match(harness.elements.get("trip-content").textContent, /厦门市文化和旅游局|鼓浪屿/);
 });
 
 test("readable itinerary renders notes facts assumptions and server booking search links", async () => {

@@ -14,6 +14,17 @@ class StrictSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class WeatherCard(StrictSchema):
+    city: str = Field(min_length=1, max_length=80)
+    status: Literal["available", "unavailable", "seasonal"]
+    summary: str = Field(min_length=1, max_length=500)
+    report_time: datetime | None = None
+
+
+class ItineraryWeather(WeatherCard):
+    date: date
+
+
 ProfileLocation = Annotated[str, Field(max_length=200)]
 ProfileDate = Annotated[str, Field(max_length=32)]
 ProfileListItem = Annotated[str, Field(max_length=500)]
@@ -86,6 +97,7 @@ class SourceCitation(StrictSchema):
     fetched_at: datetime
     freshness: str = Field(min_length=1, max_length=500)
     fact: str = Field(default="", max_length=1000)
+    source_label: str | None = Field(default=None, min_length=1, max_length=200)
 
     @property
     def source(self) -> str:
@@ -119,6 +131,7 @@ class ItineraryDay(StrictSchema):
     morning: Activity
     afternoon: Activity
     evening: Activity
+    weather: ItineraryWeather | None = None
 
     @model_validator(mode="after")
     def _activities_are_chronological(self) -> "ItineraryDay":

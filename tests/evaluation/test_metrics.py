@@ -1,11 +1,26 @@
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
+import shutil
 
 import pytest
 
 from app.schemas import TravelProfile
 from tests.evaluation import runner
-from tests.evaluation.runner import EvaluationCase, Prediction, load_baseline, load_cases, run_case, score
+from tests.evaluation.runner import (
+    REQUIRED_RAG_WEATHER_METRICS,
+    EvaluationCase,
+    Prediction,
+    load_baseline,
+    load_cases,
+    load_rag_weather_cases,
+    evaluate_rag_weather,
+    rag_weather_gate_passes,
+    run_case,
+    score,
+    run_rag_weather_case,
+    score_rag_weather,
+)
 from tests.evaluation.offline_fixtures import OfflineModel, SCENARIO_BY_MESSAGE, model_factory
 
 
@@ -59,6 +74,109 @@ def test_versioned_corpus_has_the_required_fixed_strata() -> None:
     assert [case.category for case in cases].count("refusal") == 15
     assert [case.category for case in cases].count("natural_language") == 15
     assert [case.category for case in cases].count("exception") == 10
+
+
+def test_rag_weather_case_distribution_is_exact() -> None:
+    cases = load_rag_weather_cases()
+
+    assert len(cases) == 80
+    assert Counter(case.category for case in cases) == {
+        "grounded": 45,
+        "refusal": 15,
+        "citation_safety": 10,
+        "weather_boundary": 10,
+    }
+    assert len({case.id for case in cases}) == 80
+
+
+def test_grounded_rag_cases_declare_topic_and_required_evidence() -> None:
+    cases = [case for case in load_rag_weather_cases() if case.category == "grounded"]
+
+    assert all(case.expected_topic for case in cases)
+    assert all(case.expected_evidence for case in cases)
+
+
+def test_rag_weather_score_rejects_source_correct_but_topic_wrong_evidence() -> None:
+    case = next(case for case in load_rag_weather_cases() if case.category == "grounded")
+    prediction = run_rag_weather_case(case)
+
+    wrong = replace(prediction, topics=("交通",), evidence=("省内交通",))
+    report = score_rag_weather([wrong], [case])
+
+    assert report.grounded_source_rate == 0.0
+    assert "grounded_source: missing, unexpected, or irrelevant evidence" in report.failures[case.id]
+
+
+def test_rag_weather_prediction_never_reads_topic_or_evidence_oracles() -> None:
+    case = next(case for case in load_rag_weather_cases() if case.id == "G001")
+    changed = replace(
+        case,
+        expected_topic="交通",
+        expected_evidence="绝不应参与预测的文本",
+        allowed_sources=["绝不应参与预测的来源"],
+    )
+
+    assert run_rag_weather_case(changed) == run_rag_weather_case(case)
+
+
+def test_rag_weather_case_status_must_match_its_category() -> None:
+    original = load_rag_weather_cases()[0]
+    conflicting = replace(original, expected_status="refused")
+
+    with pytest.raises(ValueError, match="expected_status"):
+        runner._validate_rag_weather_cases([conflicting] + load_rag_weather_cases()[1:])
+
+
+def test_rag_weather_release_metrics_are_fail_closed_at_one() -> None:
+    assert REQUIRED_RAG_WEATHER_METRICS == {
+        "grounded_source_rate": 1.0,
+        "refusal_accuracy": 1.0,
+        "citation_completeness": 1.0,
+        "weather_boundary_accuracy": 1.0,
+    }
+
+
+def test_rag_weather_offline_harness_meets_all_release_metrics() -> None:
+    report = evaluate_rag_weather(load_rag_weather_cases())
+
+    assert report.total_cases == 80
+    assert report.grounded_source_rate == 1.0
+    assert report.refusal_accuracy == 1.0
+    assert report.citation_completeness == 1.0
+    assert report.weather_boundary_accuracy == 1.0
+    assert rag_weather_gate_passes(report) is True
+
+
+def test_rag_weather_harness_fails_when_a_versioned_region_corpus_is_missing(tmp_path) -> None:
+    """The release gate must consume YAML imports rather than synthetic evidence."""
+    content_dir = Path("app/rag/content")
+    shutil.copy(content_dir / "yunnan.yaml", tmp_path / "yunnan.yaml")
+    shutil.copy(content_dir / "xiamen.yaml", tmp_path / "xiamen.yaml")
+
+    report = evaluate_rag_weather(load_rag_weather_cases(), content_dir=tmp_path)
+
+    assert report.grounded_source_rate < 1.0
+    assert any(case_id.startswith("G00") for case_id in report.failures)
+
+
+def test_weather_boundary_cases_exercise_itinerary_seasonal_merge() -> None:
+    case = next(
+        item for item in load_rag_weather_cases()
+        if item.category == "weather_boundary" and item.day_offset == 3
+    )
+
+    prediction = run_rag_weather_case(case)
+
+    assert prediction.weather_status == "seasonal"
+    assert prediction.itinerary_preserved is True
+
+
+def test_rag_weather_gate_rejects_any_metric_below_one() -> None:
+    report = evaluate_rag_weather(load_rag_weather_cases())
+
+    degraded = replace(report, citation_completeness=0.99)
+
+    assert rag_weather_gate_passes(degraded) is False
 
 
 def test_natural_language_cases_have_independent_extractable_slot_oracles() -> None:

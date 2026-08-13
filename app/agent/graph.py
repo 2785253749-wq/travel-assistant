@@ -12,7 +12,7 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypedDict
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -28,9 +28,12 @@ from app.schemas import (
     CHAT_REPLY_MAX_LENGTH,
     ExtractionResult,
     Itinerary,
+    ItineraryWeather,
     ProfileIssue,
     TravelProfile,
+    WeatherCard,
 )
+from app.rag.service import RagAnswer, UnavailableKnowledgeAnswerService
 from app.trips.models import Trip
 
 
@@ -141,6 +144,26 @@ class TrustedEvidenceProvider(Protocol):
     def fetch(self, profile: TravelProfile) -> list[TrustedEvidence]: ...
 
 
+class KnowledgeAnswerer(Protocol):
+    def answer(self, question: str, region: str | None = None) -> RagAnswer: ...
+
+
+class DailyWeatherProvider(Protocol):
+    def city_card(self, city_id: str): ...
+    def daily_weather(self, destination: str, travel_date): ...
+
+
+class NullWeatherService:
+    """Keep weather optional without importing provider wiring into the agent."""
+
+    def city_card(self, city_id: str) -> WeatherCard:
+        return WeatherCard(city=city_id, status="unavailable", summary="天气信息暂不可用")
+
+    def daily_weather(self, destination: str, travel_date) -> None:
+        del destination, travel_date
+        return None
+
+
 class UsageGuard(Protocol):
     def allow(self, user_id: UUID | None) -> bool: ...
 
@@ -153,8 +176,21 @@ class ModelIntentClassifier:
 class RuleIntentClassifier:
     """Credential-free pre-confirmation routing; paid models are planning-only."""
 
+    _COMPLETE_PLAN_ROUTE = re.compile(r"(?:从|from)\s*[^\s，,。]{1,30}?\s*(?:到|去|to)\s*[^\s，,。]{1,30}", re.IGNORECASE)
+    _PLAN_DATE = re.compile(r"\b20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
+    _PLAN_TRAVELERS = re.compile(r"(?<!\d)[1-9]\d?\s*(?:人|travellers?|travelers?)", re.IGNORECASE)
+    _PLAN_BUDGET = re.compile(r"(?:预算|budget)\s*(?:为|是|约)?\s*[:：]?\s*\d{1,8}", re.IGNORECASE)
+    _PLAN_CONTEXT = re.compile(
+        r"(?:规划(?:一[份个]|\d+\s*天|行程)|制定行程|生成行程|出游|想安排|"
+        r"从[^，,。]{1,30}(?:出发)?\s*(?:到|去))",
+        re.IGNORECASE,
+    )
+
     def classify(self, message: str, has_trip: bool) -> IntentResult:
         normalized = message.strip().lower()
+        # Existing-trip operations have the highest rule priority. In
+        # particular, “第一天为什么这样安排” is an explanation, not a new
+        # one-day planning request.
         if has_trip and any(term in normalized for term in ("为什么", "为何", "解释", "理由", "why", "explain")):
             return IntentResult(intent="explain_trip", confidence=1.0)
         if has_trip and any(
@@ -173,15 +209,46 @@ class RuleIntentClassifier:
             )
         ):
             return IntentResult(intent="modify_trip", confidence=1.0)
-        greeting = re.sub(r"[\s,.!?，。！？]+", "", normalized)
-        if greeting in {"你好", "您好", "嗨", "哈喽", "侬好", "hello", "hi"}:
-            return IntentResult(intent="smalltalk", confidence=1.0)
         if any(
             term in normalized
             for term in ("作业", "裁员", "写代码", "编程", "homework", "write my")
         ):
             return IntentResult(intent="unsupported", confidence=1.0)
+        # Planning context owns routing even when it also says “weather”,
+        # “attractions”, or “food”: incomplete profiles must reach collection.
+        if self._has_planning_context(normalized):
+            return IntentResult(intent="plan_trip", confidence=1.0)
+        if any(
+            term in normalized
+            for term in ("天气", "气温", "温度", "下雨", "降雨", "风力", "风况", "weather")
+        ):
+            return IntentResult(intent="weather_query", confidence=1.0)
+        if any(
+            term in normalized
+            for term in (
+                "鼓浪屿", "景点", "攻略", "怎么去", "交通", "美食", "吃什么",
+                "季节", "避坑", "轮渡", "古城", "洱海",
+                "旅游", "游玩", "值得去", "地方", "票价", "酒店", "排队",
+                "闭馆", "民宿", "降雨量", "餐厅", "机票", "安全", "预订", "支付",
+                "旅行", "出行", "换乘", "高原", "高海拔", "小吃", "特色菜",
+                "雨季", "夏季", "炎热", "注意", "建议", "准备", "选择",
+            )
+        ):
+            return IntentResult(intent="travel_knowledge", confidence=1.0)
+        greeting = re.sub(r"[\s,.!?，。！？]+", "", normalized)
+        if greeting in {"你好", "您好", "嗨", "哈喽", "侬好", "hello", "hi"}:
+            return IntentResult(intent="smalltalk", confidence=1.0)
         return IntentResult(intent="plan_trip", confidence=1.0)
+
+    @classmethod
+    def _has_planning_context(cls, message: str) -> bool:
+        return (
+            cls._COMPLETE_PLAN_ROUTE.search(message) is not None
+            or len(cls._PLAN_DATE.findall(message)) > 0
+            or cls._PLAN_TRAVELERS.search(message) is not None
+            or cls._PLAN_BUDGET.search(message) is not None
+            or cls._PLAN_CONTEXT.search(message) is not None
+        )
 
 
 def model() -> ChatDeepSeek:
@@ -360,6 +427,8 @@ class SafeTravelAgent:
         repository: Any | None = None,
         usage_guard: UsageGuard | None = None,
         evidence_provider: TrustedEvidenceProvider | None = None,
+        knowledge: KnowledgeAnswerer | None = None,
+        weather: DailyWeatherProvider | None = None,
         initial_profile: TravelProfile | None = None,
     ) -> None:
         self._classifier = classifier or ModelIntentClassifier()
@@ -368,6 +437,8 @@ class SafeTravelAgent:
         self._repository = repository
         self._usage_guard = usage_guard
         self._evidence_provider = evidence_provider or NullEvidenceProvider()
+        self._knowledge = knowledge or UnavailableKnowledgeAnswerService()
+        self._weather = weather or NullWeatherService()
         self._initial_profile = initial_profile or TravelProfile()
 
     def collect(self, message: str, trip: Trip | None) -> ChatResult:
@@ -387,6 +458,9 @@ class SafeTravelAgent:
             logging.getLogger("app.agent").info(
                 "intent_classified", extra=operational_context(intent=intent)
             )
+            special = self._special_intent_result(intent, message)
+            if special is not None:
+                return special
             if intent == "unsupported":
                 result = self._refusal("OUT_OF_SCOPE")
                 result.intent = intent
@@ -520,6 +594,12 @@ class SafeTravelAgent:
                         warnings=warnings,
                         intent=intent,
                     )
+                itinerary = enrich_itinerary(
+                    itinerary,
+                    destination=profile.destination or "",
+                    weather=self._weather,
+                    knowledge=self._knowledge,
+                )
                 itinerary = _attach_booking_links(itinerary, booking_links)
                 citations = _itinerary_citations(itinerary)
                 return ChatResult(
@@ -569,6 +649,9 @@ class SafeTravelAgent:
                 result = self._refusal("OUT_OF_SCOPE")
                 result.intent = intent
                 return result
+            special = self._special_intent_result(intent, message)
+            if special is not None:
+                return special
             if intent == "smalltalk":
                 return ChatResult(
                     "你好！我可以帮你规划国内 2 至 7 天的自由行。",
@@ -631,6 +714,12 @@ class SafeTravelAgent:
                         error_code="PLAN_VALIDATION_FAILED",
                     )
                 else:
+                    itinerary = enrich_itinerary(
+                        itinerary,
+                        destination=profile.destination or "",
+                        weather=self._weather,
+                        knowledge=self._knowledge,
+                    )
                     citations = _itinerary_citations(itinerary)
                     result = ChatResult(
                         render_itinerary_markdown(itinerary), "planned", profile.model_dump(),
@@ -662,6 +751,51 @@ class SafeTravelAgent:
         return ChatResult(
             REFUSALS[code], "collecting", {}, error_code=code, intent=intent
         )
+
+    def _special_intent_result(self, intent: Intent, message: str) -> ChatResult | None:
+        if intent == "travel_knowledge":
+            region = _knowledge_region(message)
+            if region is None:
+                return ChatResult(
+                    "请补充目的地城市，我才能查询试点旅行资料。",
+                    "collecting",
+                    {},
+                    error_code="KNOWLEDGE_UNAVAILABLE",
+                    intent=intent,
+                )
+            try:
+                answer = self._knowledge.answer(message, region=region)
+            except Exception:
+                answer = RagAnswer.refused()
+            return ChatResult(
+                answer.reply,
+                "collecting",
+                {},
+                sources=[item.model_dump(mode="json") for item in _rag_citations(answer)],
+                intent=intent,
+            )
+        if intent == "weather_query":
+            city = _weather_city(message)
+            try:
+                card = self._weather.city_card(city)
+            except Exception:
+                from app.schemas import WeatherCard
+
+                card = WeatherCard(city=city, status="unavailable", summary="天气信息暂不可用")
+            warnings = [card.summary] if card.status == "unavailable" else []
+            if card.status == "available":
+                report_time = (
+                    card.report_time.strftime("%Y-%m-%d %H:%M %Z")
+                    if card.report_time is not None
+                    else "未知"
+                )
+                reply = f"实时天气（报告时间：{report_time}）：{card.summary}"
+            elif card.status == "seasonal":
+                reply = f"非实时天气：{card.summary}"
+            else:
+                reply = card.summary
+            return ChatResult(reply, "collecting", {}, warnings=warnings, intent=intent)
+        return None
 
     @staticmethod
     def _collecting(
@@ -867,6 +1001,96 @@ def _itinerary_citations(itinerary: Any) -> list[Any]:
     for day in itinerary.days:
         for activity in (day.morning, day.afternoon, day.evening):
             citations.extend(activity.citations)
+    return citations
+
+
+def enrich_itinerary(
+    itinerary: Itinerary,
+    *,
+    destination: str,
+    weather: DailyWeatherProvider,
+    knowledge: KnowledgeAnswerer,
+) -> Itinerary:
+    """Attach server-produced weather without allowing a weather failure to block a plan."""
+    days = []
+    for day in itinerary.days:
+        day_weather: ItineraryWeather | None = None
+        try:
+            day_weather = weather.daily_weather(destination, day.date)
+        except Exception:
+            day_weather = None
+        if day_weather is None:
+            day_weather = _seasonal_weather(destination, day.date, knowledge)
+        days.append(day.model_copy(update={"weather": day_weather}))
+    return itinerary.model_copy(update={"days": days})
+
+
+def _seasonal_weather(
+    destination: str, travel_date, knowledge: KnowledgeAnswerer
+) -> ItineraryWeather | None:
+    try:
+        answer = knowledge.answer(
+            f"{destination} 季节与避坑", region=_knowledge_region(destination)
+        )
+    except Exception:
+        return None
+    if answer.status != "grounded" or not answer.chunks:
+        return None
+    chunk = answer.chunks[0]
+    summary = f"非实时天气：{chunk.content}【来源：{chunk.source_label}】"
+    return ItineraryWeather(
+        city=destination,
+        status="seasonal",
+        summary=summary[:500],
+        date=travel_date,
+    )
+
+
+_TRIAL_PLACE_REGIONS: dict[str, str] = {
+    "鼓浪屿": "厦门",
+}
+
+
+def _knowledge_region(message: str) -> str | None:
+    for region in ("厦门", "福建", "云南"):
+        if region in message:
+            return region
+    matches = {
+        region
+        for alias, region in _TRIAL_PLACE_REGIONS.items()
+        if alias in message
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _weather_city(message: str) -> str:
+    for city in ("厦门", "福建", "云南"):
+        if city in message:
+            return city
+    return "未知城市"
+
+
+def _rag_citations(answer: RagAnswer):
+    from app.schemas import SourceCitation
+
+    source_urls = {
+        "厦门": "https://www.xm.gov.cn/",
+        "福建": "https://www.fujian.gov.cn/",
+        "云南": "https://www.yn.gov.cn/",
+    }
+    timestamp = datetime.now(UTC)
+    citations = []
+    for chunk in answer.chunks:
+        url = next((value for key, value in source_urls.items() if key in chunk.source_label), "https://www.gov.cn/")
+        citations.append(SourceCitation(
+            evidence_id=f"rag:{chunk.chunk_id}",
+            source_url=url,
+            source_type="government",
+            fetched_at=timestamp,
+            freshness=f"Fetched {timestamp.isoformat()}; reference only.",
+            fact=chunk.content,
+            source_label=chunk.source_label,
+        ))
     return citations
 
 

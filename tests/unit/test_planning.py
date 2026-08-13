@@ -1,9 +1,14 @@
 from datetime import date, datetime, timezone
+from unittest.mock import Mock
 
 import pytest
 from pydantic import ValidationError
 
-from app.agent.graph import TrustedEvidence
+from app.agent.graph import SafeTravelAgent, TrustedEvidence, enrich_itinerary
+from app.agent.intent import IntentResult
+from app.rag.models import RetrievedChunk
+from app.rag.service import RagAnswer
+from app.schemas import ItineraryWeather
 from app.agent.planning import PlanValidationError, Planner, validate_itinerary
 from app.providers.base import ProviderResult
 from app.schemas import Activity, BudgetBreakdown, EstimateRange, FactClaim, Itinerary, ItineraryDay, PlanningAssumption, SourceCitation, TravelProfile
@@ -65,6 +70,129 @@ def test_budget_total_matches_profile() -> None:
     itinerary = itinerary_factory()
 
     assert validate_itinerary(itinerary, profile_factory(), []) == []
+
+
+def test_knowledge_question_returns_chinese_source_labels_without_planner_call() -> None:
+    class Classifier:
+        def classify(self, *_args):
+            return IntentResult(intent="travel_knowledge", confidence=1.0)
+
+    class Knowledge:
+        def answer(self, *_args, **_kwargs):
+            return RagAnswer.grounded([
+                RetrievedChunk(
+                    chunk_id="xiamen-1",
+                    content="前往鼓浪屿前应先核对码头与航线。",
+                    source_label="厦门市交通运输局公开信息",
+                    score=0.9,
+                )
+            ])
+
+    planner = Mock()
+    result = SafeTravelAgent(
+        classifier=Classifier(),
+        planner=planner,
+        knowledge=Knowledge(),
+    ).run("厦门去鼓浪屿怎么安排", trip=None, user_id=None)
+
+    assert result.intent == "travel_knowledge"
+    assert "来源：厦门市交通运输局公开信息" in result.reply
+    assert result.sources and result.sources[0]["source_label"] == "厦门市交通运输局公开信息"
+    planner.invoke.assert_not_called()
+
+
+def test_standalone_multi_day_weather_question_calls_weather_only() -> None:
+    class Classifier:
+        def classify(self, *_args):
+            return IntentResult(intent="weather_query", confidence=1.0)
+
+    planner = Mock()
+    knowledge = Mock()
+
+    class Weather:
+        calls = []
+
+        def city_card(self, city_id):
+            self.calls.append(city_id)
+            from app.schemas import WeatherCard
+
+            return WeatherCard(
+                city="厦门",
+                status="available",
+                summary="晴，25°C",
+                report_time=datetime(2026, 8, 13, 9, 30, tzinfo=timezone.utc),
+            )
+
+    weather = Weather()
+    result = SafeTravelAgent(
+        classifier=Classifier(), planner=planner, knowledge=knowledge, weather=weather
+    ).run("厦门未来三天天气怎么样？", trip=None, user_id=None)
+
+    assert result.intent == "weather_query"
+    assert result.reply == "实时天气（报告时间：2026-08-13 09:30 UTC）：晴，25°C"
+    assert weather.calls == ["厦门"]
+    planner.invoke.assert_not_called()
+    knowledge.answer.assert_not_called()
+
+
+def test_each_itinerary_date_uses_provider_report_window_then_seasonal_fallback() -> None:
+    base = itinerary_factory(days=[
+        ItineraryDay(
+            date=date(2026, 8, 1),
+            morning=Activity(title="上午", start_time="09:00", end_time="11:00"),
+            afternoon=Activity(title="下午", start_time="13:00", end_time="15:00"),
+            evening=Activity(title="晚上", start_time="18:00", end_time="20:00"),
+        ),
+        ItineraryDay(
+            date=date(2026, 8, 2),
+            morning=Activity(title="上午", start_time="09:00", end_time="11:00"),
+            afternoon=Activity(title="下午", start_time="13:00", end_time="15:00"),
+            evening=Activity(title="晚上", start_time="18:00", end_time="20:00"),
+        ),
+        ItineraryDay(
+            date=date(2026, 8, 3),
+            morning=Activity(title="上午", start_time="09:00", end_time="11:00"),
+            afternoon=Activity(title="下午", start_time="13:00", end_time="15:00"),
+            evening=Activity(title="晚上", start_time="18:00", end_time="20:00"),
+        ),
+        ItineraryDay(
+            date=date(2026, 8, 4),
+            morning=Activity(title="上午", start_time="09:00", end_time="11:00"),
+            afternoon=Activity(title="下午", start_time="13:00", end_time="15:00"),
+            evening=Activity(title="晚上", start_time="18:00", end_time="20:00"),
+        ),
+    ], end_date=date(2026, 8, 4))
+
+    class Weather:
+        calls = []
+
+        def daily_weather(self, destination, travel_date):
+            self.calls.append((destination, travel_date))
+            if travel_date != date(2026, 8, 4):
+                return None
+            return ItineraryWeather(
+                city="厦门", status="available", summary="晴，25–30°C",
+                report_time=datetime(2026, 8, 1, tzinfo=timezone.utc), date=travel_date,
+            )
+
+    class Knowledge:
+        def answer(self, *_args, **_kwargs):
+            return RagAnswer.grounded([
+                RetrievedChunk(
+                    chunk_id="seasonal", content="夏秋季留意台风和暴雨预警。",
+                    source_label="厦门市应急管理局公开提示", score=0.9,
+                )
+            ])
+
+    weather = Weather()
+    itinerary = enrich_itinerary(base, destination="厦门", weather=weather, knowledge=Knowledge())
+
+    assert weather.calls == [("厦门", day.date) for day in base.days]
+    assert [day.weather.status for day in itinerary.days if day.weather] == [
+        "seasonal", "seasonal", "seasonal", "available"
+    ]
+    assert "非实时天气" in itinerary.days[0].weather.summary
+    assert itinerary.days[3].weather.report_time is not None
 
 
 def test_budget_schema_rejects_total_that_does_not_match_categories() -> None:

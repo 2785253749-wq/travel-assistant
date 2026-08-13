@@ -4,6 +4,10 @@ function Test-PlaceholderValue {
     param([string]$Value)
 
     $normalized = $Value.Trim().Trim('"').Trim("'").Trim()
+    $normalized = $normalized.TrimEnd(')', '}', ']', ',').Trim()
+    if ($normalized -eq 'SecretStr("test-key') {
+        $normalized = 'test-key'
+    }
     if ([string]::IsNullOrWhiteSpace($normalized)) {
         return $true
     }
@@ -13,6 +17,12 @@ function Test-PlaceholderValue {
         'placeholder',
         'test-only-key',
         'test-key',
+        'test-only-placeholder',
+        'service-key',
+        'service-role-key',
+        'server-only-secret',
+        'web-service-secret',
+        'browser-public-key',
         'redacted',
         'masked',
         'your_deepseek_api_key_here',
@@ -26,6 +36,7 @@ function Test-PlaceholderValue {
 
     return (
         $exactPlaceholders -contains $normalized.ToLowerInvariant() -or
+        $normalized -eq 'None' -or
         $normalized -match '^\*+$'
     )
 }
@@ -50,7 +61,8 @@ function Test-SafeReference {
         $normalized -match '^%[A-Z][A-Z0-9_]*%$' -or
         (Test-JavaScriptSafeReference -Value $normalized) -or
         $normalized -match '^(?i:os\.environ\[(?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\])$' -or
-        $normalized -match '^(?i:(?:os\.getenv|Deno\.env\.get|System\.getenv)\((?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\))$'
+        $normalized -match '^(?i:(?:os\.getenv|Deno\.env\.get|System\.getenv)\((?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\))$' -or
+        $normalized -match '^secrets\.token_urlsafe\(\d+\)$'
     )
 }
 
@@ -124,7 +136,9 @@ function Get-SensitiveAssignments {
     )
 
     $escapedName = [regex]::Escape($Name)
-    $separator = if ($AllowColon) { '[:=]' } else { '=' }
+    # `=(?!=)` accepts assignments but rejects equality / comparison operators.
+    # `(` is a Python-call boundary, covering e.g. Settings(key="value").
+    $separator = if ($AllowColon) { '[:=](?!=)' } else { '=(?!=)' }
     $receiver = '(?:(?:[A-Za-z_$][A-Za-z0-9_$]*\.)+|\$env:)?'
     $directKey = "$receiver[`"']?$escapedName[`"']?"
     $javascriptTrivia = '(?:(?:\s)|(?:/\*[\s\S]*?\*/)|(?://[^\r\n\u2028\u2029]*(?:\r\n?|\n|\u2028|\u2029)))*'
@@ -139,7 +153,8 @@ function Get-SensitiveAssignments {
         '[\s\S]*?' + $backtick + ')'
     $computedName = "(?:${quotedName}|${cookedTemplateName}|${dynamicTemplate})"
     $computedKey = "${propertyPath}${javascriptTrivia}\[${javascriptTrivia}${computedName}${javascriptTrivia}\]"
-    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>(?:$computedKey|$directKey))\??${javascriptTrivia}(?<separator>$separator)${javascriptTrivia}"
+    $postSeparatorTrivia = '(?:[ \t\f\v]|(?:/\*[\s\S]*?\*/)|(?://[^\r\n\u2028\u2029]*))*'
+    $pattern = "(?im)(?:^|[,{;(])\s*(?:(?:export|const|let|var)\s+)?(?<key>(?:$computedKey|$directKey))\??${javascriptTrivia}(?<separator>$separator)${postSeparatorTrivia}"
     return [regex]::Matches($Content, $pattern)
 }
 
@@ -151,7 +166,9 @@ function Get-AssignedExpression {
 
     $builder = [System.Text.StringBuilder]::new()
     $quote = $null
+    $closedQuote = $false
     $braceDepth = 0
+    $parenthesisDepth = 0
     for ($index = $StartIndex; $index -lt $Content.Length; $index++) {
         $character = $Content[$index]
         if ($null -ne $quote) {
@@ -164,8 +181,18 @@ function Get-AssignedExpression {
             }
             elseif ($character -eq $quote) {
                 $quote = $null
+                $closedQuote = $true
             }
             continue
+        }
+
+        if ($closedQuote) {
+            if ($character -in @([char]41, [char]44, [char]59, [char]125, [char]93)) {
+                break
+            }
+            if (-not [char]::IsWhiteSpace($character)) {
+                $closedQuote = $false
+            }
         }
 
         if ($character -in @([char]34, [char]39, [char]96)) {
@@ -195,15 +222,31 @@ function Get-AssignedExpression {
             [void]$builder.Append($character)
             continue
         }
-        if ($character -eq [char]125) {
-            if ($braceDepth -eq 0) {
-                break
-            }
-            $braceDepth--
+        if ($character -eq [char]40) {
+            $parenthesisDepth++
             [void]$builder.Append($character)
             continue
         }
-        if ($braceDepth -eq 0 -and $character -in @([char]44, [char]59)) {
+        if ($character -eq [char]125) {
+            if ($braceDepth -gt 0) {
+                $braceDepth--
+                [void]$builder.Append($character)
+                continue
+            }
+            break
+        }
+        if ($character -eq [char]41) {
+            if ($parenthesisDepth -gt 0) {
+                $parenthesisDepth--
+                [void]$builder.Append($character)
+                continue
+            }
+            break
+        }
+        # A sensitive value passed as a Python keyword argument ends at the
+        # closing call parenthesis.  Treat it like the existing comma/semicolon
+        # delimiters so subsequent source code cannot be absorbed into its value.
+        if ($braceDepth -eq 0 -and $parenthesisDepth -eq 0 -and $character -in @([char]44, [char]59)) {
             break
         }
         [void]$builder.Append($character)
@@ -428,6 +471,8 @@ foreach ($file in $trackedFiles) {
         @('.json', '.yaml', '.yml', '.toml', '.js', '.jsx', '.ts', '.tsx', '.ini', '.cfg', '.conf', '.properties')
     $sensitiveAssignments = @{}
     $sensitiveAssignments[("DEEPSEEK_API" + "_KEY")] = "DeepSeek API key"
+    $sensitiveAssignments[("JINA_API" + "_KEY")] = "Jina API key"
+    $sensitiveAssignments[("AMAP_WEB_SERVICE" + "_KEY")] = "AMap Web Service key"
     $sensitiveAssignments[("SUPABASE_SERVICE" + "_KEY")] = "Supabase service key"
     $sensitiveAssignments[("ANON_SESSION_SIGNING" + "_SECRET")] = "anonymous session signing secret"
     $dynamicTemplateViolation = $false

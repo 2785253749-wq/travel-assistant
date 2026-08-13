@@ -1,5 +1,6 @@
 import pytest
 
+from app.agent.graph import RuleIntentClassifier
 from app.agent.intent import IntentResult, classify_intent, route_intent
 
 
@@ -52,3 +53,56 @@ def test_trip_dependent_intents_start_a_plan_when_no_trip_exists(intent):
     result = route_intent(IntentResult(intent=intent, confidence=0.9), has_trip=False)
 
     assert result == "plan_trip"
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("厦门今天的天气怎么样", "weather_query"),
+        ("厦门去鼓浪屿怎么安排", "travel_knowledge"),
+    ],
+)
+def test_rule_classifier_routes_weather_and_grounded_travel_questions(message, expected):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == expected
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "从北京到厦门，2026-10-01 到 2026-10-03，2人，预算4000元，想看景点和吃美食",
+        "从北京到厦门，2026-10-01 到 2026-10-03，2人，预算4000元，请把天气作为行程参考",
+    ],
+)
+def test_rule_classifier_keeps_complete_plan_requests_on_planning_flow(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "plan_trip"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "从北京到厦门，想安排景点和美食，也想参考天气",
+        "厦门三天，2人预算4000元，想了解天气和景点",
+    ],
+)
+def test_rule_classifier_keeps_partial_plan_requests_on_collection_flow(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "plan_trip"
+
+
+@pytest.mark.parametrize("message", ["厦门未来三天天气怎么样？", "厦门三天天气如何"])
+def test_rule_classifier_keeps_standalone_multi_day_weather_questions_on_weather_route(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "weather_query"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "厦门鼓浪屿游玩攻略",
+        "厦门有哪些适合游玩的景点？",
+        "福建旅游有什么避坑建议？",
+        "云南有哪些值得去的地方？",
+        "福建旅行时省内交通换乘如何规划？",
+    ],
+)
+def test_common_travel_knowledge_questions_do_not_start_profile_collection(message):
+    """Generic travel/visit words alone do not prove that a user is requesting a plan."""
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "travel_knowledge"

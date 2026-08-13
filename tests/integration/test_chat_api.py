@@ -139,6 +139,15 @@ def test_chat_api_logs_the_safe_failure_boundary_for_an_application_key_error(mo
     assert "unlogged-private-key" not in caplog.text
 
 
+def test_chat_api_keeps_new_knowledge_intent_in_safe_fallback_logs():
+    from app.api.chat import _fallback_intent
+
+    error = RuntimeError("safe")
+    error.intent = "travel_knowledge"
+
+    assert _fallback_intent(error, "plan_trip") == "travel_knowledge"
+
+
 @pytest.mark.parametrize(
     ("error_kind", "expected_status"),
     [("provider", 200), ("application", 503)],
