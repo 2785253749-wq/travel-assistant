@@ -164,6 +164,51 @@ def test_public_repo_check_accepts_tracked_placeholders(tmp_path: Path):
     assert "Public repository check passed" in result.stdout
 
 
+def test_public_repo_check_accepts_empty_new_key_declarations(tmp_path: Path):
+    content = "JINA_API_KEY=\nAMAP_WEB_SERVICE_KEY=\n"
+    repo = _tracked_repo(tmp_path, ".env.example", content)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Public repository check passed" in result.stdout
+
+
+def test_example_environment_lists_server_keys_without_secret_values():
+    content = Path(".env.example").read_text(encoding="utf-8")
+
+    assert "JINA_API_KEY=" in content
+    assert "AMAP_WEB_SERVICE_KEY=" in content
+    assert "JINA_API_KEY=your_" not in content
+    assert "AMAP_WEB_SERVICE_KEY=your_" not in content
+    assert "sk-" not in content
+
+
+def test_readme_documents_rag_weather_safe_deployment_order_and_fallbacks():
+    content = Path("README.md").read_text(encoding="utf-8")
+
+    assert "008_rag_knowledge.sql" in content
+    assert "python -m app.scripts.import_knowledge" in content
+    assert "JINA_API_KEY" in content
+    assert "AMAP_WEB_SERVICE_KEY" in content
+    assert "资料库没有足够依据，无法可靠回答。" in content
+    assert "天气信息暂不可用" in content
+    assert "行程仍可正常生成" in content
+
+
+@pytest.mark.parametrize("name", ["JINA_API_KEY", "AMAP_WEB_SERVICE_KEY"])
+def test_public_repo_check_rejects_new_server_secret_assignments(
+    tmp_path: Path,
+    name: str,
+):
+    repo = _tracked_repo(tmp_path, "config/settings.env", f"{name}=live-production-value\n")
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "credential" in result.stdout.lower()
+
+
 def test_public_repo_check_accepts_unicode_tracked_placeholder(tmp_path: Path):
     placeholder = "DEEPSEEK_API" + "_KEY=your_deepseek_api_key_here\n"
     repo = _tracked_repo(tmp_path, "资料/占位符.txt", placeholder)

@@ -1,3 +1,4 @@
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
@@ -5,7 +6,18 @@ import pytest
 
 from app.schemas import TravelProfile
 from tests.evaluation import runner
-from tests.evaluation.runner import EvaluationCase, Prediction, load_baseline, load_cases, run_case, score
+from tests.evaluation.runner import (
+    REQUIRED_RAG_WEATHER_METRICS,
+    EvaluationCase,
+    Prediction,
+    load_baseline,
+    load_cases,
+    load_rag_weather_cases,
+    evaluate_rag_weather,
+    rag_weather_gate_passes,
+    run_case,
+    score,
+)
 from tests.evaluation.offline_fixtures import OfflineModel, SCENARIO_BY_MESSAGE, model_factory
 
 
@@ -59,6 +71,47 @@ def test_versioned_corpus_has_the_required_fixed_strata() -> None:
     assert [case.category for case in cases].count("refusal") == 15
     assert [case.category for case in cases].count("natural_language") == 15
     assert [case.category for case in cases].count("exception") == 10
+
+
+def test_rag_weather_case_distribution_is_exact() -> None:
+    cases = load_rag_weather_cases()
+
+    assert len(cases) == 80
+    assert Counter(case.category for case in cases) == {
+        "grounded": 45,
+        "refusal": 15,
+        "citation_safety": 10,
+        "weather_boundary": 10,
+    }
+    assert len({case.id for case in cases}) == 80
+
+
+def test_rag_weather_release_metrics_are_fail_closed_at_one() -> None:
+    assert REQUIRED_RAG_WEATHER_METRICS == {
+        "grounded_source_rate": 1.0,
+        "refusal_accuracy": 1.0,
+        "citation_completeness": 1.0,
+        "weather_boundary_accuracy": 1.0,
+    }
+
+
+def test_rag_weather_offline_harness_meets_all_release_metrics() -> None:
+    report = evaluate_rag_weather(load_rag_weather_cases())
+
+    assert report.total_cases == 80
+    assert report.grounded_source_rate == 1.0
+    assert report.refusal_accuracy == 1.0
+    assert report.citation_completeness == 1.0
+    assert report.weather_boundary_accuracy == 1.0
+    assert rag_weather_gate_passes(report) is True
+
+
+def test_rag_weather_gate_rejects_any_metric_below_one() -> None:
+    report = evaluate_rag_weather(load_rag_weather_cases())
+
+    degraded = replace(report, citation_completeness=0.99)
+
+    assert rag_weather_gate_passes(degraded) is False
 
 
 def test_natural_language_cases_have_independent_extractable_slot_oracles() -> None:

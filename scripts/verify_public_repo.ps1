@@ -13,6 +13,10 @@ function Test-PlaceholderValue {
         'placeholder',
         'test-only-key',
         'test-key',
+        'test-only-placeholder',
+        'service-key',
+        'service-role-key',
+        'server-only-secret',
         'redacted',
         'masked',
         'your_deepseek_api_key_here',
@@ -50,7 +54,8 @@ function Test-SafeReference {
         $normalized -match '^%[A-Z][A-Z0-9_]*%$' -or
         (Test-JavaScriptSafeReference -Value $normalized) -or
         $normalized -match '^(?i:os\.environ\[(?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\])$' -or
-        $normalized -match '^(?i:(?:os\.getenv|Deno\.env\.get|System\.getenv)\((?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\))$'
+        $normalized -match '^(?i:(?:os\.getenv|Deno\.env\.get|System\.getenv)\((?:"[A-Z][A-Z0-9_]*"|''[A-Z][A-Z0-9_]*'')\))$' -or
+        $normalized -match '^secrets\.token_urlsafe\(\d+\)$'
     )
 }
 
@@ -139,7 +144,8 @@ function Get-SensitiveAssignments {
         '[\s\S]*?' + $backtick + ')'
     $computedName = "(?:${quotedName}|${cookedTemplateName}|${dynamicTemplate})"
     $computedKey = "${propertyPath}${javascriptTrivia}\[${javascriptTrivia}${computedName}${javascriptTrivia}\]"
-    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>(?:$computedKey|$directKey))\??${javascriptTrivia}(?<separator>$separator)${javascriptTrivia}"
+    $postSeparatorTrivia = '(?:[ \t\f\v]|(?:/\*[\s\S]*?\*/)|(?://[^\r\n\u2028\u2029]*))*'
+    $pattern = "(?im)(?:^|[,{;])\s*(?:(?:export|const|let|var)\s+)?(?<key>(?:$computedKey|$directKey))\??${javascriptTrivia}(?<separator>$separator)${postSeparatorTrivia}"
     return [regex]::Matches($Content, $pattern)
 }
 
@@ -428,6 +434,8 @@ foreach ($file in $trackedFiles) {
         @('.json', '.yaml', '.yml', '.toml', '.js', '.jsx', '.ts', '.tsx', '.ini', '.cfg', '.conf', '.properties')
     $sensitiveAssignments = @{}
     $sensitiveAssignments[("DEEPSEEK_API" + "_KEY")] = "DeepSeek API key"
+    $sensitiveAssignments[("JINA_API" + "_KEY")] = "Jina API key"
+    $sensitiveAssignments[("AMAP_WEB_SERVICE" + "_KEY")] = "AMap Web Service key"
     $sensitiveAssignments[("SUPABASE_SERVICE" + "_KEY")] = "Supabase service key"
     $sensitiveAssignments[("ANON_SESSION_SIGNING" + "_SECRET")] = "anonymous session signing secret"
     $dynamicTemplateViolation = $false

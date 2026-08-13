@@ -82,6 +82,18 @@ Explore 页面当前只实现 **福建、云南** 两个省份的地图试点：
 
 高德 Key 与安全密钥分别通过 Render 环境变量 `AMAP_JS_KEY`、`AMAP_SECURITY_JS_CODE` 配置，禁止把真实值写入 `.env.example`、源码、文档、日志或 Git 提交记录。当前直连模式会把这两项浏览器配置交给前端，因此必须在高德控制台限制允许域名；若未来需要更强隔离，应另行设计服务代理。具体的生产配置和验收步骤见 [Render + Supabase 免费层部署说明](docs/deployment/free-tier.md)。
 
+## RAG 知识库与天气试点
+
+RAG 与天气是可选的后端能力，只覆盖福建、云南和厦门试点。部署时先在 Supabase SQL Editor 执行 `supabase/migrations/008_rag_knowledge.sql`，确认迁移成功后，再在受控的本机或一次性 Render Shell 中运行：
+
+```powershell
+python -m app.scripts.import_knowledge --content-dir app/rag/content
+```
+
+导入命令需要服务端 Supabase 凭据和 `JINA_API_KEY`，不得在浏览器、日志或提交记录中显示实际值。Render 只需新增两个私有变量：`JINA_API_KEY` 和 `AMAP_WEB_SERVICE_KEY`；后者必须是高德 Web 服务 Key，不能复用前端 JavaScript API Key。
+
+未配置 `JINA_API_KEY` 时，资料问答固定返回“资料库没有足够依据，无法可靠回答。”；未配置 `AMAP_WEB_SERVICE_KEY` 或天气上游失败时，页面显示“天气信息暂不可用”。这两种降级都不会阻塞原有规划、保存和分享流程，行程仍可正常生成。发布前运行 `python -m tests.evaluation.runner`，确认既有 80 条基线和新增 80 条 RAG/天气用例全部通过；四项 RAG/天气指标必须达到 100%。
+
 ## 免费层部署
 
 详细步骤见 [Render + Supabase 免费层部署说明](docs/deployment/free-tier.md)。简要流程：

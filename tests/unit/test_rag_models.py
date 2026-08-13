@@ -102,22 +102,23 @@ def test_weather_card_and_itinerary_weather_preserve_weather_availability_contra
         WeatherCard(city="北京", status="unknown", summary="晴")
 
 
-def test_itinerary_day_rejects_weather_before_task5_merges_it():
-    """Guards the planning schema from accepting unproven model-invented weather."""
+def test_itinerary_day_accepts_validated_weather_after_task5_merge():
+    """Guards the Task 5 contract for server-enriched structured weather."""
     weather = ItineraryWeather(
         date=date(2026, 8, 12),
         city="北京",
         status="seasonal",
         summary="夏季多雨",
     )
-    with pytest.raises(ValidationError):
-        ItineraryDay(
-            date=date(2026, 8, 12),
-            morning=Activity(title="早餐", start_time="08:00", end_time="09:00"),
-            afternoon=Activity(title="参观", start_time="10:00", end_time="12:00"),
-            evening=Activity(title="晚餐", start_time="18:00", end_time="19:00"),
-            weather=weather,
-        )
+    day = ItineraryDay(
+        date=date(2026, 8, 12),
+        morning=Activity(title="早餐", start_time="08:00", end_time="09:00"),
+        afternoon=Activity(title="参观", start_time="10:00", end_time="12:00"),
+        evening=Activity(title="晚餐", start_time="18:00", end_time="19:00"),
+        weather=weather,
+    )
+
+    assert day.weather == weather
 
 
 @pytest.mark.parametrize("sensitive_field", ["unexpected", "key", "raw_payload", "error_detail"])
