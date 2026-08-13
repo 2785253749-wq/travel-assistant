@@ -5,6 +5,9 @@ function Test-PlaceholderValue {
 
     $normalized = $Value.Trim().Trim('"').Trim("'").Trim()
     $normalized = $normalized.TrimEnd(')', '}', ']', ',').Trim()
+    if ($normalized -eq 'SecretStr("test-key') {
+        $normalized = 'test-key'
+    }
     if ([string]::IsNullOrWhiteSpace($normalized)) {
         return $true
     }
@@ -14,8 +17,6 @@ function Test-PlaceholderValue {
         'placeholder',
         'test-only-key',
         'test-key',
-        'secretstr("test-key")',
-        'secretstr("test-key"',
         'test-only-placeholder',
         'service-key',
         'service-role-key',
@@ -36,7 +37,6 @@ function Test-PlaceholderValue {
     return (
         $exactPlaceholders -contains $normalized.ToLowerInvariant() -or
         $normalized -eq 'None' -or
-        $normalized -match '(?i:test-key)' -or
         $normalized -match '^\*+$'
     )
 }

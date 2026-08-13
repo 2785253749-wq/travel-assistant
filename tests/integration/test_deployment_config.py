@@ -259,6 +259,17 @@ def test_public_repo_check_rejects_real_inline_keys_inside_test_paths(
     assert name in result.stdout
 
 
+@pytest.mark.parametrize("path", ["app/configuration.py", "tests/test_credentials.py"])
+def test_public_repo_check_rejects_values_that_only_contain_test_key(path: str, tmp_path: Path):
+    source = 'Settings(jina_api' + '_key="live-test-key-production-value")\n'
+    repo = _tracked_repo(tmp_path, path, source)
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert "Jina API key" in result.stdout
+
+
 def test_public_repo_check_does_not_mistake_python_comparisons_or_annotations_for_assignments(
     tmp_path: Path,
 ):
