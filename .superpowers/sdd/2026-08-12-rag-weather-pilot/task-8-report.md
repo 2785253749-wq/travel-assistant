@@ -24,3 +24,4 @@
 
 - 同步修订 README 链接的 `docs/deployment/free-tier.md`：补充 008/009 迁移、`JINA_API_KEY` 与 `AMAP_WEB_SERVICE_KEY` 的 Render 后端私有变量边界，以及 RAG/天气不可用时不阻塞行程的降级说明。
 - 新增部署指南合约测试，防止链接文档再次遗漏上述上线前置条件。
+- 移除地图章节中“项目不使用 Web 服务 Key”的无条件表述，明确仅浏览器地图直连模式不使用 `AMAP_WEB_SERVICE_KEY`，后端天气服务仍使用该私有变量。

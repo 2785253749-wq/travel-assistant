@@ -131,6 +131,15 @@ def test_deployment_document_keeps_rag_weather_server_secrets_and_safe_downgrade
     assert "当前为 `001` 至 `006`" not in text
 
 
+def test_deployment_document_distinguishes_browser_map_key_from_backend_weather_key():
+    """An unqualified no-Web-Service-Key claim would hide weather configuration."""
+    text = Path("docs/deployment/free-tier.md").read_text(encoding="utf-8")
+
+    assert "本项目不使用 Web 服务 Key" not in text
+    assert "浏览器地图直连模式不使用 `AMAP_WEB_SERVICE_KEY`" in text
+    assert "后端天气服务使用 `AMAP_WEB_SERVICE_KEY`" in text
+
+
 def test_ci_runs_tests_offline_evaluation_and_public_repo_gate():
     workflow = _load_yaml(".github/workflows/ci.yml")
 
