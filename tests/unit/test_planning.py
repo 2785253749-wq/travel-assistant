@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 from pydantic import ValidationError
 
-from app.agent.graph import SafeTravelAgent, TrustedEvidence, enrich_itinerary
+from app.agent.graph import SafeTravelAgent, TrustedEvidence, _knowledge_region, enrich_itinerary
 from app.agent.intent import IntentResult
 from app.rag.models import RetrievedChunk
 from app.rag.service import RagAnswer
@@ -64,6 +64,18 @@ def itinerary_factory(**overrides: object) -> Itinerary:
     }
     values.update(overrides)
     return Itinerary(**values)
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_region"),
+    [
+        ("大理季节与避坑", "云南"),
+        ("丽江季节与避坑", "云南"),
+        ("福州交通怎么安排", "福建"),
+    ],
+)
+def test_knowledge_region_resolves_trial_city_aliases(message, expected_region):
+    assert _knowledge_region(message) == expected_region
 
 
 def test_budget_total_matches_profile() -> None:
