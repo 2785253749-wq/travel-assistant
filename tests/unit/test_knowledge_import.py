@@ -2,6 +2,7 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 import sys
+import logging
 
 import pytest
 import httpx
@@ -208,6 +209,32 @@ def test_repository_reserves_embedding_quota_through_private_atomic_rpc(monkeypa
         "requested": 2,
         "daily_limit": 5,
     }
+
+
+def test_repository_logs_quota_rpc_failures_without_raw_upstream_body(monkeypatch, caplog):
+    class Client:
+        def rpc(self, _name, _arguments):
+            return SimpleNamespace(
+                execute=lambda: (_ for _ in ()).throw(httpx.ConnectError("raw database body"))
+            )
+
+    monkeypatch.setitem(sys.modules, "supabase", SimpleNamespace(create_client=lambda _url, _key: Client()))
+    repository = KnowledgeRepository(
+        settings=Settings(
+            supabase_url="https://project.supabase.co",
+            supabase_service_key="service-role-key",
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.database"):
+        with pytest.raises(RagUnavailable):
+            repository.reserve(requested=1, limit=100)
+
+    record = next(record for record in caplog.records if record.message == "database_result")
+    assert record.db_operation == "rag.embedding_quota.reserve"
+    assert record.db_status == "failure"
+    assert record.exception_type == "ConnectError"
+    assert "raw database body" not in caplog.text
 
 
 def test_repository_rejects_a_first_embedding_batch_larger_than_the_daily_limit(

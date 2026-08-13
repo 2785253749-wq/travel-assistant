@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from json import JSONDecodeError
 from math import isfinite
 from typing import Protocol
@@ -7,6 +8,7 @@ from typing import Protocol
 import httpx
 from pydantic import SecretStr
 
+from app.core.logging import operational_context
 
 JINA_EMBEDDINGS_URL = "https://api.jina.ai/v1/embeddings"
 EMBEDDING_DIMENSIONS = 1024
@@ -62,15 +64,30 @@ class JinaEmbeddingTransport:
                 timeout=self._timeout_seconds,
             )
             response.raise_for_status()
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            _log_embedding_failure(
+                error_code="RAG_EMBEDDING_UNAVAILABLE",
+                exception=exc,
+                provider_status=getattr(getattr(exc, "response", None), "status_code", None),
+            )
             raise RagUnavailable from None
         try:
             payload = response.json()
-        except (JSONDecodeError, UnicodeDecodeError, ValueError):
+        except (JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            _log_embedding_failure(
+                error_code="RAG_EMBEDDING_INVALID_RESPONSE",
+                exception=exc,
+                provider_status=getattr(response, "status_code", None),
+            )
             raise RagUnavailable from None
         try:
             return _validated_embeddings(payload, expected_count=len(texts))
-        except OverflowError:
+        except (OverflowError, RagUnavailable) as exc:
+            _log_embedding_failure(
+                error_code="RAG_EMBEDDING_INVALID_RESPONSE",
+                exception=exc,
+                provider_status=getattr(response, "status_code", None),
+            )
             raise RagUnavailable from None
 
 
@@ -102,8 +119,30 @@ class JinaEmbedder:
         if any(not isinstance(text, str) or not text.strip() for text in texts):
             raise RagUnavailable
         if not self._quota.reserve(len(texts), self._daily_limit):
+            logging.getLogger("app.rag").warning(
+                "rag_quota_rejected",
+                extra=operational_context(
+                    provider="jina",
+                    error_code="RAG_EMBEDDING_QUOTA_REJECTED",
+                    failure_stage="embedding_quota",
+                ),
+            )
             raise RagUnavailable
         return self._transport.embed(texts)
+
+
+def _log_embedding_failure(
+    *, error_code: str, exception: Exception, provider_status: int | None
+) -> None:
+    fields = operational_context(
+        provider="jina",
+        error_code=error_code,
+        exception_type=type(exception).__name__,
+        failure_stage="embedding",
+    )
+    if isinstance(provider_status, int):
+        fields["provider_status"] = provider_status
+    logging.getLogger("app.rag").warning("rag_provider_failure", extra=fields)
 
 
 def _validated_embeddings(payload: object, *, expected_count: int) -> list[list[float]]:

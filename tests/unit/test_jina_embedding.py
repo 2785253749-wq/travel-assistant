@@ -1,5 +1,6 @@
 from datetime import date
 import json
+import logging
 from threading import Lock
 
 import httpx
@@ -91,6 +92,55 @@ def test_daily_embedding_quota_refuses_before_an_extra_http_request() -> None:
         embedder.embed(["second"])
 
     assert calls == 1
+
+
+def test_jina_provider_failure_logs_safe_status_without_response_body(caplog) -> None:
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(503, json={"error": "secret provider body"})
+        )
+    )
+    embedder = JinaEmbedder(
+        api_key="server-secret",
+        model="jina-embeddings-v3",
+        timeout_seconds=3.0,
+        daily_limit=10,
+        quota=SharedQuota(),
+        client=client,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.rag"):
+        with pytest.raises(RagUnavailable):
+            embedder.embed(["厦门景点"])
+
+    record = next(record for record in caplog.records if record.message == "rag_provider_failure")
+    assert record.provider == "jina"
+    assert record.provider_status == 503
+    assert record.error_code == "RAG_EMBEDDING_UNAVAILABLE"
+    assert "secret provider body" not in caplog.text
+
+
+def test_jina_quota_rejection_logs_a_safe_category(caplog) -> None:
+    class ClosedQuota:
+        def reserve(self, _requested, _limit) -> bool:
+            return False
+
+    embedder = JinaEmbedder(
+        api_key="server-secret",
+        model="jina-embeddings-v3",
+        timeout_seconds=3.0,
+        daily_limit=10,
+        quota=ClosedQuota(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.rag"):
+        with pytest.raises(RagUnavailable):
+            embedder.embed(["大理季节"])
+
+    record = next(record for record in caplog.records if record.message == "rag_quota_rejected")
+    assert record.provider == "jina"
+    assert record.error_code == "RAG_EMBEDDING_QUOTA_REJECTED"
+    assert record.failure_stage == "embedding_quota"
 
 
 def test_two_embedder_instances_share_a_persistent_daily_quota() -> None:
