@@ -23,6 +23,19 @@ from app.providers.base import (
 WEATHER_SOURCE = "https://api.open-meteo.com/v1/forecast"
 GEOCODING_SOURCE = "https://geocoding-api.open-meteo.com/v1/search"
 
+_GEOCODING_ALIASES = {
+    "厦门": "Xiamen",
+    "厦门市": "Xiamen",
+    "福州": "Fuzhou",
+    "福州市": "Fuzhou",
+    "大理": "Dali",
+    "大理市": "Dali",
+    "丽江": "Lijiang",
+    "丽江市": "Lijiang",
+    "福建": "Fujian",
+    "云南": "Yunnan",
+}
+
 
 @dataclass(frozen=True)
 class WeatherSummary:
@@ -48,14 +61,18 @@ class WeatherProvider:
         fetched_at = utc_now()
         deadline = OperationDeadline.start(self._clock)
         try:
-            coordinates = request_json(
-                self._client,
-                GEOCODING_SOURCE,
-                {"name": destination.strip(), "count": "1", "language": "zh", "format": "json"},
-                deadline,
-            )
-            results = coordinates.get("results")
-            candidate = results[0] if isinstance(results, list) and results else None
+            candidate = None
+            for name in _geocoding_names(destination):
+                coordinates = request_json(
+                    self._client,
+                    GEOCODING_SOURCE,
+                    {"name": name, "count": "1", "language": "zh", "format": "json"},
+                    deadline,
+                )
+                results = coordinates.get("results")
+                candidate = results[0] if isinstance(results, list) and results else None
+                if candidate is not None:
+                    break
             latitude = candidate.get("latitude") if isinstance(candidate, dict) else None
             longitude = candidate.get("longitude") if isinstance(candidate, dict) else None
             if not isinstance(latitude, (float, int)) or not isinstance(longitude, (float, int)):
@@ -101,3 +118,11 @@ class WeatherProvider:
             fetched_at=fetched_at,
         )
         return ProviderResult(summary, WEATHER_SOURCE, fetched_at, evidence=(evidence,))
+
+
+def _geocoding_names(destination: str) -> tuple[str, ...]:
+    requested = destination.strip()
+    alias = _GEOCODING_ALIASES.get(requested)
+    if alias is None or alias == requested:
+        return (requested,)
+    return requested, alias
