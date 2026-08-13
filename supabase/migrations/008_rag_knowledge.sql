@@ -43,12 +43,20 @@ stable
 security invoker
 set search_path = public
 as $$
+  with latest_document_versions as (
+    select document_id, max(document_version) as document_version
+    from public.knowledge_chunks
+    group by document_id
+  )
   select
     knowledge_chunks.chunk_id,
     knowledge_chunks.content,
     knowledge_chunks.source_label,
     (1 - (knowledge_chunks.embedding <=> query_embedding))::real as score
   from public.knowledge_chunks
+  join latest_document_versions
+    on knowledge_chunks.document_id = latest_document_versions.document_id
+   and knowledge_chunks.document_version = latest_document_versions.document_version
   where filter_region is null or knowledge_chunks.region = filter_region
   order by knowledge_chunks.embedding <=> query_embedding
   limit least(greatest(match_count, 1), 20)

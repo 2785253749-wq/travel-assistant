@@ -9,7 +9,7 @@ from pydantic import Field
 
 from app.core.config import Settings, get_settings
 from app.rag.embedding import JinaEmbedder as SharedJinaEmbedder
-from app.rag.embedding import NoopEmbeddingQuota
+from app.rag.embedding import EmbeddingQuota
 from app.rag.models import KnowledgeChunk, KnowledgeDocument
 from app.rag.repository import KnowledgeStore, KnowledgeRepository
 
@@ -27,7 +27,13 @@ class StoredKnowledgeChunk(KnowledgeChunk):
 class JinaEmbedder(SharedJinaEmbedder):
     """Operator-only importer using the same Jina transport and validation."""
 
-    def __init__(self, settings: Settings, *, client=None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        quota: EmbeddingQuota,
+        client=None,
+    ) -> None:
         if settings.jina_api_key is None:
             raise RuntimeError("Knowledge import requires JINA_API_KEY")
         super().__init__(
@@ -35,7 +41,7 @@ class JinaEmbedder(SharedJinaEmbedder):
             model=settings.rag_embedding_model,
             timeout_seconds=settings.weather_timeout_seconds,
             daily_limit=settings.rag_daily_embedding_limit,
-            quota=NoopEmbeddingQuota(),
+            quota=quota,
             client=client,
         )
 
@@ -54,7 +60,10 @@ class KnowledgeImportService:
         inserted = 0
         for document in documents:
             chunks = self._chunks_for(document)
-            embeddings = self._embedder.embed([chunk.content for chunk in chunks])
+            embeddings = self._embedder.embed([
+                "\n".join((chunk.region, chunk.topic, chunk.title, chunk.content))
+                for chunk in chunks
+            ])
             if len(embeddings) != len(chunks):
                 raise RuntimeError("Embedder returned a different number of vectors")
             stored_chunks = [
@@ -108,7 +117,11 @@ def main() -> int:
     parser.add_argument("--content-dir", type=Path, default=Path("app/rag/content"))
     args = parser.parse_args()
     settings = get_settings()
-    service = KnowledgeImportService(KnowledgeRepository(settings=settings), JinaEmbedder(settings))
+    repository = KnowledgeRepository(settings=settings)
+    service = KnowledgeImportService(
+        repository,
+        JinaEmbedder(settings, quota=repository),
+    )
     inserted = service.import_documents(load_documents(args.content_dir))
     print(f"Imported {inserted} new knowledge chunks.")
     return 0

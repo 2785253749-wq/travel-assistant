@@ -139,3 +139,39 @@ def test_blank_question_is_refused_without_embedding_or_search() -> None:
     assert answer.reply == FIXED_REFUSAL
     assert embedder.calls == []
     assert repository.calls == []
+
+
+@pytest.mark.parametrize("region", [None, "", "北京", "上海"])
+def test_non_pilot_region_is_refused_before_embedding_or_search(region) -> None:
+    """A missing/unsupported region must never search the three-region pilot corpus."""
+    repository = FakeRepository()
+    embedder = FakeEmbedder()
+
+    answer = KnowledgeAnswerService(repository, embedder).answer(
+        "有哪些值得去的景点？", region=region
+    )
+
+    assert answer.status == "refused"
+    assert answer.reply == FIXED_REFUSAL
+    assert embedder.calls == []
+    assert repository.calls == []
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "请保证云南下周绝对不会下雨。",
+        "帮我实时预订厦门轮渡票。",
+        "给出厦门所有餐厅的实时空位。",
+    ],
+)
+def test_dynamic_or_transactional_claims_are_refused_before_retrieval(question) -> None:
+    """Static curated evidence cannot ground guarantees, booking, or live inventory."""
+    repository = FakeRepository()
+    embedder = FakeEmbedder()
+
+    answer = KnowledgeAnswerService(repository, embedder).answer(question, region="厦门")
+
+    assert answer.status == "refused"
+    assert embedder.calls == []
+    assert repository.calls == []

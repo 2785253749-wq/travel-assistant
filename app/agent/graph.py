@@ -180,7 +180,11 @@ class RuleIntentClassifier:
     _PLAN_DATE = re.compile(r"\b20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
     _PLAN_TRAVELERS = re.compile(r"(?<!\d)[1-9]\d?\s*(?:人|travellers?|travelers?)", re.IGNORECASE)
     _PLAN_BUDGET = re.compile(r"(?:预算|budget)\s*(?:为|是|约)?\s*[:：]?\s*\d{1,8}", re.IGNORECASE)
-    _PLAN_CONTEXT = re.compile(r"(?:行程|规划|自由行|旅游|出游|游玩|想安排|从[^，,。]{1,30}(?:出发)?\s*(?:到|去))", re.IGNORECASE)
+    _PLAN_CONTEXT = re.compile(
+        r"(?:规划(?:一[份个]|\d+\s*天|行程)|制定行程|生成行程|出游|想安排|"
+        r"从[^，,。]{1,30}(?:出发)?\s*(?:到|去))",
+        re.IGNORECASE,
+    )
 
     def classify(self, message: str, has_trip: bool) -> IntentResult:
         normalized = message.strip().lower()
@@ -224,6 +228,10 @@ class RuleIntentClassifier:
             for term in (
                 "鼓浪屿", "景点", "攻略", "怎么去", "交通", "美食", "吃什么",
                 "季节", "避坑", "轮渡", "古城", "洱海",
+                "旅游", "游玩", "值得去", "地方", "票价", "酒店", "排队",
+                "闭馆", "民宿", "降雨量", "餐厅", "机票", "安全", "预订", "支付",
+                "旅行", "出行", "换乘", "高原", "高海拔", "小吃", "特色菜",
+                "雨季", "夏季", "炎热", "注意", "建议", "准备", "选择",
             )
         ):
             return IntentResult(intent="travel_knowledge", confidence=1.0)
@@ -766,7 +774,18 @@ class SafeTravelAgent:
 
                 card = WeatherCard(city=city, status="unavailable", summary="天气信息暂不可用")
             warnings = [card.summary] if card.status == "unavailable" else []
-            return ChatResult(card.summary, "collecting", {}, warnings=warnings, intent=intent)
+            if card.status == "available":
+                report_time = (
+                    card.report_time.strftime("%Y-%m-%d %H:%M %Z")
+                    if card.report_time is not None
+                    else "未知"
+                )
+                reply = f"实时天气（报告时间：{report_time}）：{card.summary}"
+            elif card.status == "seasonal":
+                reply = f"非实时天气：{card.summary}"
+            else:
+                reply = card.summary
+            return ChatResult(reply, "collecting", {}, warnings=warnings, intent=intent)
         return None
 
     @staticmethod
@@ -985,14 +1004,13 @@ def enrich_itinerary(
 ) -> Itinerary:
     """Attach server-produced weather without allowing a weather failure to block a plan."""
     days = []
-    for index, day in enumerate(itinerary.days):
+    for day in itinerary.days:
         day_weather: ItineraryWeather | None = None
-        if index < 3:
-            try:
-                day_weather = weather.daily_weather(destination, day.date)
-            except Exception:
-                day_weather = None
-        else:
+        try:
+            day_weather = weather.daily_weather(destination, day.date)
+        except Exception:
+            day_weather = None
+        if day_weather is None:
             day_weather = _seasonal_weather(destination, day.date, knowledge)
         days.append(day.model_copy(update={"weather": day_weather}))
     return itinerary.model_copy(update={"days": days})
@@ -1050,7 +1068,7 @@ def _rag_citations(answer: RagAnswer):
             source_url=url,
             source_type="government",
             fetched_at=timestamp,
-            freshness="本地资料库检索结果；请以官方最新信息为准。",
+            freshness=f"Fetched {timestamp.isoformat()}; reference only.",
             fact=chunk.content,
             source_label=chunk.source_label,
         ))

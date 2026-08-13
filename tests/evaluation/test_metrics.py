@@ -1,6 +1,7 @@
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -106,6 +107,18 @@ def test_rag_weather_score_rejects_source_correct_but_topic_wrong_evidence() -> 
     assert "grounded_source: missing, unexpected, or irrelevant evidence" in report.failures[case.id]
 
 
+def test_rag_weather_prediction_never_reads_topic_or_evidence_oracles() -> None:
+    case = next(case for case in load_rag_weather_cases() if case.id == "G001")
+    changed = replace(
+        case,
+        expected_topic="交通",
+        expected_evidence="绝不应参与预测的文本",
+        allowed_sources=["绝不应参与预测的来源"],
+    )
+
+    assert run_rag_weather_case(changed) == run_rag_weather_case(case)
+
+
 def test_rag_weather_case_status_must_match_its_category() -> None:
     original = load_rag_weather_cases()[0]
     conflicting = replace(original, expected_status="refused")
@@ -132,6 +145,30 @@ def test_rag_weather_offline_harness_meets_all_release_metrics() -> None:
     assert report.citation_completeness == 1.0
     assert report.weather_boundary_accuracy == 1.0
     assert rag_weather_gate_passes(report) is True
+
+
+def test_rag_weather_harness_fails_when_a_versioned_region_corpus_is_missing(tmp_path) -> None:
+    """The release gate must consume YAML imports rather than synthetic evidence."""
+    content_dir = Path("app/rag/content")
+    shutil.copy(content_dir / "yunnan.yaml", tmp_path / "yunnan.yaml")
+    shutil.copy(content_dir / "xiamen.yaml", tmp_path / "xiamen.yaml")
+
+    report = evaluate_rag_weather(load_rag_weather_cases(), content_dir=tmp_path)
+
+    assert report.grounded_source_rate < 1.0
+    assert any(case_id.startswith("G00") for case_id in report.failures)
+
+
+def test_weather_boundary_cases_exercise_itinerary_seasonal_merge() -> None:
+    case = next(
+        item for item in load_rag_weather_cases()
+        if item.category == "weather_boundary" and item.day_offset == 3
+    )
+
+    prediction = run_rag_weather_case(case)
+
+    assert prediction.weather_status == "seasonal"
+    assert prediction.itinerary_preserved is True
 
 
 def test_rag_weather_gate_rejects_any_metric_below_one() -> None:

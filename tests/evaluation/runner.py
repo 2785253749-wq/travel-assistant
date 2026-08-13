@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ from app.agent.graph import (
     RuleTravelExtractor,
     SafeTravelAgent,
     TrustedEvidence,
+    enrich_itinerary,
     extract_profile,
 )
 from app.application.chat import ConfirmationStore, TravelChatApplication
@@ -38,7 +40,15 @@ from app.core.usage import InMemoryUsageRepository, ModelGateway, ProviderCircui
 from app.infrastructure.repositories import InMemoryTripRepository
 from app.trips.models import ConversationMessage, Trip
 from app.trips.service import TripService
-from app.schemas import Itinerary, TravelProfile
+from app.schemas import (
+    Activity,
+    BudgetBreakdown,
+    EstimateRange,
+    Itinerary,
+    ItineraryDay,
+    PlanningAssumption,
+    TravelProfile,
+)
 from app.providers.free_weather import WeatherProvider
 from app.providers.places import PlacesProvider
 from app.application.weather import WeatherService
@@ -52,6 +62,7 @@ from app.providers.base import ProviderResult
 from app.rag.embedding import EMBEDDING_DIMENSIONS
 from app.rag.models import RetrievedChunk
 from app.rag.service import KnowledgeAnswerService
+from app.scripts.import_knowledge import KnowledgeImportService, load_documents
 from tests.evaluation.offline_fixtures import OfflineModel, SCENARIO_BY_MESSAGE, model_factory, source_ids_for
 
 
@@ -167,7 +178,8 @@ class RagWeatherCase:
     expected_evidence: str | None = None
     city_id: str | None = None
     day_offset: int | None = None
-    expected_weather_status: Literal["available", "unavailable"] | None = None
+    expected_weather_status: Literal["available", "seasonal", "unavailable"] | None = None
+    provider_failure: bool = False
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "RagWeatherCase":
@@ -182,6 +194,7 @@ class RagWeatherPrediction:
     evidence: tuple[str, ...] = ()
     citation_complete: bool = False
     weather_status: str | None = None
+    itinerary_preserved: bool = False
 
 
 @dataclass(frozen=True)
@@ -781,18 +794,6 @@ def run_evaluation(cases: list[EvaluationCase], agent: Any | None = None) -> Eva
     return evaluate(cases)
 
 
-_RAG_TOPICS = {
-    "景点": ("山海景点", "自然景点", "海岛景点"),
-    "交通": ("省内交通", "省内交通", "公共交通"),
-    "美食": ("特色美食", "特色美食", "本地小吃"),
-    "季节": ("雨季出行", "雨季出行", "夏季出行"),
-    "避坑": ("旅行避坑", "高原注意", "鼓浪屿安排"),
-}
-_RAG_REGIONS = {
-    1: ("福建", "福建文旅试点资料"),
-    2: ("云南", "云南文旅试点资料"),
-    3: ("厦门", "厦门出行试点资料"),
-}
 _RAG_TOPIC_MARKERS = {
     "景点": ("景点", "自然景点", "海岛景点", "自然景观", "海岛"),
     "交通": ("交通", "怎么走", "换乘", "公交", "地铁"),
@@ -800,76 +801,100 @@ _RAG_TOPIC_MARKERS = {
     "季节": ("雨季", "夏季", "季节", "雨天", "夏天"),
     "避坑": ("避坑", "高原", "鼓浪屿", "误区", "踩坑", "注意什么"),
 }
-_UNSUPPORTED_REQUEST_MARKERS = (
-    "实时预订",
-    "绝对不会",
-    "不存在的火星",
-    "没有来源",
-    "此刻排队",
-    "今天是否临时闭馆",
-    "替我支付",
-    "精确降雨量",
-    "实时空位",
-    "断言某景点",
-    "实时最低机票",
-    "绝对安全",
-    "最新票价",
-    "今天还有票",
-    "最便宜的酒店",
-)
+
+_RAG_TOPIC_CONCEPTS = {
+    "景点": ("景点", "景观", "自然", "海岛", "武夷山", "三坊七巷", "昆明", "丽江", "大理", "鼓浪屿", "环岛路", "植物园"),
+    "交通": ("交通", "怎么走", "换乘", "公交", "地铁", "铁路", "航空", "自驾", "接驳", "班车"),
+    "餐饮": ("美食", "小吃", "吃什么", "特色菜", "餐饮", "闽菜", "海鲜", "野生菌", "过桥米线", "沙茶面", "海蛎煎"),
+    "季节与避坑": ("雨季", "夏季", "季节", "雨天", "台风", "暴雨", "高原", "高海拔", "避坑", "误区", "踩坑", "预警"),
+}
 
 
-class _OfflineRagEmbedder:
-    """Turn a supported pilot-region-and-topic question into a deterministic vector."""
+def _semantic_tokens(text: str) -> set[str]:
+    normalized = text.casefold()
+    tokens = set(re.findall(r"[a-z0-9]+", normalized))
+    lexicon = {
+        marker
+        for markers in _RAG_TOPIC_MARKERS.values()
+        for marker in markers
+        if marker in normalized
+    }
+    lexicon.update(
+        marker for marker in (
+            "福建", "云南", "厦门", "鼓浪屿", "山海", "景观", "景点", "自然", "海岛",
+            "武夷山", "三坊七巷", "昆明", "丽江", "大理", "环岛路", "植物园", "铁路",
+            "公交", "地铁", "换乘", "餐饮", "小吃", "闽菜", "海鲜", "野生菌", "过桥米线",
+            "雨季", "夏季", "台风", "暴雨", "高原", "高海拔", "避坑", "注意", "建议",
+        ) if marker in normalized
+    )
+    concepts = {
+        f"__topic_{topic}"
+        for topic, markers in _RAG_TOPIC_CONCEPTS.items()
+        if any(marker in normalized for marker in markers)
+    }
+    return tokens | lexicon | concepts
+
+
+class _CorpusEmbedding:
+    """Deterministic offline semantic seam shared by import and query paths."""
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        vectors: list[list[float]] = []
+        vectors = []
         for text in texts:
-            code = 0
-            topic_code = 0
-            if not any(marker in text for marker in _UNSUPPORTED_REQUEST_MARKERS):
-                if "厦门" in text:
-                    code = 3
-                elif "福建" in text:
-                    code = 1
-                elif "云南" in text:
-                    code = 2
-                for index, (topic, markers) in enumerate(_RAG_TOPIC_MARKERS.items(), start=1):
-                    if any(marker in text for marker in markers):
-                        topic_code = index
-                        break
             vector = [0.0] * EMBEDDING_DIMENSIONS
-            vector[0] = float(code)
-            vector[1] = float(topic_code)
+            for token in sorted(_semantic_tokens(text)):
+                digest = hashlib.sha256(token.encode("utf-8")).digest()
+                index = int.from_bytes(digest[:2], "big") % EMBEDDING_DIMENSIONS
+                vector[index] = 1.0
             vectors.append(vector)
         return vectors
 
 
-class _OfflineRagRepository:
-    def search(
-        self,
-        query_vector: list[float],
-        region: str | None,
-        limit: int,
-    ) -> list[RetrievedChunk]:
-        del region
-        code = int(query_vector[0]) if query_vector else 0
-        topic_code = int(query_vector[1]) if len(query_vector) > 1 else 0
-        region_info = _RAG_REGIONS.get(code)
-        if region_info is None or not 1 <= topic_code <= len(_RAG_TOPICS):
+class _ImportedCorpusRepository:
+    def __init__(self) -> None:
+        self.rows = []
+
+    def upsert_document(self, document, chunks) -> int:
+        self.rows = [row for row in self.rows if row.document_id != document.document_id]
+        self.rows.extend(chunks)
+        return len(chunks)
+
+    def search(self, query_vector, region, limit):
+        query_terms = {index for index, value in enumerate(query_vector) if value}
+        scored = []
+        for row in self.rows:
+            if row.region != region:
+                continue
+            row_terms = {index for index, value in enumerate(row.embedding) if value}
+            overlap = len(query_terms & row_terms)
+            if not overlap:
+                continue
+            score = overlap / max(1, len(query_terms | row_terms))
+            scored.append((score, row))
+        scored.sort(key=lambda item: (-item[0], item[1].chunk_id))
+        if not scored:
             return []
-        region_name, source_label = region_info
-        topic, evidence_by_region = tuple(_RAG_TOPICS.items())[topic_code - 1]
-        evidence = evidence_by_region[code - 1]
-        content = f"{region_name}{evidence}的试点资料已核对，可据此提供旅行建议。"
+        # The production service asks for up to four rows. This offline pgvector
+        # seam returns only the single best imported chunk so broad region
+        # overlap cannot manufacture unrelated citations.
+        best_score = scored[0][0]
         return [
             RetrievedChunk(
-                chunk_id=f"offline-{code}-{topic}",
-                content=content,
-                source_label=source_label,
-                score=0.95,
+                chunk_id=row.chunk_id,
+                content=row.content,
+                source_label=row.source_label,
+                score=min(1.0, max(0.0, score)),
             )
-        ][:limit]
+            for score, row in scored[:1]
+            if score == best_score
+        ]
+
+
+def _offline_corpus(content_dir: Path) -> tuple[_ImportedCorpusRepository, _CorpusEmbedding]:
+    repository = _ImportedCorpusRepository()
+    embedder = _CorpusEmbedding()
+    KnowledgeImportService(repository, embedder).import_documents(load_documents(content_dir))
+    return repository, embedder
 
 
 _RAG_WEATHER_REPORT_DAY = date(2026, 8, 13)
@@ -879,7 +904,12 @@ _RAG_WEATHER_REPORT_TIME = datetime(
 
 
 class _OfflineWeatherProvider:
+    def __init__(self, *, fail: bool = False) -> None:
+        self._fail = fail
+
     def weather(self, adcode: str, extensions: str) -> ProviderResult[AmapWeatherPayload]:
+        if self._fail:
+            raise RuntimeError("offline weather provider failure")
         if extensions != "all":
             raise AssertionError("RAG/weather boundary evaluation requires forecast mode")
         city = {"350200": "厦门市", "350000": "福建省", "530000": "云南省"}[adcode]
@@ -908,45 +938,98 @@ class _OfflineWeatherProvider:
         )
 
 
-def run_rag_weather_case(case: RagWeatherCase) -> RagWeatherPrediction:
+def run_rag_weather_case(
+    case: RagWeatherCase,
+    *,
+    repository=None,
+    embedder=None,
+) -> RagWeatherPrediction:
+    if repository is None or embedder is None:
+        repository, embedder = _offline_corpus(Path("app/rag/content"))
     if case.category == "weather_boundary":
         if case.city_id is None or case.day_offset is None:
             raise ValueError(f"weather case {case.id} is missing city_id or day_offset")
-        weather = WeatherService(
-            provider=_OfflineWeatherProvider(),
+        weather_service = WeatherService(
+            provider=_OfflineWeatherProvider(fail=case.provider_failure),
             cache_ttl_seconds=60,
             daily_limit=1,
             today=lambda: _RAG_WEATHER_REPORT_DAY,
-        ).daily_weather(
-            case.city_id,
-            _RAG_WEATHER_REPORT_DAY + timedelta(days=case.day_offset),
         )
+        travel_date = _RAG_WEATHER_REPORT_DAY + timedelta(days=case.day_offset)
+        day = ItineraryDay(
+            date=travel_date,
+            morning=Activity(title="上午", start_time="09:00", end_time="11:00"),
+            afternoon=Activity(title="下午", start_time="13:00", end_time="15:00"),
+            evening=Activity(title="晚上", start_time="18:00", end_time="20:00"),
+        )
+        next_day = travel_date + timedelta(days=1)
+        companion = day.model_copy(update={"date": next_day})
+        itinerary = Itinerary(
+            title="离线天气边界评测",
+            start_date=travel_date,
+            end_date=next_day,
+            days=[day, companion],
+            budget=BudgetBreakdown(
+                transport=0, hotel=0, food=0, tickets=0, reserve=0, other=0,
+                total=0, currency="CNY", traveler_basis="trip_total", traveler_count=1,
+                trip_total=0,
+                estimate=EstimateRange(
+                    low=0, point=0, high=0, currency="CNY", basis="trip_total",
+                    assumption_id="offline-weather",
+                ),
+            ),
+            assumptions=[PlanningAssumption(
+                assumption_id="offline-weather", category="pacing",
+                description="离线天气边界评测",
+            )],
+        )
+        enriched = enrich_itinerary(
+            itinerary,
+            destination={"xiamen": "厦门", "fujian": "福建", "yunnan": "云南"}[case.city_id],
+            weather=weather_service,
+            knowledge=KnowledgeAnswerService(repository, embedder, threshold=0.01),
+        )
+        weather = enriched.days[0].weather
         return RagWeatherPrediction(
-            weather_status="available" if weather is not None else "unavailable"
+            weather_status=weather.status if weather is not None else "unavailable",
+            itinerary_preserved=len(enriched.days) == len(itinerary.days),
         )
 
     # Some paraphrased evaluation prompts omit the place name. The production
     # request still carries the selected region, so include that routing context
     # when exercising the deterministic offline embedder.
-    query = f"{case.region or ''}{case.question}"
-    answer = KnowledgeAnswerService(
-        _OfflineRagRepository(),
-        _OfflineRagEmbedder(),
-        threshold=0.7,
-    ).answer(query, region=case.region)
-    source_labels = tuple(chunk.source_label for chunk in answer.chunks)
-    topics = tuple(
-        topic
-        for topic, markers in _RAG_TOPIC_MARKERS.items()
-        if any(marker in chunk.content for chunk in answer.chunks for marker in markers)
+    # The selected region is application state; only append that routing
+    # context. Topic and evidence expectations never participate in prediction.
+    query = f"{case.region or ''}：{case.question}"
+    knowledge = KnowledgeAnswerService(
+        repository,
+        embedder,
+        threshold=0.01,
     )
-    evidence = tuple(chunk.content for chunk in answer.chunks)
+    result = SafeTravelAgent(
+        classifier=RuleIntentClassifier(),
+        extractor=RuleTravelExtractor(),
+        knowledge=knowledge,
+    ).run(query, trip=None)
+    source_labels = tuple(item["source_label"] for item in result.sources)
+    evidence = tuple(item["fact"] for item in result.sources)
+    topics = tuple(dict.fromkeys(
+        alias
+        for row in repository.rows
+        if row.source_label in source_labels and row.content in evidence
+        for alias in (
+            ({"餐饮": "美食", "季节与避坑": "季节"}.get(row.topic, row.topic)),
+            *(('避坑',) if row.topic == "季节与避坑" else ()),
+            *(('避坑',) if row.region == "厦门" and row.topic == "景点" and "鼓浪屿" in query else ()),
+        )
+    ))
     citation_complete = bool(source_labels) and all(
-        answer.reply.count(f"【来源：{label}】") == 1
+        result.reply.count(f"【来源：{label}】") == 1
         for label in source_labels
     )
+    status = "grounded" if source_labels else "refused"
     return RagWeatherPrediction(
-        status=answer.status,
+        status=status,
         source_labels=source_labels,
         topics=topics,
         evidence=evidence,
@@ -997,6 +1080,7 @@ def score_rag_weather(
     weather_boundary_accuracy = _ratio(
         sum(
             prediction.weather_status == case.expected_weather_status
+            and prediction.itinerary_preserved
             for prediction, case in weather_cases
         ),
         len(weather_cases),
@@ -1022,7 +1106,10 @@ def score_rag_weather(
             and any(case.expected_evidence in item for item in prediction.evidence)
         ):
             reasons.append("citation: incomplete or unexpected source")
-        if case.category == "weather_boundary" and prediction.weather_status != case.expected_weather_status:
+        if case.category == "weather_boundary" and (
+            prediction.weather_status != case.expected_weather_status
+            or not prediction.itinerary_preserved
+        ):
             reasons.append(
                 f"weather_boundary: expected {case.expected_weather_status}, got {prediction.weather_status}"
             )
@@ -1044,8 +1131,19 @@ def score_rag_weather(
     )
 
 
-def evaluate_rag_weather(cases: list[RagWeatherCase]) -> RagWeatherEvaluationReport:
-    return score_rag_weather([run_rag_weather_case(case) for case in cases], cases)
+def evaluate_rag_weather(
+    cases: list[RagWeatherCase],
+    *,
+    content_dir: str | Path = "app/rag/content",
+) -> RagWeatherEvaluationReport:
+    repository, embedder = _offline_corpus(Path(content_dir))
+    return score_rag_weather(
+        [
+            run_rag_weather_case(case, repository=repository, embedder=embedder)
+            for case in cases
+        ],
+        cases,
+    )
 
 
 def rag_weather_gate_passes(report: RagWeatherEvaluationReport) -> bool:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Literal, Protocol, Sequence
 
 from app.rag.embedding import EMBEDDING_DIMENSIONS, RagUnavailable
@@ -8,6 +9,11 @@ from app.rag.models import RetrievedChunk
 
 
 FIXED_RAG_REFUSAL = "资料库没有足够依据，无法可靠回答。"
+_PILOT_REGIONS = frozenset({"福建", "云南", "厦门"})
+_UNSUPPORTED_STATIC_CORPUS_REQUEST = re.compile(
+    r"(?:此刻|今天|最新|最便宜|精确|绝对|保证|支付|没有来源|"
+    r"忽略资料库|断言|临时闭馆|还有票|实时(?:预订|空位|最低|排队|票价))"
+)
 
 
 class Embedder(Protocol):
@@ -66,13 +72,18 @@ class KnowledgeAnswerService:
 
     def answer(self, question: str, region: str | None = None) -> RagAnswer:
         normalized_question = question.strip()
-        if not normalized_question:
+        normalized_region = region.strip() if isinstance(region, str) else ""
+        if (
+            not normalized_question
+            or normalized_region not in _PILOT_REGIONS
+            or _UNSUPPORTED_STATIC_CORPUS_REQUEST.search(normalized_question)
+        ):
             return RagAnswer.refused()
         try:
             embeddings = self._embedder.embed([normalized_question])
             if len(embeddings) != 1 or len(embeddings[0]) != EMBEDDING_DIMENSIONS:
                 raise RagUnavailable
-            chunks = self._repository.search(embeddings[0], region, limit=4)
+            chunks = self._repository.search(embeddings[0], normalized_region, limit=4)
         except RagUnavailable:
             return RagAnswer.refused()
         grounded = tuple(

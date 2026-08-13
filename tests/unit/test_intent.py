@@ -91,3 +91,18 @@ def test_rule_classifier_keeps_partial_plan_requests_on_collection_flow(message)
 @pytest.mark.parametrize("message", ["厦门未来三天天气怎么样？", "厦门三天天气如何"])
 def test_rule_classifier_keeps_standalone_multi_day_weather_questions_on_weather_route(message):
     assert RuleIntentClassifier().classify(message, has_trip=False).intent == "weather_query"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "厦门鼓浪屿游玩攻略",
+        "厦门有哪些适合游玩的景点？",
+        "福建旅游有什么避坑建议？",
+        "云南有哪些值得去的地方？",
+        "福建旅行时省内交通换乘如何规划？",
+    ],
+)
+def test_common_travel_knowledge_questions_do_not_start_profile_collection(message):
+    """Generic travel/visit words alone do not prove that a user is requesting a plan."""
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "travel_knowledge"

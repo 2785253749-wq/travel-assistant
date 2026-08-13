@@ -28,7 +28,11 @@ class RecordingRepository:
 
 
 class FakeEmbedder:
+    def __init__(self):
+        self.texts = []
+
     def embed(self, texts):
+        self.texts.extend(texts)
         return [[0.0] * 1024 for _ in texts]
 
 
@@ -70,6 +74,16 @@ class CapturingSupabaseClient:
     def table(self, name):
         self.table_name = name
         return self.query
+
+
+class RecordingQuota:
+    def __init__(self, allowed=True) -> None:
+        self.allowed = allowed
+        self.calls = []
+
+    def reserve(self, requested, limit):
+        self.calls.append((requested, limit))
+        return self.allowed
 
 
 class CapturingQuotaRpc:
@@ -216,7 +230,8 @@ def test_repository_rejects_a_first_embedding_batch_larger_than_the_daily_limit(
 def test_import_chunks_are_stable_and_keep_document_provenance():
     """Replacing content-derived IDs or metadata propagation would corrupt retrieval rows."""
     repository = RecordingRepository()
-    service = KnowledgeImportService(repository, FakeEmbedder())
+    embedder = FakeEmbedder()
+    service = KnowledgeImportService(repository, embedder)
 
     assert service.import_documents([sample_document()]) == 2
     chunks = repository.calls[0][1]
@@ -228,6 +243,10 @@ def test_import_chunks_are_stable_and_keep_document_provenance():
     assert {(chunk.region, chunk.topic, chunk.source_label) for chunk in chunks} == {
         ("福建", "景点", "福建省文化和旅游厅（试点整理）")
     }
+    assert embedder.texts == [
+        "福建\n景点\n福建测试资料\n第一段用于验证稳定分块。",
+        "福建\n景点\n福建测试资料\n第二段用于验证重复导入。",
+    ]
 
 
 def test_builtin_content_covers_required_topics_for_each_pilot_region():
@@ -257,10 +276,35 @@ def test_import_embedder_uses_shared_jina_payload_validation(monkeypatch):
             200, json={"data": [{"index": 9, "embedding": [0.0] * 1024}]}
         )
     )
+    quota = RecordingQuota()
     embedder = ImportJinaEmbedder(
         Settings(jina_api_key="test-only-placeholder", weather_timeout_seconds=4.0),
+        quota=quota,
         client=httpx.Client(transport=transport),
     )
 
     with pytest.raises(RagUnavailable):
         embedder.embed(["导入资料"])
+    assert quota.calls == [(1, 100)]
+
+
+def test_import_embedder_refuses_when_authoritative_quota_is_exhausted() -> None:
+    quota = RecordingQuota(allowed=False)
+    transport_called = False
+
+    def handler(_request):
+        nonlocal transport_called
+        transport_called = True
+        return httpx.Response(200, json={"data": []})
+
+    embedder = ImportJinaEmbedder(
+        Settings(jina_api_key="test-only-placeholder", rag_daily_embedding_limit=3),
+        quota=quota,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RagUnavailable):
+        embedder.embed(["第一条", "第二条"])
+
+    assert quota.calls == [(2, 3)]
+    assert transport_called is False

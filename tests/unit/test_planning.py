@@ -116,7 +116,12 @@ def test_standalone_multi_day_weather_question_calls_weather_only() -> None:
             self.calls.append(city_id)
             from app.schemas import WeatherCard
 
-            return WeatherCard(city="厦门", status="available", summary="晴，25°C")
+            return WeatherCard(
+                city="厦门",
+                status="available",
+                summary="晴，25°C",
+                report_time=datetime(2026, 8, 13, 9, 30, tzinfo=timezone.utc),
+            )
 
     weather = Weather()
     result = SafeTravelAgent(
@@ -124,12 +129,13 @@ def test_standalone_multi_day_weather_question_calls_weather_only() -> None:
     ).run("厦门未来三天天气怎么样？", trip=None, user_id=None)
 
     assert result.intent == "weather_query"
+    assert result.reply == "实时天气（报告时间：2026-08-13 09:30 UTC）：晴，25°C"
     assert weather.calls == ["厦门"]
     planner.invoke.assert_not_called()
     knowledge.answer.assert_not_called()
 
 
-def test_fourth_itinerary_day_uses_marked_seasonal_advice_not_live_forecast() -> None:
+def test_each_itinerary_date_uses_provider_report_window_then_seasonal_fallback() -> None:
     base = itinerary_factory(days=[
         ItineraryDay(
             date=date(2026, 8, 1),
@@ -162,6 +168,8 @@ def test_fourth_itinerary_day_uses_marked_seasonal_advice_not_live_forecast() ->
 
         def daily_weather(self, destination, travel_date):
             self.calls.append((destination, travel_date))
+            if travel_date != date(2026, 8, 4):
+                return None
             return ItineraryWeather(
                 city="厦门", status="available", summary="晴，25–30°C",
                 report_time=datetime(2026, 8, 1, tzinfo=timezone.utc), date=travel_date,
@@ -179,10 +187,12 @@ def test_fourth_itinerary_day_uses_marked_seasonal_advice_not_live_forecast() ->
     weather = Weather()
     itinerary = enrich_itinerary(base, destination="厦门", weather=weather, knowledge=Knowledge())
 
-    assert len(weather.calls) == 3
-    assert itinerary.days[3].weather is not None
-    assert itinerary.days[3].weather.status == "seasonal"
-    assert "非实时天气" in itinerary.days[3].weather.summary
+    assert weather.calls == [("厦门", day.date) for day in base.days]
+    assert [day.weather.status for day in itinerary.days if day.weather] == [
+        "seasonal", "seasonal", "seasonal", "available"
+    ]
+    assert "非实时天气" in itinerary.days[0].weather.summary
+    assert itinerary.days[3].weather.report_time is not None
 
 
 def test_budget_schema_rejects_total_that_does_not_match_categories() -> None:

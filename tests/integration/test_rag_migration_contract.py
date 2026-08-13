@@ -65,6 +65,15 @@ def test_rag_migration_reserves_daily_embedding_quota_atomically_for_service_rol
     assert "to service_role" in sql
 
 
+def test_rag_migration_searches_only_the_latest_document_version() -> None:
+    """A superseded document version must not remain eligible for retrieval."""
+    sql = MIGRATION.read_text(encoding="utf-8").lower()
+
+    assert "latest_document_versions" in sql
+    assert "max(document_version)" in sql
+    assert "knowledge_chunks.document_version = latest_document_versions.document_version" in sql
+
+
 def test_readme_requires_safe_rag_weather_release_acceptance_steps():
     """Removing a human release safeguard must leave the deployment contract red."""
     readme = Path("README.md").read_text(encoding="utf-8")
