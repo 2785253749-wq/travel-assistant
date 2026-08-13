@@ -63,3 +63,20 @@ def test_rag_migration_reserves_daily_embedding_quota_atomically_for_service_rol
     assert "revoke all on table public.rag_embedding_daily_usage from public, anon, authenticated" in sql
     assert "grant execute on function public.reserve_rag_embedding_quota" in sql
     assert "to service_role" in sql
+
+
+def test_readme_requires_safe_rag_weather_release_acceptance_steps():
+    """Removing a human release safeguard must leave the deployment contract red."""
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    for required_text in (
+        "008_rag_knowledge.sql",
+        "009_weather_quota.sql",
+        "JINA_API_KEY",
+        "AMAP_WEB_SERVICE_KEY",
+        "不得填入浏览器、日志或提交记录",
+        "真实浏览器验收",
+        "四日行程",
+        "仅记录状态码、用例 ID 和可公开摘要",
+    ):
+        assert required_text in readme

@@ -84,15 +84,29 @@ Explore 页面当前只实现 **福建、云南** 两个省份的地图试点：
 
 ## RAG 知识库与天气试点
 
-RAG 与天气是可选的后端能力，只覆盖福建、云南和厦门试点。部署时先在 Supabase SQL Editor 执行 `supabase/migrations/008_rag_knowledge.sql`，确认迁移成功后，再在受控的本机或一次性 Render Shell 中运行：
+RAG 与天气是可选的后端能力，只覆盖福建、云南和厦门试点。部署时必须在 Supabase SQL Editor 按顺序执行 `supabase/migrations/008_rag_knowledge.sql` 和 `supabase/migrations/009_weather_quota.sql`，每个迁移均确认成功后再继续。
+
+在两项迁移成功后，才可以在受控的本机或一次性 Render Shell 中导入经审核的知识资料：
 
 ```powershell
 python -m app.scripts.import_knowledge --content-dir app/rag/content
 ```
 
-导入命令需要服务端 Supabase 凭据和 `JINA_API_KEY`，不得在浏览器、日志或提交记录中显示实际值。Render 只需新增两个私有变量：`JINA_API_KEY` 和 `AMAP_WEB_SERVICE_KEY`；后者必须是高德 Web 服务 Key，不能复用前端 JavaScript API Key。
+导入命令需要服务端 Supabase 凭据和 `JINA_API_KEY`。在导入完成后、重新部署前，才在 Render 的 **Environment** 中添加私有变量 `JINA_API_KEY` 与 `AMAP_WEB_SERVICE_KEY`；后者必须是高德 **Web 服务 Key**，不得复用前端 JavaScript API Key。两项真实值不得填入浏览器、日志或提交记录，也不得写入 `.env.example`、README 或截图。
 
-未配置 `JINA_API_KEY` 时，资料问答固定返回“资料库没有足够依据，无法可靠回答。”；未配置 `AMAP_WEB_SERVICE_KEY` 或天气上游失败时，页面显示“天气信息暂不可用”。这两种降级都不会阻塞原有规划、保存和分享流程，行程仍可正常生成。发布前运行 `python -m tests.evaluation.runner`，确认既有 80 条基线和新增 80 条 RAG/天气用例全部通过；四项 RAG/天气指标必须达到 100%。
+未配置 `JINA_API_KEY` 时，资料问答固定返回“资料库没有足够依据，无法可靠回答。”；未配置 `AMAP_WEB_SERVICE_KEY` 或天气上游失败时，页面显示“天气信息暂不可用”。这两种降级都不会阻塞原有规划、保存和分享流程，行程仍可正常生成。
+
+### RAG 与天气人工验收清单
+
+以下步骤必须在真实浏览器验收，不得把 `TestClient` 或离线评测结果当作线上证据。验收记录仅记录状态码、用例 ID 和可公开摘要，绝不记录 Key、完整用户输入、上游原始响应或知识资料正文。
+
+1. 确认 008 与 009 均已在 Supabase SQL Editor 成功执行；运行导入命令并只记录导入资料条目数。
+2. 在 Render 添加 `JINA_API_KEY` 与 `AMAP_WEB_SERVICE_KEY` 后触发一次部署；访问 `/health` 并记录状态码。
+3. 在 Explore 页面检查厦门天气卡：可用时显示公开摘要；临时移除 `AMAP_WEB_SERVICE_KEY` 或模拟上游失败时显示“天气信息暂不可用”，且仍可生成行程。
+4. 分别提问一条资料内问题与一条资料外问题：前者每个事实段落带中文来源标签，后者拒答且不编造来源。
+5. 生成四日行程：前 3 日仅使用实时预报可覆盖的日期；第 4 日显示“非实时天气”季节建议。再在天气不可用状态下重试，确认行程仍可生成。
+
+发布前运行 `python -m tests.evaluation.runner`，确认既有 80 条基线和新增 80 条 RAG/天气用例全部通过；四项 RAG/天气指标必须达到 100%。
 
 ## 免费层部署
 
