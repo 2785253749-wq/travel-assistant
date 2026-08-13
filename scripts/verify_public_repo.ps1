@@ -4,6 +4,7 @@ function Test-PlaceholderValue {
     param([string]$Value)
 
     $normalized = $Value.Trim().Trim('"').Trim("'").Trim()
+    $normalized = $normalized.TrimEnd(')', '}', ']', ',').Trim()
     if ([string]::IsNullOrWhiteSpace($normalized)) {
         return $true
     }
@@ -13,6 +14,8 @@ function Test-PlaceholderValue {
         'placeholder',
         'test-only-key',
         'test-key',
+        'secretstr("test-key")',
+        'secretstr("test-key"',
         'test-only-placeholder',
         'service-key',
         'service-role-key',
@@ -32,6 +35,8 @@ function Test-PlaceholderValue {
 
     return (
         $exactPlaceholders -contains $normalized.ToLowerInvariant() -or
+        $normalized -eq 'None' -or
+        $normalized -match '(?i:test-key)' -or
         $normalized -match '^\*+$'
     )
 }
@@ -153,12 +158,6 @@ function Get-SensitiveAssignments {
     return [regex]::Matches($Content, $pattern)
 }
 
-function Test-TrustedTestFixturePath {
-    param([string]$Path)
-
-    return $Path -match '^(?i:tests?/)'
-}
-
 function Get-AssignedExpression {
     param(
         [string]$Content,
@@ -167,6 +166,7 @@ function Get-AssignedExpression {
 
     $builder = [System.Text.StringBuilder]::new()
     $quote = $null
+    $closedQuote = $false
     $braceDepth = 0
     $parenthesisDepth = 0
     for ($index = $StartIndex; $index -lt $Content.Length; $index++) {
@@ -181,8 +181,18 @@ function Get-AssignedExpression {
             }
             elseif ($character -eq $quote) {
                 $quote = $null
+                $closedQuote = $true
             }
             continue
+        }
+
+        if ($closedQuote) {
+            if ($character -in @([char]41, [char]44, [char]59, [char]125, [char]93)) {
+                break
+            }
+            if (-not [char]::IsWhiteSpace($character)) {
+                $closedQuote = $false
+            }
         }
 
         if ($character -in @([char]34, [char]39, [char]96)) {
@@ -465,11 +475,6 @@ foreach ($file in $trackedFiles) {
     $sensitiveAssignments[("AMAP_WEB_SERVICE" + "_KEY")] = "AMap Web Service key"
     $sensitiveAssignments[("SUPABASE_SERVICE" + "_KEY")] = "Supabase service key"
     $sensitiveAssignments[("ANON_SESSION_SIGNING" + "_SECRET")] = "anonymous session signing secret"
-    # Tests exercise the scanner against deliberately isolated, tracked temporary
-    # repositories. Do not treat repository test fixtures as production sources.
-    if (Test-TrustedTestFixturePath -Path $normalizedPath) {
-        continue
-    }
     $dynamicTemplateViolation = $false
     foreach ($name in $sensitiveAssignments.Keys) {
         foreach ($match in (Get-SensitiveAssignments -Content $content -Name $name -AllowColon $allowColonAssignments)) {

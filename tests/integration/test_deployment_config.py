@@ -234,6 +234,31 @@ def test_public_repo_check_rejects_python_inline_server_key_arguments(
     assert name in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        ('Settings(jina_api' + '_key="__JINA_TEST_SECRET__")\n', "Jina API key"),
+        ('configure(amap_web_service' + '_key="__AMAP_TEST_SECRET__")\n', "AMap Web Service key"),
+    ],
+)
+def test_public_repo_check_rejects_real_inline_keys_inside_test_paths(
+    tmp_path: Path,
+    source: str,
+    name: str,
+):
+    secret = "fixture" + "-private-value"
+    repo = _tracked_repo(
+        tmp_path,
+        "tests/test_credentials.py",
+        source.replace("__JINA_TEST_SECRET__", secret).replace("__AMAP_TEST_SECRET__", secret),
+    )
+
+    result = _run_public_repo_check(repo)
+
+    assert result.returncode != 0
+    assert name in result.stdout
+
+
 def test_public_repo_check_does_not_mistake_python_comparisons_or_annotations_for_assignments(
     tmp_path: Path,
 ):
