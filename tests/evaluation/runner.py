@@ -995,12 +995,7 @@ def run_rag_weather_case(
             itinerary_preserved=len(enriched.days) == len(itinerary.days),
         )
 
-    # Some paraphrased evaluation prompts omit the place name. The production
-    # request still carries the selected region, so include that routing context
-    # when exercising the deterministic offline embedder.
-    # The selected region is application state; only append that routing
-    # context. Topic and evidence expectations never participate in prediction.
-    query = f"{case.region or ''}：{case.question}"
+    query = case.question
     knowledge = KnowledgeAnswerService(
         repository,
         embedder,

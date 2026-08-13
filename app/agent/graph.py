@@ -754,8 +754,17 @@ class SafeTravelAgent:
 
     def _special_intent_result(self, intent: Intent, message: str) -> ChatResult | None:
         if intent == "travel_knowledge":
+            region = _knowledge_region(message)
+            if region is None:
+                return ChatResult(
+                    "请补充目的地城市，我才能查询试点旅行资料。",
+                    "collecting",
+                    {},
+                    error_code="KNOWLEDGE_UNAVAILABLE",
+                    intent=intent,
+                )
             try:
-                answer = self._knowledge.answer(message, region=_knowledge_region(message))
+                answer = self._knowledge.answer(message, region=region)
             except Exception:
                 answer = RagAnswer.refused()
             return ChatResult(
@@ -1037,11 +1046,21 @@ def _seasonal_weather(
     )
 
 
+_TRIAL_PLACE_REGIONS: dict[str, str] = {
+    "鼓浪屿": "厦门",
+}
+
+
 def _knowledge_region(message: str) -> str | None:
     for region in ("厦门", "福建", "云南"):
         if region in message:
             return region
-    return None
+    matches = {
+        region
+        for alias, region in _TRIAL_PLACE_REGIONS.items()
+        if alias in message
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
 
 
 def _weather_city(message: str) -> str:
