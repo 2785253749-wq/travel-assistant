@@ -7,6 +7,7 @@ from postgrest.exceptions import APIError
 from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
+from app.core.logging import database_operation
 from app.rag.embedding import RagUnavailable
 from app.rag.models import KnowledgeChunk, KnowledgeDocument, RetrievedChunk
 
@@ -54,11 +55,12 @@ class KnowledgeRepository:
         ]
         if not rows:
             return 0
-        response = (
-            self._client.table("knowledge_chunks")
-            .upsert(rows, on_conflict="chunk_id", ignore_duplicates=True)
-            .execute()
-        )
+        with database_operation("rag.knowledge_chunks.upsert"):
+            response = (
+                self._client.table("knowledge_chunks")
+                .upsert(rows, on_conflict="chunk_id", ignore_duplicates=True)
+                .execute()
+            )
         return len(response.data or [])
 
     def search(
@@ -69,14 +71,15 @@ class KnowledgeRepository:
         if len(query_vector) != 1024:
             raise ValueError("query_vector must contain 1024 dimensions")
         try:
-            response = self._client.rpc(
-                "match_knowledge_chunks",
-                {
-                    "query_embedding": list(query_vector),
-                    "filter_region": region,
-                    "match_count": limit,
-                },
-            ).execute()
+            with database_operation("rag.knowledge_chunks.search"):
+                response = self._client.rpc(
+                    "match_knowledge_chunks",
+                    {
+                        "query_embedding": list(query_vector),
+                        "filter_region": region,
+                        "match_count": limit,
+                    },
+                ).execute()
             if not isinstance(response.data, list):
                 raise RagUnavailable
             return [RetrievedChunk.model_validate(row) for row in response.data]
@@ -89,10 +92,11 @@ class KnowledgeRepository:
         if requested > limit:
             return False
         try:
-            response = self._client.rpc(
-                "reserve_rag_embedding_quota",
-                {"requested": requested, "daily_limit": limit},
-            ).execute()
+            with database_operation("rag.embedding_quota.reserve"):
+                response = self._client.rpc(
+                    "reserve_rag_embedding_quota",
+                    {"requested": requested, "daily_limit": limit},
+                ).execute()
         except (APIError, httpx.HTTPError):
             raise RagUnavailable from None
         return _reserved(response.data)
