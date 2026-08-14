@@ -254,7 +254,7 @@ Expected: 0 failures.
 
 - [ ] **Step 2: Run relevant backend regression**
 
-Run: `& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest tests/unit/test_chat_api.py tests/unit/test_trips.py -q`
+Run: `& 'C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe' -m pytest tests/integration/test_chat_api.py tests/integration/test_trip_api.py -q`
 
 Expected: 0 failures; no backend files should be changed by this feature.
 

@@ -4,8 +4,9 @@ const path = require("node:path");
 const test = require("node:test");
 const { FakeElement, FakeSupabaseAuth, createHarness, descendants, findByText, jsonResponse, settle } = require("./dom-harness");
 
-const SESSION = { access_token: "access-one", refresh_token: "refresh-one", expires_at: 2000000000, user: { email: "owner@example.test" } };
-const REFRESHED = { access_token: "access-two", refresh_token: "refresh-two", expires_at: 2000003600, user: { email: "owner@example.test" } };
+const SESSION = { access_token: "access-one", refresh_token: "refresh-one", expires_at: 2000000000, user: { id: "user-a", email: "owner@example.test" } };
+const REFRESHED = { access_token: "access-two", refresh_token: "refresh-two", expires_at: 2000003600, user: { id: "user-a", email: "owner@example.test" } };
+const OTHER_SESSION = { access_token: "access-other", refresh_token: "refresh-other", expires_at: 2000007200, user: { id: "user-b", email: "other@example.test" } };
 
 function observeHidden(element, label, events) {
   let value = element.hidden;
@@ -92,6 +93,19 @@ test("user navigation focuses each programmatically focusable view heading", asy
   assert.equal(exploreTitle.focused, true);
 });
 
+test("brand link returns to Explore through SPA navigation and focuses its heading", async () => {
+  const harness = createHarness();
+  await settle();
+
+  await harness.elements.get("trips-nav-button").dispatch("click");
+  await harness.elements.get("voyage-brand").dispatch("click");
+
+  assert.equal(harness.elements.get("explore-page").hidden, false);
+  assert.equal(harness.elements.get("trips-page").hidden, true);
+  assert.equal(harness.elements.get("explore-nav-button").getAttribute("aria-current"), "page");
+  assert.equal(harness.elements.get("explore-title").focused, true);
+});
+
 test("skip link targets a stable focusable main region", () => {
   const harness = createHarness();
   const skipLink = harness.elements.get("skip-link");
@@ -124,6 +138,27 @@ test("Explore output is hidden with its view without losing generated state", as
   assert.equal(trip.hidden, false);
 });
 
+test("provider notice is visible only while the Explore view is active", async () => {
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, { reply: "请继续", stage: "collecting", profile: {}, warnings: ["provider unavailable"] })
+    : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查看降级提示";
+  await harness.elements.get("chat-form").dispatch("submit");
+
+  const notice = harness.elements.get("provider-notice");
+  assert.equal(notice.hidden, false);
+
+  await harness.elements.get("trips-nav-button").dispatch("click");
+  assert.equal(notice.hidden, true);
+
+  await harness.elements.get("explore-nav-button").dispatch("click");
+  assert.equal(notice.hidden, false);
+
+  await harness.elements.get("community-nav-button").dispatch("click");
+  assert.equal(notice.hidden, true);
+});
+
 test("opening a saved trip moves its generated content into the Explore view", async () => {
   const savedTrip = { id: "trip-open", title: "厦门周末", profile: {}, itinerary: { title: "厦门周末", days: [] } };
   const auth = new FakeSupabaseAuth({ initialSession: SESSION });
@@ -142,6 +177,35 @@ test("opening a saved trip moves its generated content into the Explore view", a
   assert.equal(harness.elements.get("explore-output").hidden, false);
   assert.equal(harness.elements.get("trip-view").hidden, false);
   assert.equal(harness.elements.get("explore-title").focused, true);
+});
+
+test("a saved-trip response that succeeds after sign-out cannot restore private content", async () => {
+  const savedTrip = { id: "trip-open", title: "账户 A 私有行程", profile: {}, itinerary: { title: "账户 A 私有行程", days: [] } };
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  let resolveOpen;
+  const pendingOpen = new Promise((resolve) => { resolveOpen = resolve; });
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url === "/api/trips") return jsonResponse(200, [savedTrip]);
+    if (call.url === "/api/trips/trip-open") return pendingOpen;
+    return jsonResponse(200, {});
+  } });
+  await settle();
+  await harness.elements.get("trips-nav-button").dispatch("click");
+
+  const opening = findByText(harness.elements.get("trip-history-list"), "打开").dispatch("click");
+  await settle(1);
+  auth.emit("SIGNED_OUT", null);
+  resolveOpen(jsonResponse(200, savedTrip));
+  await opening;
+  await settle();
+
+  assert.equal(harness.document.body.dataset.appState, "signed_out");
+  assert.equal(harness.elements.get("trips-page").hidden, false);
+  assert.equal(harness.elements.get("explore-page").hidden, true);
+  assert.equal(harness.elements.get("trip-view").hidden, true);
+  assert.equal(harness.elements.get("trip-content").textContent, "");
+  assert.equal(harness.elements.get("trip-title").textContent, "");
+  assert.doesNotMatch(harness.elements.get("trip-history-list").textContent, /账户 A 私有行程/);
 });
 
 test("signed-out trips view shows a login prompt instead of requesting private trips", async () => {
@@ -275,7 +339,7 @@ test("stale trips authentication failure cannot replace a newer response or sign
 test("stale deferred Trips refresh cannot mutate the session or newer result", async (t) => {
   const currentSession = {
     access_token: "access-current", refresh_token: "refresh-current", expires_at: 2000007200,
-    user: { email: "current@example.test" },
+    user: { id: "user-a", email: "current@example.test" },
   };
   const scenarios = [
     { name: "obsolete refresh succeeds", result: { data: { session: REFRESHED }, error: null } },
@@ -326,6 +390,50 @@ test("stale deferred Trips refresh cannot mutate the session or newer result", a
       assert.equal(harness.fetchCalls.at(-1).options.headers.Authorization, "Bearer access-current");
     });
   }
+});
+
+test("a newer account 401 starts its own refresh instead of joining the older account refresh", async () => {
+  const refreshedOtherSession = {
+    access_token: "access-other-refreshed", refresh_token: "refresh-other-refreshed", expires_at: 2000010800,
+    user: { id: "user-b", email: "other@example.test" },
+  };
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const refreshResolvers = [];
+  auth.refreshSession = async () => {
+    auth.refreshCalls += 1;
+    return new Promise((resolve) => { refreshResolvers.push(resolve); });
+  };
+  let tripLoads = 0;
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url !== "/api/trips") return jsonResponse(200, {});
+    tripLoads += 1;
+    if (tripLoads <= 2) return jsonResponse(401, { detail: { code: "AUTH_INVALID" } });
+    return jsonResponse(200, [{ id: "trip-b", title: "账户 B 的行程" }]);
+  } });
+  await settle();
+
+  const olderLoad = harness.elements.get("trips-nav-button").dispatch("click");
+  await settle(1);
+  assert.equal(auth.refreshCalls, 1);
+
+  auth.session = OTHER_SESSION;
+  auth.emit("SIGNED_IN", OTHER_SESSION);
+  await settle(2);
+  assert.equal(auth.refreshCalls, 2, "the newer generation must not join the older generation refresh");
+
+  refreshResolvers[1]({ data: { session: refreshedOtherSession }, error: null });
+  await settle();
+  assert.match(harness.elements.get("trip-history-list").textContent, /账户 B 的行程/);
+  assert.equal(harness.fetchCalls.at(-1).options.headers.Authorization, "Bearer access-other-refreshed");
+
+  refreshResolvers[0]({ data: { session: REFRESHED }, error: null });
+  await olderLoad;
+  await settle();
+
+  assert.equal(auth.signOutCalls, 0);
+  assert.equal(harness.elements.get("account-email").textContent, "other@example.test");
+  assert.match(harness.elements.get("trip-history-list").textContent, /账户 B 的行程/);
+  assert.doesNotMatch(harness.elements.get("trip-history-list").textContent, /加载失败/);
 });
 
 test("sign-out invalidates a pending trips failure", async () => {
@@ -847,6 +955,49 @@ test("login uses the Supabase session lifecycle and starts a fresh authenticated
   assert.equal(authenticatedCall.options.headers.Authorization, "Bearer access-one");
 });
 
+test("SIGNED_IN for a different stable user clears account A state before rendering account B", async () => {
+  const events = [];
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ auth, fetch: async (call) => call.url === "/api/trips"
+    ? jsonResponse(200, [{ id: "trip-a", title: "账户 A 历史" }])
+    : jsonResponse(200, {}) });
+  await settle();
+  await harness.elements.get("trips-nav-button").dispatch("click");
+
+  const tripContent = harness.elements.get("trip-content");
+  const profileFields = harness.elements.get("profile-fields");
+  const messages = harness.elements.get("chat-messages");
+  const accountEmail = harness.elements.get("account-email");
+  tripContent.append(Object.assign(new FakeElement("p"), { textContent: "账户 A 私有行程" }));
+  profileFields.append(Object.assign(new FakeElement("dd"), { textContent: "账户 A 私有资料" }));
+  messages.append(Object.assign(new FakeElement("p"), { textContent: "账户 A 私有对话" }));
+  observeChildClear(tripContent, "trip-clear", events);
+  let accountEmailText = accountEmail.textContent;
+  Object.defineProperty(accountEmail, "textContent", {
+    configurable: true,
+    get() { return accountEmailText; },
+    set(next) {
+      accountEmailText = String(next);
+      if (next === OTHER_SESSION.user.email) events.push("account-b-render");
+    },
+  });
+
+  auth.session = OTHER_SESSION;
+  auth.emit("SIGNED_IN", OTHER_SESSION);
+
+  assertBefore(events, "trip-clear", "account-b-render");
+  assert.equal(accountEmail.textContent, "other@example.test");
+  assert.equal(tripContent.textContent, "");
+  assert.equal(profileFields.textContent, "");
+  assert.doesNotMatch(messages.textContent, /账户 A 私有对话/);
+  assert.doesNotMatch(harness.elements.get("trip-history-list").textContent, /账户 A 历史/);
+  assert.equal(harness.elements.get("trip-view").hidden, true);
+  assert.equal(harness.elements.get("profile-confirmation").hidden, true);
+  assert.equal(harness.elements.get("share-dialog").open, false);
+  assert.equal(harness.elements.get("rename-dialog").open, false);
+  assert.equal(harness.elements.get("account-summary").hidden, false);
+});
+
 test("logout clears every private value and private DOM region", async () => {
   const auth = new FakeSupabaseAuth({ initialSession: SESSION });
   const harness = createHarness({ auth, fetch: async (call) => call.url === "/api/trips" ? jsonResponse(200, []) : jsonResponse(200, {}) });
@@ -1000,7 +1151,13 @@ test("Supabase auth state changes replace the token used by later private calls"
   const auth = new FakeSupabaseAuth({ initialSession: SESSION });
   const harness = createHarness({ auth, fetch: async (call) => call.url === "/api/trips" ? jsonResponse(200, []) : jsonResponse(200, { reply: "继续", stage: "collecting", profile: {} }) });
   await settle();
+  harness.elements.get("trip-content").append(Object.assign(new FakeElement("p"), { textContent: "same-user private trip" }));
+  harness.elements.get("chat-messages").append(Object.assign(new FakeElement("p"), { textContent: "same-user private chat" }));
+
   auth.emit("TOKEN_REFRESHED", REFRESHED);
+
+  assert.match(harness.elements.get("trip-content").textContent, /same-user private trip/);
+  assert.match(harness.elements.get("chat-messages").textContent, /same-user private chat/);
   harness.elements.get("message-input").value = "刷新后请求";
   await harness.elements.get("chat-form").dispatch("submit");
   await settle();

@@ -24,7 +24,7 @@
   });
   const $ = (id) => document.getElementById(id);
   const elements = {
-    body: document.body, authForm: $("auth-form"), email: $("email"), password: $("password"),
+    body: document.body, brand: $("voyage-brand"), authForm: $("auth-form"), email: $("email"), password: $("password"),
     signIn: $("sign-in-button"), signUp: $("sign-up-button"), signOut: $("sign-out-button"),
     account: $("account-summary"), accountEmail: $("account-email"), authFormPanel: $("auth-form"), accountMenu: $("account-menu"),
     authHelp: $("auth-help"), status: $("status-message"), providerNotice: $("provider-notice"),
@@ -49,10 +49,11 @@
   };
   const state = {
     name: "signed_out", activeView: "explore", busy: false, session: null, authClient: null, user: null, profile: null,
-    pendingResult: null, currentTrip: null, renameTripId: null, shareTripId: null,
+    pendingResult: null, currentTrip: null, renameTripId: null, shareTripId: null, providerNoticeActive: false,
     threadId: makeThreadId(), cityWeather: new Map(), cityWeatherRequests: new Map(), selectedExploreCityId: null,
   };
-  let refreshPromise = null;
+  let authGeneration = 0;
+  let refreshRequest = null;
   let tripsLoadGeneration = 0;
   let mapExplorer = null;
   let cityWeatherCard = null;
@@ -72,6 +73,18 @@
     tripsLoadGeneration += 1;
   }
 
+  function stableUserId(session) {
+    const id = session && session.user && session.user.id;
+    return typeof id === "string" && id.trim() ? id : null;
+  }
+
+  function identitiesDiffer(currentSession, nextSession) {
+    if (!currentSession) return false;
+    const currentUserId = stableUserId(currentSession);
+    const nextUserId = stableUserId(nextSession);
+    return !currentUserId || !nextUserId || currentUserId !== nextUserId;
+  }
+
   async function switchView(view, { focusHeading = false } = {}) {
     if (!VIEWS.has(view)) return;
     if (state.activeView !== view) invalidateTripsLoads();
@@ -86,6 +99,7 @@
       else button.removeAttribute("aria-current");
     }
     elements.exploreOutput.hidden = view !== "explore";
+    elements.providerNotice.hidden = view !== "explore" || !state.providerNoticeActive;
     if (focusHeading) elements.viewHeadings[view].focus();
     if (view === "trips") await renderTripsPage();
   }
@@ -373,36 +387,67 @@
     return { ...headers, Authorization: `Bearer ${state.session.access_token}` };
   }
 
-  async function requestJson(path, options = {}, allowRefresh = true) {
-    const response = await fetch(path, {
-      method: options.method || "GET",
-      headers: authorizationHeaders({ "Content-Type": "application/json", ...(options.headers || {}) }),
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    });
+  function captureRequestCurrency(options) {
+    const callerIsCurrent = typeof options.isCurrent === "function" ? options.isCurrent : () => true;
+    const generation = state.session ? authGeneration : null;
+    const userId = generation === null ? null : stableUserId(state.session);
+    return {
+      allowRefresh: true,
+      generation,
+      isCurrent: () => callerIsCurrent() && (generation === null || (
+        generation === authGeneration && Boolean(state.session) && stableUserId(state.session) === userId
+      )),
+    };
+  }
+
+  function staleRequestError() {
+    const error = new Error("STALE_REQUEST");
+    error.code = "STALE_REQUEST";
+    return error;
+  }
+
+  function authenticationError(payload, sessionInvalidated = false) {
+    const detail = payload && payload.detail;
+    const authCode = detail && ["AUTH_REQUIRED", "AUTH_INVALID", "AUTH_UNAVAILABLE"].includes(detail.code)
+      ? detail.code : "AUTH_INVALID";
+    const error = new Error(authCode);
+    error.code = authCode;
+    error.status = 401;
+    error.sessionInvalidated = sessionInvalidated;
+    return error;
+  }
+
+  async function requestJson(path, options = {}, existingCurrency = null) {
+    const currency = existingCurrency || captureRequestCurrency(options);
+    if (!currency.isCurrent()) throw staleRequestError();
+    let response;
+    try {
+      response = await fetch(path, {
+        method: options.method || "GET",
+        headers: authorizationHeaders({ "Content-Type": "application/json", ...(options.headers || {}) }),
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+    } catch (error) {
+      if (!currency.isCurrent()) throw staleRequestError();
+      throw error;
+    }
     const payload = await response.json().catch(() => ({}));
+    if (!currency.isCurrent()) throw staleRequestError();
     if (response.status === 401) {
-      const requestIsCurrent = typeof options.isCurrent === "function" ? options.isCurrent : () => true;
       let sessionInvalidated = false;
-      if (requestIsCurrent()) {
-        if (allowRefresh && state.session) {
-          const refreshResult = await refreshBrowserSession(requestIsCurrent);
-          sessionInvalidated = refreshResult.sessionInvalidated;
-          if (requestIsCurrent()) {
-            if (refreshResult.refreshed && requestIsCurrent()) return requestJson(path, options, false);
-            sessionInvalidated = sessionInvalidated || !state.session;
-          }
-        } else if (state.session && requestIsCurrent()) {
-          sessionInvalidated = await signOutAndClearSession(requestIsCurrent);
-        }
+      if (currency.allowRefresh && state.session) {
+        const refreshResult = await refreshBrowserSession(currency);
+        sessionInvalidated = refreshResult.sessionInvalidated;
+        if (sessionInvalidated) throw authenticationError(payload, true);
+        if (!currency.isCurrent()) throw staleRequestError();
+        if (refreshResult.refreshed) return requestJson(path, options, { ...currency, allowRefresh: false });
+        sessionInvalidated = !state.session;
+      } else if (state.session) {
+        sessionInvalidated = await signOutAndClearSession(currency.isCurrent);
+        if (sessionInvalidated) throw authenticationError(payload, true);
+        if (!currency.isCurrent()) throw staleRequestError();
       }
-      const detail = payload && payload.detail;
-      const authCode = detail && ["AUTH_REQUIRED", "AUTH_INVALID", "AUTH_UNAVAILABLE"].includes(detail.code)
-        ? detail.code : "AUTH_INVALID";
-      const authError = new Error(authCode);
-      authError.code = authCode;
-      authError.status = 401;
-      authError.sessionInvalidated = sessionInvalidated;
-      throw authError;
+      throw authenticationError(payload, sessionInvalidated);
     }
     if (!response.ok) {
       const detail = payload && payload.detail;
@@ -434,12 +479,14 @@
   }
 
   function showError(error) {
+    if (error && error.code === "STALE_REQUEST") return;
     setState("error");
     setStatus(publicError(error && error.code), true);
   }
 
   function showProviderNotice(warnings, itinerary = null) {
     if (!Array.isArray(warnings) || warnings.length === 0) {
+      state.providerNoticeActive = false;
       elements.providerUpdatedAt.textContent = "";
       clearChildren(elements.providerNotice);
       elements.providerNotice.hidden = true;
@@ -455,7 +502,8 @@
     const fallback = document.createElement("span");
     fallback.textContent = " 仍可查看不依赖实时数据的行程框架。";
     elements.providerNotice.append(summary, elements.providerUpdatedAt, fallback);
-    elements.providerNotice.hidden = false;
+    state.providerNoticeActive = true;
+    elements.providerNotice.hidden = state.activeView !== "explore";
   }
 
   function canonicalCitations(itinerary) {
@@ -822,22 +870,24 @@
     }
   }
 
-  function clearSession() {
+  function clearAccountScopedState(options = {}) {
     invalidateTripsLoads();
-    state.session = null;
-    state.user = null;
-    clearConversationState({ showWelcome: false });
-    state.profile = null;
-    state.pendingResult = null;
-    state.currentTrip = null;
+    clearConversationState(options);
     state.renameTripId = null;
     state.shareTripId = null;
     elements.password.value = "";
     elements.email.value = "";
-    elements.authFormPanel.hidden = false;
-    elements.account.hidden = true;
     clearChildren(elements.historyList);
     elements.history.hidden = true;
+  }
+
+  function clearSession() {
+    authGeneration += 1;
+    state.session = null;
+    state.user = null;
+    clearAccountScopedState({ showWelcome: false });
+    elements.authFormPanel.hidden = false;
+    elements.account.hidden = true;
     if (state.activeView === "trips") renderTripsPage();
     setState("signed_out");
   }
@@ -869,43 +919,59 @@
     elements.profileCard.hidden = true;
     elements.tripView.hidden = true;
     elements.tripActions.hidden = true;
+    state.providerNoticeActive = false;
     elements.providerNotice.hidden = true;
   }
 
   function applySession(session, options = {}) {
-    if (options.refreshTrips !== false) invalidateTripsLoads();
+    const identityChanged = identitiesDiffer(state.session, session);
+    const refreshTrips = identityChanged || options.refreshTrips !== false;
+    if (identityChanged) {
+      authGeneration += 1;
+      clearAccountScopedState();
+    } else if (refreshTrips) {
+      invalidateTripsLoads();
+    }
     state.session = session;
     state.user = session.user || {};
-    if (options.resetConversation) clearConversationState();
+    if (options.resetConversation && !identityChanged) clearConversationState();
     elements.accountEmail.textContent = state.user.email || "已登录账户";
     elements.authFormPanel.hidden = true;
     elements.account.hidden = false;
     elements.history.hidden = state.activeView !== "trips";
     setState("collecting");
-    if (options.resetConversation) setStatus("已切换登录会话，请重新确认行程资料。", false);
-    if (state.activeView === "trips" && options.refreshTrips !== false) return renderTripsPage();
+    if (identityChanged || options.resetConversation) setStatus("已切换登录会话，请重新确认行程资料。", false);
+    if (state.activeView === "trips" && refreshTrips) return renderTripsPage();
   }
 
-  async function refreshBrowserSession(isCurrent = () => true) {
-    if (!state.authClient || !isCurrent()) return { refreshed: false, sessionInvalidated: false };
-    if (!refreshPromise) {
-      refreshPromise = (async () => {
+  async function refreshBrowserSession(currency) {
+    if (!state.authClient || currency.generation === null || !currency.isCurrent()) {
+      return { refreshed: false, sessionInvalidated: false };
+    }
+    let request = refreshRequest;
+    if (!request || request.generation !== currency.generation) {
+      request = { generation: currency.generation, promise: null };
+      request.promise = (async () => {
         try {
           return await state.authClient.auth.refreshSession();
         } catch (error) {
           return { data: null, error };
         }
-      })().finally(() => { refreshPromise = null; });
+      })().finally(() => {
+        if (refreshRequest === request) refreshRequest = null;
+      });
+      refreshRequest = request;
     }
-    const { data, error } = await refreshPromise;
-    if (!isCurrent()) return { refreshed: false, sessionInvalidated: false };
+    const { data, error } = await request.promise;
+    if (!currency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
     if (error || !data || !data.session) {
-      if (!isCurrent()) return { refreshed: false, sessionInvalidated: false };
-      const sessionInvalidated = await signOutAndClearSession(isCurrent);
+      if (!currency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
+      const sessionInvalidated = await signOutAndClearSession(currency.isCurrent);
       return { refreshed: false, sessionInvalidated };
     }
-    if (!isCurrent()) return { refreshed: false, sessionInvalidated: false };
+    if (!currency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
     applySession(data.session, { refreshTrips: false });
+    if (!currency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
     return { refreshed: true, sessionInvalidated: false };
   }
 
@@ -1165,6 +1231,10 @@
   }
 
   elements.chatForm.addEventListener("submit", sendMessage);
+  elements.brand.addEventListener("click", (event) => {
+    event.preventDefault();
+    switchView("explore", { focusHeading: true });
+  });
   for (const button of elements.navigation) button.addEventListener("click", () => switchView(button.dataset.view, { focusHeading: true }));
   elements.assistantToggle.addEventListener("click", () => {
     if (state.busy) return;
