@@ -16,6 +16,15 @@ class FakeElement {
     this.open = false;
     this.value = "";
     this.className = "";
+    this.classList = {
+      toggle: (name, force) => {
+        const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+        if (force) classes.add(name);
+        else classes.delete(name);
+        this.className = [...classes].join(" ");
+        return force;
+      },
+    };
     this.type = "";
     this.href = "";
     this.rel = "";
@@ -61,6 +70,7 @@ class FakeElement {
 
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) || null; }
+  removeAttribute(name) { this.attributes.delete(name); }
 
   async dispatch(type) {
     if (type === "click" && this.disabled) return;
@@ -103,6 +113,13 @@ function buildDocument(html) {
   for (const match of html.matchAll(pattern)) {
     const element = new FakeElement(match[1], match[3]);
     element.hidden = /\bhidden\b/i.test(match[2]);
+    const className = /\bclass="([^"]+)"/i.exec(match[2]);
+    if (className) element.className = className[1];
+    for (const dataAttribute of match[2].matchAll(/\bdata-([\w-]+)="([^"]*)"/gi)) {
+      const name = dataAttribute[1].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+      element.dataset[name] = dataAttribute[2];
+    }
+    for (const attribute of match[2].matchAll(/\b(aria-[\w-]+)="([^"]*)"/gi)) element.setAttribute(attribute[1], attribute[2]);
     const type = /\btype="([^"]+)"/i.exec(match[2]);
     if (type) element.type = type[1];
     elements.set(element.id, element);
@@ -111,7 +128,7 @@ function buildDocument(html) {
   const body = new FakeElement("body", "body");
   const head = new FakeElement("head", "head");
   const parents = {
-    "chat-messages": "chat-panel", "chat-form": "chat-panel", "trip-history-list": "trip-history",
+    "chat-messages": "chat-panel", "chat-form": "chat-panel", "trip-history-list": "trip-history", "trip-history": "trips-page",
     "profile-fields": "profile-confirmation", "trip-content": "trip-view", "trip-actions": "trip-view",
     "share-link": "share-dialog", "share-expiry": "share-dialog", "rename-input": "rename-dialog",
   };

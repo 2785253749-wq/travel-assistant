@@ -2,6 +2,7 @@
   "use strict";
 
   const STATES = new Set(["signed_out", "collecting", "confirming", "planning", "planned", "error"]);
+  const VIEWS = new Set(["explore", "trips", "community"]);
   const PROFILE_LABELS = {
     origin: "出发地", destination: "目的地", start_date: "出发日期", end_date: "返回日期",
     travelers: "出行人数", budget_cny: "总预算（元）", preferences: "偏好", constraints: "限制",
@@ -30,7 +31,9 @@
     providerUpdatedAt: $("provider-updated-at"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"),
-    explorePage: $("explore-page"), exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
+    explorePage: $("explore-page"), tripsPage: $("trips-page"), communityPage: $("community-page"),
+    navigation: [$("explore-nav-button"), $("trips-nav-button"), $("community-nav-button")],
+    exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
     mapBreadcrumb: $("map-breadcrumb"), mapTitle: $("map-title"), exploreShortcuts: $("explore-shortcuts"),
     recommendationsTitle: $("recommendations-title"), recommendationCount: $("recommendation-count"),
     recommendationGrid: $("recommendation-grid"), explorePlaceCard: $("explore-place-card"),
@@ -43,7 +46,7 @@
     renameForm: $("rename-form"), renameInput: $("rename-input"), cancelRename: $("cancel-rename"),
   };
   const state = {
-    name: "signed_out", busy: false, session: null, authClient: null, user: null, profile: null,
+    name: "signed_out", activeView: "explore", busy: false, session: null, authClient: null, user: null, profile: null,
     pendingResult: null, currentTrip: null, renameTripId: null, shareTripId: null,
     threadId: makeThreadId(), cityWeather: new Map(), cityWeatherRequests: new Map(), selectedExploreCityId: null,
   };
@@ -60,6 +63,20 @@
     if (!STATES.has(next)) throw new Error("Invalid page state");
     state.name = next;
     elements.body.dataset.appState = next;
+  }
+
+  function switchView(view) {
+    if (!VIEWS.has(view)) return;
+    state.activeView = view;
+    for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage], ["community", elements.communityPage]]) {
+      element.hidden = name !== view;
+    }
+    for (const button of elements.navigation) {
+      const active = button.dataset.view === view;
+      button.classList.toggle("is-active", active);
+      if (active) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    }
   }
 
   function setStatus(message, isError = false) {
@@ -1067,12 +1084,14 @@
   }
 
   async function initializeApp() {
+    switchView("explore");
     if (await showPublicShare()) return;
     initializeExplore();
     await initializeAuth();
   }
 
   elements.chatForm.addEventListener("submit", sendMessage);
+  for (const button of elements.navigation) button.addEventListener("click", () => switchView(button.dataset.view));
   elements.assistantToggle.addEventListener("click", () => {
     if (state.busy) return;
     const open = elements.assistantPanel.hidden;

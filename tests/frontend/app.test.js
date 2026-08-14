@@ -48,6 +48,28 @@ async function dispatchKey(element, key) {
   return defaultPrevented;
 }
 
+test("navigation switches between explore, trips, and community without a reload", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const tripsNav = harness.elements.get("trips-nav-button");
+  const communityNav = harness.elements.get("community-nav-button");
+  const explore = harness.elements.get("explore-page");
+  const trips = harness.elements.get("trips-page");
+  const community = harness.elements.get("community-page");
+
+  await tripsNav.dispatch("click");
+  assert.equal(explore.hidden, true);
+  assert.equal(trips.hidden, false);
+  assert.equal(community.hidden, true);
+  assert.equal(tripsNav.getAttribute("aria-current"), "page");
+
+  await communityNav.dispatch("click");
+  assert.equal(trips.hidden, true);
+  assert.equal(community.hidden, false);
+  assert.equal(harness.elements.get("explore-nav-button").getAttribute("aria-current"), null);
+});
+
 test("mouse drag handle moves the open assistant and clamps it within 12px viewport margins", async () => {
   const harness = createHarness();
   await settle();

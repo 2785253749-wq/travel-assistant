@@ -14,9 +14,9 @@
     <div class="site-header-inner">
       <a class="voyage-brand" href="#explore-page" aria-label="Voyage 探索首页">Voyage</a>
       <nav id="main-navigation" class="main-navigation" aria-label="主导航">
-        <button type="button" class="navigation-item is-active" aria-current="page">探索</button>
-        <button type="button" class="navigation-item">我的行程</button>
-        <button type="button" class="navigation-item">社区</button>
+        <button id="explore-nav-button" class="navigation-item is-active" data-view="explore" aria-current="page" type="button">探索</button>
+        <button id="trips-nav-button" class="navigation-item" data-view="trips" type="button">我的行程</button>
+        <button id="community-nav-button" class="navigation-item" data-view="community" type="button">社区</button>
       </nav>
       <div class="header-search">
         <label class="visually-hidden" for="destination-search">搜索目的地</label>
@@ -91,7 +91,9 @@
       仍可查看不依赖实时数据的行程框架。
     </section>
 
-    <div class="workspace">
+    <section id="trips-page" class="workspace" hidden aria-labelledby="trips-page-title">
+      <div id="trips-auth-prompt" class="empty-state" hidden></div>
+      <h1 id="trips-page-title">我的行程</h1>
       <aside id="trip-history" class="trip-history" aria-labelledby="history-heading" hidden>
         <div class="section-heading">
           <h2 id="history-heading">我的行程</h2>
@@ -99,7 +101,12 @@
         </div>
         <ul id="trip-history-list" class="history-list" aria-live="polite"></ul>
       </aside>
-    </div>
+    </section>
+
+    <section id="community-page" hidden aria-labelledby="community-page-title">
+      <h1 id="community-page-title">社区</h1>
+      <p class="empty-state">社区功能即将开放。</p>
+    </section>
 
     <aside id="assistant-panel" class="assistant-panel" aria-labelledby="chat-heading" hidden>
       <section id="chat-panel" class="chat-panel" aria-labelledby="chat-heading">
