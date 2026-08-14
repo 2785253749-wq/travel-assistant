@@ -25,7 +25,7 @@ button.secondary { color: var(--brand-dark); background: #e8f2ff; }
 button.danger { background: var(--danger); }
 input, textarea { width: 100%; border: 1px solid #ccd4e0; border-radius: .7rem; padding: .7rem; color: var(--ink); background: #fff; }
 textarea { resize: vertical; }
-button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-visible, h1:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 label { display: block; margin-top: .6rem; font-weight: 700; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: .2rem; font-size: clamp(2rem, 4vw, 3rem); letter-spacing: -.04em; }
@@ -117,7 +117,8 @@ h3 { margin: .05rem 0 .15rem; font-size: 1.05rem; }
 .history-list li > strong { display: block; overflow-wrap: anywhere; }
 .history-list p { margin: .2rem 0; color: var(--muted); }
 .history-list .button-row { margin-top: .7rem; }
-.history-list > button { grid-column: 1 / -1; justify-self: start; }
+.history-list > li.empty-state { grid-column: 1 / -1; }
+.history-list > li.empty-state > button { margin-top: .55rem; }
 .profile-fields { display: grid; grid-template-columns: max-content 1fr; gap: .4rem .8rem; }
 .profile-fields dt { font-weight: 700; }
 .profile-fields dd { margin: 0; overflow-wrap: anywhere; }
@@ -167,7 +168,7 @@ dialog::backdrop { background: rgb(0 0 0 / 45%); }
   .site-header { position: static; }
   .site-header-inner { grid-template-columns: auto 1fr auto; width: min(100% - 1rem, 1480px); min-height: 4.2rem; }
   .main-navigation { gap: .8rem; overflow-x: auto; }
-  .navigation-item { min-height: 4.2rem; font-size: .9rem; }
+  .navigation-item { flex: 0 0 auto; min-height: 4.2rem; font-size: .9rem; white-space: nowrap; }
   .app-shell { width: min(100% - 1rem, 1480px); margin-top: .6rem; }
   #explore-page, #trips-page, #community-page { border-radius: 1.1rem; }
   .explore-heading { display: block; }
@@ -182,7 +183,6 @@ dialog::backdrop { background: rgb(0 0 0 / 45%); }
 
 @media (max-width: 620px) {
   .site-header-inner { grid-template-columns: auto 1fr auto; }
-  .main-navigation .navigation-item:nth-child(3) { display: none; }
   .map-toolbar { align-items: flex-start; flex-direction: column; }
   .city-shortcuts { justify-content: flex-start; }
   .map-stage { min-height: 340px; }

@@ -31,8 +31,9 @@
     providerUpdatedAt: $("provider-updated-at"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"),
-    explorePage: $("explore-page"), tripsPage: $("trips-page"), communityPage: $("community-page"),
+    explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"), communityPage: $("community-page"),
     navigation: [$("explore-nav-button"), $("trips-nav-button"), $("community-nav-button")],
+    viewHeadings: { explore: $("explore-title"), trips: $("trips-page-title"), community: $("community-page-title") },
     exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
     mapBreadcrumb: $("map-breadcrumb"), mapTitle: $("map-title"), exploreShortcuts: $("explore-shortcuts"),
     recommendationsTitle: $("recommendations-title"), recommendationCount: $("recommendation-count"),
@@ -52,6 +53,7 @@
     threadId: makeThreadId(), cityWeather: new Map(), cityWeatherRequests: new Map(), selectedExploreCityId: null,
   };
   let refreshPromise = null;
+  let tripsLoadGeneration = 0;
   let mapExplorer = null;
   let cityWeatherCard = null;
 
@@ -66,8 +68,13 @@
     elements.body.dataset.appState = next;
   }
 
-  async function switchView(view) {
+  function invalidateTripsLoads() {
+    tripsLoadGeneration += 1;
+  }
+
+  async function switchView(view, { focusHeading = false } = {}) {
     if (!VIEWS.has(view)) return;
+    if (state.activeView !== view) invalidateTripsLoads();
     state.activeView = view;
     for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage], ["community", elements.communityPage]]) {
       element.hidden = name !== view;
@@ -78,6 +85,8 @@
       if (active) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
+    elements.exploreOutput.hidden = view !== "explore";
+    if (focusHeading) elements.viewHeadings[view].focus();
     if (view === "trips") await renderTripsPage();
   }
 
@@ -372,11 +381,17 @@
     });
     const payload = await response.json().catch(() => ({}));
     if (response.status === 401) {
-      if (allowRefresh && state.session) {
-        const refreshed = await refreshBrowserSession();
-        if (refreshed) return requestJson(path, options, false);
-      } else if (state.session) {
-        await signOutAndClearSession();
+      const requestIsCurrent = typeof options.isCurrent !== "function" || options.isCurrent();
+      let sessionInvalidated = false;
+      if (requestIsCurrent) {
+        if (allowRefresh && state.session) {
+          const refreshed = await refreshBrowserSession();
+          if (refreshed) return requestJson(path, options, false);
+          sessionInvalidated = !state.session;
+        } else if (state.session) {
+          await signOutAndClearSession();
+          sessionInvalidated = true;
+        }
       }
       const detail = payload && payload.detail;
       const authCode = detail && ["AUTH_REQUIRED", "AUTH_INVALID", "AUTH_UNAVAILABLE"].includes(detail.code)
@@ -384,6 +399,7 @@
       const authError = new Error(authCode);
       authError.code = authCode;
       authError.status = 401;
+      authError.sessionInvalidated = sessionInvalidated;
       throw authError;
     }
     if (!response.ok) {
@@ -805,6 +821,7 @@
   }
 
   function clearSession() {
+    invalidateTripsLoads();
     state.session = null;
     state.user = null;
     clearConversationState({ showWelcome: false });
@@ -854,6 +871,7 @@
   }
 
   function applySession(session, options = {}) {
+    if (options.refreshTrips !== false) invalidateTripsLoads();
     state.session = session;
     state.user = session.user || {};
     if (options.resetConversation) clearConversationState();
@@ -916,12 +934,15 @@
     if (stateName === "loading") {
       appendTextBlock(elements.historyList, "li", "正在加载行程…", "empty-state");
     } else if (stateName === "error") {
-      appendTextBlock(elements.historyList, "li", "行程加载失败，请重试。", "empty-state");
+      const errorItem = document.createElement("li");
+      errorItem.className = "empty-state";
+      appendTextBlock(errorItem, "p", "行程加载失败，请重试。");
       const retry = document.createElement("button");
       retry.type = "button";
       retry.textContent = "重试";
       retry.addEventListener("click", refreshHistory);
-      elements.historyList.append(retry);
+      errorItem.append(retry);
+      elements.historyList.append(errorItem);
     }
   }
 
@@ -936,12 +957,13 @@
   }
 
   async function refreshHistory() {
-    const session = state.session;
-    if (!session || state.activeView !== "trips") return;
+    if (!state.session || state.activeView !== "trips") return;
+    const loadGeneration = ++tripsLoadGeneration;
+    const isCurrentLoad = () => loadGeneration === tripsLoadGeneration && Boolean(state.session) && state.activeView === "trips";
     renderTripsState("loading");
     try {
-      const trips = await requestJson("/api/trips");
-      if (state.session !== session || state.activeView !== "trips") return;
+      const trips = await requestJson("/api/trips", { isCurrent: isCurrentLoad });
+      if (!isCurrentLoad()) return;
       clearChildren(elements.historyList);
       if (!Array.isArray(trips) || trips.length === 0) {
         appendTextBlock(elements.historyList, "li", "还没有保存的行程。", "empty-state");
@@ -949,11 +971,11 @@
       }
       for (const trip of trips) elements.historyList.append(historyItem(trip));
     } catch (error) {
-      if (state.session !== session) {
+      if (error && error.sessionInvalidated) {
         showError(error);
         return;
       }
-      if (state.activeView !== "trips") return;
+      if (!isCurrentLoad()) return;
       renderTripsState("error");
     }
   }
@@ -981,7 +1003,10 @@
     if (!requireAuthentication() || state.busy) return;
     if (operation === "open") {
       setBusy(true, "正在打开行程…");
-      try { renderTrip(await requestJson(`/api/trips/${encodeURIComponent(trip.id)}`)); } catch (error) { showError(error); } finally { setBusy(false); }
+      try {
+        renderTrip(await requestJson(`/api/trips/${encodeURIComponent(trip.id)}`));
+        await switchView("explore", { focusHeading: true });
+      } catch (error) { showError(error); } finally { setBusy(false); }
       return;
     }
     if (operation === "rename") {
@@ -1129,7 +1154,7 @@
   }
 
   elements.chatForm.addEventListener("submit", sendMessage);
-  for (const button of elements.navigation) button.addEventListener("click", () => switchView(button.dataset.view));
+  for (const button of elements.navigation) button.addEventListener("click", () => switchView(button.dataset.view, { focusHeading: true }));
   elements.assistantToggle.addEventListener("click", () => {
     if (state.busy) return;
     const open = elements.assistantPanel.hidden;

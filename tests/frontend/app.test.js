@@ -70,6 +70,80 @@ test("navigation switches between explore, trips, and community without a reload
   assert.equal(harness.elements.get("explore-nav-button").getAttribute("aria-current"), null);
 });
 
+test("user navigation focuses each programmatically focusable view heading", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const exploreTitle = harness.elements.get("explore-title");
+  const tripsTitle = harness.elements.get("trips-page-title");
+  const communityTitle = harness.elements.get("community-page-title");
+  assert.equal(exploreTitle.focused, undefined, "initialization does not steal focus");
+  for (const heading of [exploreTitle, tripsTitle, communityTitle]) {
+    assert.equal(heading.getAttribute("tabindex"), "-1");
+  }
+
+  await harness.elements.get("trips-nav-button").dispatch("click");
+  assert.equal(tripsTitle.focused, true);
+
+  await harness.elements.get("community-nav-button").dispatch("click");
+  assert.equal(communityTitle.focused, true);
+
+  await harness.elements.get("explore-nav-button").dispatch("click");
+  assert.equal(exploreTitle.focused, true);
+});
+
+test("skip link targets a stable focusable main region", () => {
+  const harness = createHarness();
+  const skipLink = harness.elements.get("skip-link");
+  const main = harness.elements.get("main-content");
+
+  assert.ok(skipLink, "skip link has a stable id");
+  assert.ok(main, "main content has a stable id");
+  assert.equal(skipLink.getAttribute("href"), "#main-content");
+  assert.equal(main.getAttribute("tabindex"), "-1");
+});
+
+test("Explore output is hidden with its view without losing generated state", async () => {
+  const harness = createHarness();
+  await settle();
+  const output = harness.elements.get("explore-output");
+  const profile = harness.elements.get("profile-confirmation");
+  const trip = harness.elements.get("trip-view");
+  assert.ok(output, "Explore has a managed output region");
+  profile.hidden = false;
+  trip.hidden = false;
+
+  await harness.elements.get("trips-nav-button").dispatch("click");
+  assert.equal(output.hidden, true);
+  assert.equal(profile.hidden, false);
+  assert.equal(trip.hidden, false);
+
+  await harness.elements.get("explore-nav-button").dispatch("click");
+  assert.equal(output.hidden, false);
+  assert.equal(profile.hidden, false);
+  assert.equal(trip.hidden, false);
+});
+
+test("opening a saved trip moves its generated content into the Explore view", async () => {
+  const savedTrip = { id: "trip-open", title: "厦门周末", profile: {}, itinerary: { title: "厦门周末", days: [] } };
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url === "/api/trips") return jsonResponse(200, [savedTrip]);
+    if (call.url === "/api/trips/trip-open") return jsonResponse(200, savedTrip);
+    return jsonResponse(200, {});
+  } });
+  await settle();
+  await harness.elements.get("trips-nav-button").dispatch("click");
+
+  await findByText(harness.elements.get("trip-history-list"), "打开").dispatch("click");
+
+  assert.equal(harness.elements.get("trips-page").hidden, true);
+  assert.equal(harness.elements.get("explore-page").hidden, false);
+  assert.equal(harness.elements.get("explore-output").hidden, false);
+  assert.equal(harness.elements.get("trip-view").hidden, false);
+  assert.equal(harness.elements.get("explore-title").focused, true);
+});
+
 test("signed-out trips view shows a login prompt instead of requesting private trips", async () => {
   const harness = createHarness();
   await settle();
@@ -129,10 +203,95 @@ test("trips request failure renders a retryable error", async () => {
   await harness.elements.get("trips-nav-button").dispatch("click");
 
   assert.match(harness.elements.get("trip-history-list").textContent, /行程加载失败，请重试。/);
+  assert.ok(
+    harness.elements.get("trip-history-list").children.every((child) => child.tagName === "LI"),
+    "trip history lists contain only li children",
+  );
   await findByText(harness.elements.get("trip-history-list"), "重试").dispatch("click");
 
   assert.equal(attempts, 2);
   assert.match(harness.elements.get("trip-history-list").textContent, /重试后的行程/);
+});
+
+test("newest trips response wins when requests complete out of order", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  let resolveOlder;
+  let resolveNewer;
+  const olderResponse = new Promise((resolve) => { resolveOlder = resolve; });
+  const newerResponse = new Promise((resolve) => { resolveNewer = resolve; });
+  let tripLoads = 0;
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url !== "/api/trips") return jsonResponse(200, {});
+    tripLoads += 1;
+    return tripLoads === 1 ? olderResponse : newerResponse;
+  } });
+  await settle();
+  const tripsNav = harness.elements.get("trips-nav-button");
+
+  const olderLoad = tripsNav.dispatch("click");
+  await settle(1);
+  const newerLoad = tripsNav.dispatch("click");
+  await settle(1);
+  resolveNewer(jsonResponse(200, [{ id: "new", title: "较新的行程" }]));
+  await newerLoad;
+  assert.match(harness.elements.get("trip-history-list").textContent, /较新的行程/);
+
+  resolveOlder(jsonResponse(200, [{ id: "old", title: "过时的行程" }]));
+  await olderLoad;
+  assert.match(harness.elements.get("trip-history-list").textContent, /较新的行程/);
+  assert.doesNotMatch(harness.elements.get("trip-history-list").textContent, /过时的行程/);
+});
+
+test("stale trips authentication failure cannot replace a newer response or sign out", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  let resolveOlder;
+  let resolveNewer;
+  const olderResponse = new Promise((resolve) => { resolveOlder = resolve; });
+  const newerResponse = new Promise((resolve) => { resolveNewer = resolve; });
+  let tripLoads = 0;
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url !== "/api/trips") return jsonResponse(200, {});
+    tripLoads += 1;
+    return tripLoads === 1 ? olderResponse : newerResponse;
+  } });
+  await settle();
+  const tripsNav = harness.elements.get("trips-nav-button");
+
+  const olderLoad = tripsNav.dispatch("click");
+  await settle(1);
+  const newerLoad = tripsNav.dispatch("click");
+  await settle(1);
+  resolveNewer(jsonResponse(200, [{ id: "new", title: "保留的新行程" }]));
+  await newerLoad;
+
+  resolveOlder(jsonResponse(401, { detail: { code: "AUTH_INVALID" } }));
+  await olderLoad;
+  assert.match(harness.elements.get("trip-history-list").textContent, /保留的新行程/);
+  assert.doesNotMatch(harness.elements.get("trip-history-list").textContent, /加载失败/);
+  assert.equal(harness.elements.get("account-summary").hidden, false);
+  assert.equal(auth.refreshCalls, 0);
+});
+
+test("sign-out invalidates a pending trips failure", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  let resolveTrips;
+  const tripsResponse = new Promise((resolve) => { resolveTrips = resolve; });
+  const harness = createHarness({ auth, fetch: async (call) => call.url === "/api/trips"
+    ? tripsResponse
+    : jsonResponse(200, {}) });
+  await settle();
+
+  const pendingLoad = harness.elements.get("trips-nav-button").dispatch("click");
+  await settle(1);
+  auth.emit("SIGNED_OUT", null);
+  await settle(1);
+  const statusBeforeResponse = harness.elements.get("status-message").textContent;
+  resolveTrips(jsonResponse(401, { detail: { code: "AUTH_INVALID" } }));
+  await pendingLoad;
+
+  assert.equal(harness.elements.get("trips-auth-prompt").hidden, false);
+  assert.equal(harness.document.body.dataset.appState, "signed_out");
+  assert.equal(harness.elements.get("status-message").textContent, statusBeforeResponse);
 });
 
 test("mouse drag handle moves the open assistant and clamps it within 12px viewport margins", async () => {

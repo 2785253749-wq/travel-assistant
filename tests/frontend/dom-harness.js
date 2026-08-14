@@ -120,6 +120,10 @@ function buildDocument(html) {
       element.dataset[name] = dataAttribute[2];
     }
     for (const attribute of match[2].matchAll(/\b(aria-[\w-]+)="([^"]*)"/gi)) element.setAttribute(attribute[1], attribute[2]);
+    for (const attributeName of ["href", "tabindex"]) {
+      const attribute = new RegExp(`\\b${attributeName}="([^"]*)"`, "i").exec(match[2]);
+      if (attribute) element.setAttribute(attributeName, attribute[1]);
+    }
     const type = /\btype="([^"]+)"/i.exec(match[2]);
     if (type) element.type = type[1];
     elements.set(element.id, element);
@@ -129,7 +133,8 @@ function buildDocument(html) {
   const head = new FakeElement("head", "head");
   const parents = {
     "chat-messages": "chat-panel", "chat-form": "chat-panel", "trip-history-list": "trip-history", "trip-history": "trips-page",
-    "profile-fields": "profile-confirmation", "trip-content": "trip-view", "trip-actions": "trip-view",
+    "profile-confirmation": "explore-output", "trip-view": "explore-output", "profile-fields": "profile-confirmation",
+    "trip-content": "trip-view", "trip-actions": "trip-view",
     "share-link": "share-dialog", "share-expiry": "share-dialog", "rename-input": "rename-dialog",
   };
   for (const [childId, parentId] of Object.entries(parents)) elements.get(parentId).append(elements.get(childId));

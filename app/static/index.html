@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body data-app-state="signed_out">
-  <a class="skip-link" href="#explore-page">跳到探索内容</a>
+  <a id="skip-link" class="skip-link" href="#main-content">跳到主要内容</a>
 
   <header class="site-header">
     <div class="site-header-inner">
@@ -48,12 +48,12 @@
     </div>
   </header>
 
-  <main class="app-shell">
+  <main id="main-content" class="app-shell" tabindex="-1">
     <section id="explore-page" class="explore-page" aria-labelledby="explore-title">
       <div class="explore-heading">
         <div>
           <p class="eyebrow">发现下一段旅程</p>
-          <h1 id="explore-title">探索中国</h1>
+          <h1 id="explore-title" tabindex="-1">探索中国</h1>
           <p>从福建与云南开始，按省份、城市逐层发现热门目的地。</p>
         </div>
         <p id="explore-status" class="explore-status" role="status" aria-live="polite">地图已就绪，可选择试点省份。</p>
@@ -96,7 +96,7 @@
         <p>登录后即可查看和管理你的私有行程。</p>
         <button id="trips-login-button" type="button">去登录</button>
       </div>
-      <h1 id="trips-page-title">我的行程</h1>
+      <h1 id="trips-page-title" tabindex="-1">我的行程</h1>
       <aside id="trip-history" class="trip-history" aria-labelledby="history-heading" hidden>
         <div class="section-heading">
           <h2 id="history-heading">我的行程</h2>
@@ -107,7 +107,7 @@
     </section>
 
     <section id="community-page" hidden aria-labelledby="community-page-title">
-      <h1 id="community-page-title">社区</h1>
+      <h1 id="community-page-title" tabindex="-1">社区</h1>
       <p class="empty-state">社区功能即将开放。</p>
     </section>
 
@@ -138,29 +138,31 @@
       </section>
     </aside>
 
-    <section id="profile-confirmation" class="profile-card" aria-labelledby="profile-title" hidden>
-      <h2 id="profile-title">确认旅行资料</h2>
-      <p>请核对以下资料；确认后才查看生成的规划。</p>
-      <dl id="profile-fields" class="profile-fields"></dl>
-      <div class="button-row">
-        <button id="confirm-profile-button" type="button">确认资料</button>
-        <button id="edit-profile-button" type="button" class="secondary">继续修改</button>
-      </div>
-    </section>
+    <div id="explore-output">
+      <section id="profile-confirmation" class="profile-card" aria-labelledby="profile-title" hidden>
+        <h2 id="profile-title">确认旅行资料</h2>
+        <p>请核对以下资料；确认后才查看生成的规划。</p>
+        <dl id="profile-fields" class="profile-fields"></dl>
+        <div class="button-row">
+          <button id="confirm-profile-button" type="button">确认资料</button>
+          <button id="edit-profile-button" type="button" class="secondary">继续修改</button>
+        </div>
+      </section>
 
-    <section id="trip-view" class="trip-view" aria-labelledby="trip-title" hidden>
-      <div class="section-heading trip-heading">
-        <div>
-          <p class="eyebrow">行程建议</p>
-          <h2 id="trip-title">你的行程</h2>
+      <section id="trip-view" class="trip-view" aria-labelledby="trip-title" hidden>
+        <div class="section-heading trip-heading">
+          <div>
+            <p class="eyebrow">行程建议</p>
+            <h2 id="trip-title">你的行程</h2>
+          </div>
+          <div id="trip-actions" class="button-row" hidden>
+            <button id="save-trip-button" type="button">保存行程</button>
+            <button id="share-trip-button" type="button" class="secondary">分享</button>
+          </div>
         </div>
-        <div id="trip-actions" class="button-row" hidden>
-          <button id="save-trip-button" type="button">保存行程</button>
-          <button id="share-trip-button" type="button" class="secondary">分享</button>
-        </div>
-      </div>
-      <div id="trip-content"></div>
-    </section>
+        <div id="trip-content"></div>
+      </section>
+    </div>
 
     <button id="assistant-toggle" class="assistant-toggle" type="button" aria-controls="assistant-panel" aria-expanded="false">
       <span aria-hidden="true">✦</span><span id="assistant-toggle-label">打开 AI 助手</span>
