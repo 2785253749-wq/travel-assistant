@@ -53,6 +53,7 @@
     threadId: makeThreadId(), cityWeather: new Map(), cityWeatherRequests: new Map(), selectedExploreCityId: null,
   };
   let authGeneration = 0;
+  let sessionRevision = 0;
   let refreshRequest = null;
   let tripsLoadGeneration = 0;
   let mapExplorer = null;
@@ -83,6 +84,16 @@
     const currentUserId = stableUserId(currentSession);
     const nextUserId = stableUserId(nextSession);
     return !currentUserId || !nextUserId || currentUserId !== nextUserId;
+  }
+
+  function sessionsShareAccessToken(left, right) {
+    return Boolean(left && right && typeof left.access_token === "string" && left.access_token
+      && left.access_token === right.access_token);
+  }
+
+  function sessionsShareTokens(left, right) {
+    return sessionsShareAccessToken(left, right) && typeof left.refresh_token === "string"
+      && left.refresh_token && left.refresh_token === right.refresh_token;
   }
 
   async function switchView(view, { focusHeading = false } = {}) {
@@ -387,17 +398,32 @@
     return { ...headers, Authorization: `Bearer ${state.session.access_token}` };
   }
 
+  function requestCurrencyIsCurrent(currency) {
+    return currency.callerIsCurrent() && (currency.generation === null || (
+      currency.generation === authGeneration && currency.revision === sessionRevision
+      && Boolean(state.session) && stableUserId(state.session) === currency.userId
+    ));
+  }
+
+  function currencyAtRevision(currency, revision) {
+    const next = { ...currency, allowRefresh: false, revision };
+    next.isCurrent = () => requestCurrencyIsCurrent(next);
+    return next;
+  }
+
   function captureRequestCurrency(options) {
-    const callerIsCurrent = typeof options.isCurrent === "function" ? options.isCurrent : () => true;
     const generation = state.session ? authGeneration : null;
+    const revision = generation === null ? null : sessionRevision;
     const userId = generation === null ? null : stableUserId(state.session);
-    return {
+    const currency = {
       allowRefresh: true,
+      callerIsCurrent: typeof options.isCurrent === "function" ? options.isCurrent : () => true,
       generation,
-      isCurrent: () => callerIsCurrent() && (generation === null || (
-        generation === authGeneration && Boolean(state.session) && stableUserId(state.session) === userId
-      )),
+      revision,
+      userId,
     };
+    currency.isCurrent = () => requestCurrencyIsCurrent(currency);
+    return currency;
   }
 
   function staleRequestError() {
@@ -439,8 +465,11 @@
         const refreshResult = await refreshBrowserSession(currency);
         sessionInvalidated = refreshResult.sessionInvalidated;
         if (sessionInvalidated) throw authenticationError(payload, true);
+        if (refreshResult.refreshed) {
+          if (!refreshResult.currency.isCurrent()) throw staleRequestError();
+          return requestJson(path, options, refreshResult.currency);
+        }
         if (!currency.isCurrent()) throw staleRequestError();
-        if (refreshResult.refreshed) return requestJson(path, options, { ...currency, allowRefresh: false });
         sessionInvalidated = !state.session;
       } else if (state.session) {
         sessionInvalidated = await signOutAndClearSession(currency.isCurrent);
@@ -883,6 +912,7 @@
 
   function clearSession() {
     authGeneration += 1;
+    sessionRevision += 1;
     state.session = null;
     state.user = null;
     clearAccountScopedState({ showWelcome: false });
@@ -925,7 +955,9 @@
 
   function applySession(session, options = {}) {
     const identityChanged = identitiesDiffer(state.session, session);
+    const tokensChanged = !sessionsShareTokens(state.session, session);
     const refreshTrips = identityChanged || options.refreshTrips !== false;
+    if (tokensChanged) sessionRevision += 1;
     if (identityChanged) {
       authGeneration += 1;
       clearAccountScopedState();
@@ -949,8 +981,15 @@
       return { refreshed: false, sessionInvalidated: false };
     }
     let request = refreshRequest;
-    if (!request || request.generation !== currency.generation) {
-      request = { generation: currency.generation, promise: null };
+    if (!request || request.generation !== currency.generation || request.revision !== currency.revision) {
+      request = {
+        acceptedRevision: null,
+        generation: currency.generation,
+        promise: null,
+        revision: currency.revision,
+        userId: currency.userId,
+      };
+      refreshRequest = request;
       request.promise = (async () => {
         try {
           return await state.authClient.auth.refreshSession();
@@ -960,19 +999,42 @@
       })().finally(() => {
         if (refreshRequest === request) refreshRequest = null;
       });
-      refreshRequest = request;
     }
     const { data, error } = await request.promise;
-    if (!currency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
     if (error || !data || !data.session) {
       if (!currency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
       const sessionInvalidated = await signOutAndClearSession(currency.isCurrent);
       return { refreshed: false, sessionInvalidated };
     }
-    if (!currency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
+
+    if (request.acceptedRevision !== null) {
+      const nextCurrency = currencyAtRevision(currency, request.acceptedRevision);
+      if (!nextCurrency.isCurrent() || !sessionsShareAccessToken(state.session, data.session)) {
+        return { refreshed: false, sessionInvalidated: false };
+      }
+      return { refreshed: true, sessionInvalidated: false, currency: nextCurrency };
+    }
+
+    if (!currency.isCurrent()) {
+      const resultAlreadyCurrent = request.generation === authGeneration
+        && request.userId === stableUserId(state.session)
+        && sessionsShareAccessToken(state.session, data.session);
+      if (!resultAlreadyCurrent) return { refreshed: false, sessionInvalidated: false };
+      request.acceptedRevision = sessionRevision;
+      const nextCurrency = currencyAtRevision(currency, request.acceptedRevision);
+      if (!nextCurrency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
+      return { refreshed: true, sessionInvalidated: false, currency: nextCurrency };
+    }
+
     applySession(data.session, { refreshTrips: false });
-    if (!currency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
-    return { refreshed: true, sessionInvalidated: false };
+    if (request.generation !== authGeneration || request.userId !== stableUserId(state.session)
+      || !sessionsShareAccessToken(state.session, data.session)) {
+      return { refreshed: false, sessionInvalidated: false };
+    }
+    request.acceptedRevision = sessionRevision;
+    const nextCurrency = currencyAtRevision(currency, request.acceptedRevision);
+    if (!nextCurrency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
+    return { refreshed: true, sessionInvalidated: false, currency: nextCurrency };
   }
 
   async function signOutAndClearSession(isCurrent = () => true) {

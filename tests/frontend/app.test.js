@@ -6,6 +6,7 @@ const { FakeElement, FakeSupabaseAuth, createHarness, descendants, findByText, j
 
 const SESSION = { access_token: "access-one", refresh_token: "refresh-one", expires_at: 2000000000, user: { id: "user-a", email: "owner@example.test" } };
 const REFRESHED = { access_token: "access-two", refresh_token: "refresh-two", expires_at: 2000003600, user: { id: "user-a", email: "owner@example.test" } };
+const CURRENT_SESSION = { access_token: "access-current", refresh_token: "refresh-current", expires_at: 2000007200, user: { id: "user-a", email: "current@example.test" } };
 const OTHER_SESSION = { access_token: "access-other", refresh_token: "refresh-other", expires_at: 2000007200, user: { id: "user-b", email: "other@example.test" } };
 
 function observeHidden(element, label, events) {
@@ -91,6 +92,14 @@ test("user navigation focuses each programmatically focusable view heading", asy
 
   await harness.elements.get("explore-nav-button").dispatch("click");
   assert.equal(exploreTitle.focused, true);
+});
+
+test("signed-out Trips heading precedes its primary login action in DOM order", () => {
+  const harness = createHarness();
+  const heading = harness.elements.get("trips-page-title");
+  const login = harness.elements.get("trips-login-button");
+
+  assert.ok(harness.created.indexOf(heading) < harness.created.indexOf(login));
 });
 
 test("brand link returns to Explore through SPA navigation and focuses its heading", async () => {
@@ -337,10 +346,6 @@ test("stale trips authentication failure cannot replace a newer response or sign
 });
 
 test("stale deferred Trips refresh cannot mutate the session or newer result", async (t) => {
-  const currentSession = {
-    access_token: "access-current", refresh_token: "refresh-current", expires_at: 2000007200,
-    user: { id: "user-a", email: "current@example.test" },
-  };
   const scenarios = [
     { name: "obsolete refresh succeeds", result: { data: { session: REFRESHED }, error: null } },
     { name: "obsolete refresh fails", result: { data: { session: null }, error: new Error("refresh failed") } },
@@ -369,7 +374,7 @@ test("stale deferred Trips refresh cannot mutate the session or newer result", a
       assert.equal(auth.refreshCalls, 1);
       assert.equal(typeof resolveRefresh, "function");
 
-      auth.emit("TOKEN_REFRESHED", currentSession);
+      auth.emit("TOKEN_REFRESHED", CURRENT_SESSION);
       await settle();
       assert.equal(tripLoads, 2);
       assert.match(harness.elements.get("trip-history-list").textContent, /当前账户的新行程/);
@@ -1101,6 +1106,209 @@ test("a private API 401 refreshes once and retries with the new Authorization to
   assert.equal(harness.fetchCalls[0].options.headers.Authorization, "Bearer access-one");
   assert.equal(harness.fetchCalls[1].options.headers.Authorization, "Bearer access-two");
   assert.equal(harness.elements.get("account-summary").hidden, false);
+});
+
+test("the token event emitted by the current refresh still allows its chat retry", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  auth.refreshSession = async () => {
+    auth.refreshCalls += 1;
+    auth.session = REFRESHED;
+    auth.emit("TOKEN_REFRESHED", REFRESHED);
+    return { data: { session: REFRESHED }, error: null };
+  };
+  let chatCalls = 0;
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url !== "/api/chat") return jsonResponse(200, {});
+    chatCalls += 1;
+    return chatCalls === 1
+      ? jsonResponse(401, { detail: { code: "AUTH_INVALID" } })
+      : jsonResponse(200, { reply: "刷新后继续", stage: "collecting", profile: {} });
+  } });
+  await settle();
+
+  harness.elements.get("message-input").value = "需要刷新";
+  await harness.elements.get("chat-form").dispatch("submit");
+
+  assert.equal(auth.refreshCalls, 1);
+  assert.equal(chatCalls, 2);
+  assert.equal(harness.fetchCalls.at(-1).options.headers.Authorization, "Bearer access-two");
+  assert.match(harness.elements.get("chat-messages").textContent, /刷新后继续/);
+});
+
+test("a matching token event arriving during the current refresh retry keeps that retry current", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  auth.refreshSession = async () => {
+    auth.refreshCalls += 1;
+    auth.session = REFRESHED;
+    setImmediate(() => auth.emit("TOKEN_REFRESHED", REFRESHED));
+    return { data: { session: REFRESHED }, error: null };
+  };
+  let chatCalls = 0;
+  let resolveRetry;
+  const retryResponse = new Promise((resolve) => { resolveRetry = resolve; });
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url !== "/api/chat") return jsonResponse(200, {});
+    chatCalls += 1;
+    return chatCalls === 1
+      ? jsonResponse(401, { detail: { code: "AUTH_INVALID" } })
+      : retryResponse;
+  } });
+  await settle();
+
+  harness.elements.get("message-input").value = "等待刷新回调";
+  const chatRequest = harness.elements.get("chat-form").dispatch("submit");
+  await settle(2);
+  resolveRetry(jsonResponse(200, { reply: "当前刷新回复", stage: "collecting", profile: {} }));
+  await chatRequest;
+
+  assert.equal(auth.refreshCalls, 1);
+  assert.equal(chatCalls, 2);
+  assert.equal(auth.signOutCalls, 0);
+  assert.match(harness.elements.get("chat-messages").textContent, /当前刷新回复/);
+});
+
+test("same-session authenticated callers share one refresh and both retry", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  let resolveRefresh;
+  auth.refreshSession = async () => {
+    auth.refreshCalls += 1;
+    return new Promise((resolve) => { resolveRefresh = resolve; });
+  };
+  let chatCalls = 0;
+  let tripCalls = 0;
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url === "/api/chat") {
+      chatCalls += 1;
+      return chatCalls === 1
+        ? jsonResponse(401, { detail: { code: "AUTH_INVALID" } })
+        : jsonResponse(200, { reply: "刷新后的回复", stage: "collecting", profile: {} });
+    }
+    if (call.url === "/api/trips") {
+      tripCalls += 1;
+      return tripCalls === 1
+        ? jsonResponse(401, { detail: { code: "AUTH_INVALID" } })
+        : jsonResponse(200, []);
+    }
+    return jsonResponse(200, {});
+  } });
+  await settle();
+
+  const tripsLoad = harness.elements.get("trips-nav-button").dispatch("click");
+  await settle(1);
+  harness.elements.get("message-input").value = "并发请求";
+  const chatRequest = harness.elements.get("chat-form").dispatch("submit");
+  await settle(1);
+
+  assert.equal(auth.refreshCalls, 1);
+  resolveRefresh({ data: { session: REFRESHED }, error: null });
+  await Promise.all([tripsLoad, chatRequest]);
+
+  assert.equal(auth.refreshCalls, 1);
+  assert.equal(tripCalls, 2);
+  assert.equal(chatCalls, 2);
+  assert.equal(harness.fetchCalls.filter((call) => call.url === "/api/trips").at(-1).options.headers.Authorization, "Bearer access-two");
+  assert.equal(harness.fetchCalls.filter((call) => call.url === "/api/chat").at(-1).options.headers.Authorization, "Bearer access-two");
+});
+
+test("a newer same-user token event invalidates a stale chat refresh success", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  let resolveRefresh;
+  auth.refreshSession = async () => {
+    auth.refreshCalls += 1;
+    return new Promise((resolve) => { resolveRefresh = resolve; });
+  };
+  let chatCalls = 0;
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url !== "/api/chat") return jsonResponse(200, {});
+    chatCalls += 1;
+    if (chatCalls === 1) return jsonResponse(401, { detail: { code: "AUTH_INVALID" } });
+    const current = call.options.headers.Authorization === "Bearer access-current";
+    return jsonResponse(200, { reply: current ? "当前会话回复" : "过时刷新回复", stage: "collecting", profile: {} });
+  } });
+  await settle();
+
+  harness.elements.get("message-input").value = "触发旧刷新";
+  const staleChat = harness.elements.get("chat-form").dispatch("submit");
+  await settle(1);
+  assert.equal(auth.refreshCalls, 1);
+
+  auth.session = CURRENT_SESSION;
+  auth.emit("TOKEN_REFRESHED", CURRENT_SESSION);
+  resolveRefresh({ data: { session: REFRESHED }, error: null });
+  await staleChat;
+  await settle();
+
+  assert.equal(chatCalls, 1, "the stale request must not retry");
+  assert.equal(auth.signOutCalls, 0);
+  assert.equal(harness.elements.get("account-email").textContent, "current@example.test");
+  assert.doesNotMatch(harness.elements.get("chat-messages").textContent, /过时刷新回复/);
+
+  harness.elements.get("message-input").value = "使用当前令牌";
+  await harness.elements.get("chat-form").dispatch("submit");
+  assert.equal(harness.fetchCalls.at(-1).options.headers.Authorization, "Bearer access-current");
+  assert.match(harness.elements.get("chat-messages").textContent, /当前会话回复/);
+});
+
+test("a newer same-user token event invalidates a stale chat refresh failure", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  let resolveRefresh;
+  auth.refreshSession = async () => {
+    auth.refreshCalls += 1;
+    return new Promise((resolve) => { resolveRefresh = resolve; });
+  };
+  const harness = createHarness({ auth, fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(401, { detail: { code: "AUTH_INVALID" } })
+    : jsonResponse(200, {}) });
+  await settle();
+
+  harness.elements.get("message-input").value = "触发失败刷新";
+  const staleChat = harness.elements.get("chat-form").dispatch("submit");
+  await settle(1);
+  assert.equal(auth.refreshCalls, 1);
+
+  auth.session = CURRENT_SESSION;
+  auth.emit("TOKEN_REFRESHED", CURRENT_SESSION);
+  resolveRefresh({ data: { session: null }, error: new Error("refresh failed") });
+  await staleChat;
+  await settle();
+
+  assert.equal(auth.signOutCalls, 0);
+  assert.equal(harness.elements.get("account-summary").hidden, false);
+  assert.equal(harness.elements.get("auth-form").hidden, true);
+  assert.equal(harness.elements.get("account-email").textContent, "current@example.test");
+  assert.equal(harness.document.body.dataset.appState, "collecting");
+});
+
+test("a newer same-user token event blocks an older chat success consumer", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  let resolveOlderChat;
+  const olderChat = new Promise((resolve) => { resolveOlderChat = resolve; });
+  let chatCalls = 0;
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url !== "/api/chat") return jsonResponse(200, {});
+    chatCalls += 1;
+    return chatCalls === 1
+      ? olderChat
+      : jsonResponse(200, { reply: "当前会话回复", stage: "collecting", profile: {} });
+  } });
+  await settle();
+
+  harness.elements.get("message-input").value = "等待旧回复";
+  const staleChat = harness.elements.get("chat-form").dispatch("submit");
+  await settle(1);
+
+  auth.session = CURRENT_SESSION;
+  auth.emit("TOKEN_REFRESHED", CURRENT_SESSION);
+  resolveOlderChat(jsonResponse(200, { reply: "过时会话回复", stage: "collecting", profile: {} }));
+  await staleChat;
+
+  assert.doesNotMatch(harness.elements.get("chat-messages").textContent, /过时会话回复/);
+  assert.equal(harness.elements.get("account-email").textContent, "current@example.test");
+
+  harness.elements.get("message-input").value = "读取当前回复";
+  await harness.elements.get("chat-form").dispatch("submit");
+  assert.equal(harness.fetchCalls.at(-1).options.headers.Authorization, "Bearer access-current");
+  assert.match(harness.elements.get("chat-messages").textContent, /当前会话回复/);
 });
 
 test("a retry that is still 401 signs out and clears the restored session", async () => {
