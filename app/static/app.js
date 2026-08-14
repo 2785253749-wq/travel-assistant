@@ -381,16 +381,18 @@
     });
     const payload = await response.json().catch(() => ({}));
     if (response.status === 401) {
-      const requestIsCurrent = typeof options.isCurrent !== "function" || options.isCurrent();
+      const requestIsCurrent = typeof options.isCurrent === "function" ? options.isCurrent : () => true;
       let sessionInvalidated = false;
-      if (requestIsCurrent) {
+      if (requestIsCurrent()) {
         if (allowRefresh && state.session) {
-          const refreshed = await refreshBrowserSession();
-          if (refreshed) return requestJson(path, options, false);
-          sessionInvalidated = !state.session;
-        } else if (state.session) {
-          await signOutAndClearSession();
-          sessionInvalidated = true;
+          const refreshResult = await refreshBrowserSession(requestIsCurrent);
+          sessionInvalidated = refreshResult.sessionInvalidated;
+          if (requestIsCurrent()) {
+            if (refreshResult.refreshed && requestIsCurrent()) return requestJson(path, options, false);
+            sessionInvalidated = sessionInvalidated || !state.session;
+          }
+        } else if (state.session && requestIsCurrent()) {
+          sessionInvalidated = await signOutAndClearSession(requestIsCurrent);
         }
       }
       const detail = payload && payload.detail;
@@ -884,37 +886,46 @@
     if (state.activeView === "trips" && options.refreshTrips !== false) return renderTripsPage();
   }
 
-  async function refreshBrowserSession() {
-    if (!state.authClient) return false;
+  async function refreshBrowserSession(isCurrent = () => true) {
+    if (!state.authClient || !isCurrent()) return { refreshed: false, sessionInvalidated: false };
     if (!refreshPromise) {
       refreshPromise = (async () => {
         try {
-          const { data, error } = await state.authClient.auth.refreshSession();
-          if (error || !data || !data.session) {
-            await signOutAndClearSession();
-            return false;
-          }
-          await applySession(data.session, { refreshTrips: false });
-          return true;
-        } catch (_) {
-          await signOutAndClearSession();
-          return false;
+          return await state.authClient.auth.refreshSession();
+        } catch (error) {
+          return { data: null, error };
         }
       })().finally(() => { refreshPromise = null; });
     }
-    return refreshPromise;
+    const { data, error } = await refreshPromise;
+    if (!isCurrent()) return { refreshed: false, sessionInvalidated: false };
+    if (error || !data || !data.session) {
+      if (!isCurrent()) return { refreshed: false, sessionInvalidated: false };
+      const sessionInvalidated = await signOutAndClearSession(isCurrent);
+      return { refreshed: false, sessionInvalidated };
+    }
+    if (!isCurrent()) return { refreshed: false, sessionInvalidated: false };
+    applySession(data.session, { refreshTrips: false });
+    return { refreshed: true, sessionInvalidated: false };
   }
 
-  async function signOutAndClearSession() {
+  async function signOutAndClearSession(isCurrent = () => true) {
+    if (!isCurrent()) return false;
+    let cleared = false;
     try {
       if (state.authClient && state.authClient.auth && typeof state.authClient.auth.signOut === "function") {
+        if (!isCurrent()) return false;
         await state.authClient.auth.signOut();
       }
     } catch (_) {
       // Local privacy cleanup is mandatory even if the SDK cannot reach auth.
     } finally {
-      clearSession();
+      if (isCurrent()) {
+        clearSession();
+        cleared = true;
+      }
     }
+    return cleared || !state.session;
   }
 
   function requireAuthentication() {

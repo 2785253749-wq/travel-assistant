@@ -272,6 +272,62 @@ test("stale trips authentication failure cannot replace a newer response or sign
   assert.equal(auth.refreshCalls, 0);
 });
 
+test("stale deferred Trips refresh cannot mutate the session or newer result", async (t) => {
+  const currentSession = {
+    access_token: "access-current", refresh_token: "refresh-current", expires_at: 2000007200,
+    user: { email: "current@example.test" },
+  };
+  const scenarios = [
+    { name: "obsolete refresh succeeds", result: { data: { session: REFRESHED }, error: null } },
+    { name: "obsolete refresh fails", result: { data: { session: null }, error: new Error("refresh failed") } },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+      let resolveRefresh;
+      auth.refreshSession = async () => {
+        auth.refreshCalls += 1;
+        return new Promise((resolve) => { resolveRefresh = resolve; });
+      };
+      let tripLoads = 0;
+      const harness = createHarness({ auth, fetch: async (call) => {
+        if (call.url !== "/api/trips") return jsonResponse(200, {});
+        tripLoads += 1;
+        return tripLoads === 1
+          ? jsonResponse(401, { detail: { code: "AUTH_INVALID" } })
+          : jsonResponse(200, [{ id: "current", title: "当前账户的新行程" }]);
+      } });
+      await settle();
+
+      const staleLoad = harness.elements.get("trips-nav-button").dispatch("click");
+      await settle(1);
+      assert.equal(auth.refreshCalls, 1);
+      assert.equal(typeof resolveRefresh, "function");
+
+      auth.emit("TOKEN_REFRESHED", currentSession);
+      await settle();
+      assert.equal(tripLoads, 2);
+      assert.match(harness.elements.get("trip-history-list").textContent, /当前账户的新行程/);
+
+      resolveRefresh(scenario.result);
+      await staleLoad;
+      await settle();
+
+      assert.equal(tripLoads, 2, "the stale request must not retry");
+      assert.equal(auth.signOutCalls, 0);
+      assert.equal(harness.elements.get("account-summary").hidden, false);
+      assert.equal(harness.elements.get("account-email").textContent, "current@example.test");
+      assert.match(harness.elements.get("trip-history-list").textContent, /当前账户的新行程/);
+      assert.doesNotMatch(harness.elements.get("trip-history-list").textContent, /加载失败/);
+
+      await harness.elements.get("trips-nav-button").dispatch("click");
+      assert.equal(tripLoads, 3);
+      assert.equal(harness.fetchCalls.at(-1).options.headers.Authorization, "Bearer access-current");
+    });
+  }
+});
+
 test("sign-out invalidates a pending trips failure", async () => {
   const auth = new FakeSupabaseAuth({ initialSession: SESSION });
   let resolveTrips;
