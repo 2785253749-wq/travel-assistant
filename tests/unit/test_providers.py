@@ -292,6 +292,23 @@ def test_weather_uses_provider_geocoding_for_the_requested_destination() -> None
     assert parse_qs(urlparse(str(transport.requests[1].url)).query)["latitude"] == ["31.2304"]
 
 
+def test_weather_retries_trial_city_geocoding_with_an_english_alias() -> None:
+    transport = RecordingTransport([
+        json_response({"results": []}),
+        json_response({"results": [{"latitude": 24.4798, "longitude": 118.0894}]}),
+        json_response({"daily": {"temperature_2m_max": [32], "temperature_2m_min": [26]}}),
+    ])
+    provider = WeatherProvider(client=httpx.Client(transport=transport))
+
+    result = provider.forecast("厦门", date(2026, 8, 1), date(2026, 8, 1))
+
+    assert result.data is not None
+    assert [
+        parse_qs(urlparse(str(request.url)).query)["name"]
+        for request in transport.requests[:2]
+    ] == [["厦门"], ["Xiamen"]]
+
+
 def test_booking_links_are_allowlisted_encoded_search_jumps_with_disclaimer() -> None:
     profile = TravelProfile(
         origin="上海?x=1", destination="杭州&redirect=https://evil.example",
