@@ -70,6 +70,71 @@ test("navigation switches between explore, trips, and community without a reload
   assert.equal(harness.elements.get("explore-nav-button").getAttribute("aria-current"), null);
 });
 
+test("signed-out trips view shows a login prompt instead of requesting private trips", async () => {
+  const harness = createHarness();
+  await settle();
+
+  await harness.elements.get("trips-nav-button").dispatch("click");
+
+  assert.equal(harness.elements.get("trips-auth-prompt").hidden, false);
+  assert.equal(harness.elements.get("trip-history").hidden, true);
+  assert.equal(harness.fetchCalls.some((call) => call.url === "/api/trips"), false);
+});
+
+test("trips login prompt opens the account menu and focuses the email field", async () => {
+  const harness = createHarness();
+  await settle();
+  await harness.elements.get("trips-nav-button").dispatch("click");
+
+  await harness.elements.get("trips-login-button").dispatch("click");
+
+  assert.equal(harness.elements.get("account-menu").open, true);
+  assert.equal(harness.elements.get("email").focused, true);
+});
+
+test("signed-in trips view renders the empty and populated states", async () => {
+  const emptyAuth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const emptyHarness = createHarness({
+    auth: emptyAuth,
+    fetch: async (call) => call.url === "/api/trips" ? jsonResponse(200, []) : jsonResponse(200, {}),
+  });
+  await settle();
+  await emptyHarness.elements.get("trips-nav-button").dispatch("click");
+
+  assert.match(emptyHarness.elements.get("trip-history-list").textContent, /还没有保存的行程。/);
+
+  const populatedAuth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const populatedHarness = createHarness({
+    auth: populatedAuth,
+    fetch: async (call) => call.url === "/api/trips"
+      ? jsonResponse(200, [{ id: "trip-1", title: "厦门三日游", updated_at: "2026-08-14T00:00:00Z" }])
+      : jsonResponse(200, {}),
+  });
+  await settle();
+  await populatedHarness.elements.get("trips-nav-button").dispatch("click");
+
+  assert.match(populatedHarness.elements.get("trip-history-list").textContent, /厦门三日游/);
+  assert.equal(populatedHarness.elements.get("trips-auth-prompt").hidden, true);
+});
+
+test("trips request failure renders a retryable error", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  let attempts = 0;
+  const harness = createHarness({ auth, fetch: async (call) => call.url === "/api/trips"
+    ? (attempts += 1) === 1
+      ? jsonResponse(503, { detail: { code: "REQUEST_FAILED" } })
+      : jsonResponse(200, [{ id: "trip-2", title: "重试后的行程", updated_at: "2026-08-14T00:00:00Z" }])
+    : jsonResponse(200, {}) });
+  await settle();
+  await harness.elements.get("trips-nav-button").dispatch("click");
+
+  assert.match(harness.elements.get("trip-history-list").textContent, /行程加载失败，请重试。/);
+  await findByText(harness.elements.get("trip-history-list"), "重试").dispatch("click");
+
+  assert.equal(attempts, 2);
+  assert.match(harness.elements.get("trip-history-list").textContent, /重试后的行程/);
+});
+
 test("mouse drag handle moves the open assistant and clamps it within 12px viewport margins", async () => {
   const harness = createHarness();
   await settle();
@@ -663,6 +728,7 @@ test("a private API 401 refreshes once and retries with the new Authorization to
     return privateCalls === 1 ? jsonResponse(401, { detail: { code: "AUTH_INVALID" } }) : jsonResponse(200, []);
   } });
   await settle();
+  await harness.elements.get("trips-nav-button").dispatch("click");
 
   assert.equal(auth.refreshCalls, 1);
   assert.equal(privateCalls, 2);
@@ -675,6 +741,7 @@ test("a retry that is still 401 signs out and clears the restored session", asyn
   const successfulAuth = new FakeSupabaseAuth({ initialSession: SESSION, refreshedSession: REFRESHED });
   const signedOutAfterRetry = createHarness({ auth: successfulAuth, fetch: async () => jsonResponse(401, { detail: { code: "AUTH_INVALID" } }) });
   await settle();
+  await signedOutAfterRetry.elements.get("trips-nav-button").dispatch("click");
   assert.equal(successfulAuth.refreshCalls, 1);
   assert.equal(successfulAuth.signOutCalls, 1);
   assert.equal(signedOutAfterRetry.fetchCalls.filter((call) => call.url === "/api/trips").length, 2);
@@ -686,6 +753,7 @@ test("refresh failure signs out and clears the restored session", async () => {
   const failedAuth = new FakeSupabaseAuth({ initialSession: SESSION, refreshedSession: null });
   const signedOut = createHarness({ auth: failedAuth, fetch: async () => jsonResponse(401, { detail: { code: "AUTH_INVALID" } }) });
   await settle();
+  await signedOut.elements.get("trips-nav-button").dispatch("click");
   assert.equal(failedAuth.refreshCalls, 1);
   assert.equal(failedAuth.signOutCalls, 1);
   assert.equal(signedOut.elements.get("account-summary").hidden, true);
@@ -697,6 +765,7 @@ test("refresh exception signs out and clears the restored session", async () => 
   auth.refreshSession = async () => { auth.refreshCalls += 1; throw new Error("sdk refresh exploded"); };
   const harness = createHarness({ auth, fetch: async () => jsonResponse(401, { detail: { code: "AUTH_INVALID" } }) });
   await settle();
+  await harness.elements.get("trips-nav-button").dispatch("click");
   assert.equal(auth.refreshCalls, 1);
   assert.equal(auth.signOutCalls, 1);
   assert.equal(harness.elements.get("account-summary").hidden, true);
@@ -1035,6 +1104,7 @@ test("private history executes authenticated CRUD and revocable sharing", async 
     throw new Error(`unexpected ${method} ${call.url}`);
   } });
   await settle();
+  await harness.elements.get("trips-nav-button").dispatch("click");
   const history = harness.elements.get("trip-history-list");
   await findByText(history, "打开").dispatch("click");
   await settle();

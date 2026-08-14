@@ -26,7 +26,7 @@
   const elements = {
     body: document.body, authForm: $("auth-form"), email: $("email"), password: $("password"),
     signIn: $("sign-in-button"), signUp: $("sign-up-button"), signOut: $("sign-out-button"),
-    account: $("account-summary"), accountEmail: $("account-email"), authFormPanel: $("auth-form"),
+    account: $("account-summary"), accountEmail: $("account-email"), authFormPanel: $("auth-form"), accountMenu: $("account-menu"),
     authHelp: $("auth-help"), status: $("status-message"), providerNotice: $("provider-notice"),
     providerUpdatedAt: $("provider-updated-at"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
@@ -41,6 +41,7 @@
     edit: $("edit-profile-button"), tripView: $("trip-view"), tripTitle: $("trip-title"),
     tripContent: $("trip-content"), tripActions: $("trip-actions"), save: $("save-trip-button"),
     share: $("share-trip-button"), history: $("trip-history"), historyList: $("trip-history-list"),
+    tripsAuthPrompt: $("trips-auth-prompt"), tripsLogin: $("trips-login-button"),
     shareDialog: $("share-dialog"), shareLink: $("share-link"), shareExpiry: $("share-expiry"),
     copyShare: $("copy-share-link"), revokeShare: $("revoke-share-link"), closeShare: $("close-share-dialog"), renameDialog: $("rename-dialog"),
     renameForm: $("rename-form"), renameInput: $("rename-input"), cancelRename: $("cancel-rename"),
@@ -65,7 +66,7 @@
     elements.body.dataset.appState = next;
   }
 
-  function switchView(view) {
+  async function switchView(view) {
     if (!VIEWS.has(view)) return;
     state.activeView = view;
     for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage], ["community", elements.communityPage]]) {
@@ -77,6 +78,7 @@
       if (active) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
+    if (view === "trips") await renderTripsPage();
   }
 
   function setStatus(message, isError = false) {
@@ -781,9 +783,8 @@
         setStatus("注册请求已提交，请按邮箱提示完成验证后登录。", false);
         return;
       }
-      applySession(data.session, { resetConversation: true });
+      await applySession(data.session, { resetConversation: true });
       elements.password.value = "";
-      await refreshHistory();
     } catch (error) {
       showError(error);
     } finally {
@@ -818,6 +819,7 @@
     elements.account.hidden = true;
     clearChildren(elements.historyList);
     elements.history.hidden = true;
+    if (state.activeView === "trips") renderTripsPage();
     setState("signed_out");
   }
 
@@ -858,9 +860,10 @@
     elements.accountEmail.textContent = state.user.email || "已登录账户";
     elements.authFormPanel.hidden = true;
     elements.account.hidden = false;
-    elements.history.hidden = false;
+    elements.history.hidden = state.activeView !== "trips";
     setState("collecting");
     if (options.resetConversation) setStatus("已切换登录会话，请重新确认行程资料。", false);
+    if (state.activeView === "trips" && options.refreshTrips !== false) return renderTripsPage();
   }
 
   async function refreshBrowserSession() {
@@ -873,7 +876,7 @@
             await signOutAndClearSession();
             return false;
           }
-          applySession(data.session);
+          await applySession(data.session, { refreshTrips: false });
           return true;
         } catch (_) {
           await signOutAndClearSession();
@@ -904,10 +907,41 @@
     return false;
   }
 
+  function renderTripsState(stateName) {
+    const signedOut = stateName === "signed_out";
+    elements.tripsAuthPrompt.hidden = !signedOut;
+    elements.history.hidden = signedOut;
+    if (signedOut) return;
+    clearChildren(elements.historyList);
+    if (stateName === "loading") {
+      appendTextBlock(elements.historyList, "li", "正在加载行程…", "empty-state");
+    } else if (stateName === "error") {
+      appendTextBlock(elements.historyList, "li", "行程加载失败，请重试。", "empty-state");
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.textContent = "重试";
+      retry.addEventListener("click", refreshHistory);
+      elements.historyList.append(retry);
+    }
+  }
+
+  async function renderTripsPage() {
+    if (!state.session) {
+      renderTripsState("signed_out");
+      return;
+    }
+    elements.tripsAuthPrompt.hidden = true;
+    elements.history.hidden = false;
+    await refreshHistory();
+  }
+
   async function refreshHistory() {
-    if (!state.session) return;
+    const session = state.session;
+    if (!session || state.activeView !== "trips") return;
+    renderTripsState("loading");
     try {
       const trips = await requestJson("/api/trips");
+      if (state.session !== session || state.activeView !== "trips") return;
       clearChildren(elements.historyList);
       if (!Array.isArray(trips) || trips.length === 0) {
         appendTextBlock(elements.historyList, "li", "还没有保存的行程。", "empty-state");
@@ -915,7 +949,12 @@
       }
       for (const trip of trips) elements.historyList.append(historyItem(trip));
     } catch (error) {
-      showError(error);
+      if (state.session !== session) {
+        showError(error);
+        return;
+      }
+      if (state.activeView !== "trips") return;
+      renderTripsState("error");
     }
   }
 
@@ -1078,8 +1117,7 @@
     });
     const { data, error } = await state.authClient.auth.getSession();
     if (!error && data && data.session) {
-      applySession(data.session);
-      await refreshHistory();
+      await applySession(data.session);
     }
   }
 
@@ -1105,6 +1143,10 @@
   elements.authForm.addEventListener("submit", (event) => { event.preventDefault(); authRequest("signin"); });
   elements.signUp.addEventListener("click", () => authRequest("signup"));
   elements.signOut.addEventListener("click", signOut);
+  elements.tripsLogin.addEventListener("click", () => {
+    elements.accountMenu.open = true;
+    elements.email.focus();
+  });
   elements.save.addEventListener("click", saveTrip);
   elements.share.addEventListener("click", createShare);
   elements.copyShare.addEventListener("click", copyShareLink);

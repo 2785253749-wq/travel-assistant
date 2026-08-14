@@ -24,7 +24,7 @@
         <input id="destination-search" type="search" placeholder="搜索目的地…" readonly>
       </div>
       <section id="auth-panel" class="auth-panel" aria-label="账户">
-        <details class="account-menu">
+        <details id="account-menu" class="account-menu">
           <summary aria-label="打开账户菜单">账户</summary>
           <div class="account-popover">
             <form id="auth-form">
@@ -92,7 +92,10 @@
     </section>
 
     <section id="trips-page" class="workspace" hidden aria-labelledby="trips-page-title">
-      <div id="trips-auth-prompt" class="empty-state" hidden></div>
+      <div id="trips-auth-prompt" class="empty-state" hidden>
+        <p>登录后即可查看和管理你的私有行程。</p>
+        <button id="trips-login-button" type="button">去登录</button>
+      </div>
       <h1 id="trips-page-title">我的行程</h1>
       <aside id="trip-history" class="trip-history" aria-labelledby="history-heading" hidden>
         <div class="section-heading">
