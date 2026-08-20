@@ -40,6 +40,7 @@ h3 { margin: .05rem 0 .15rem; font-size: 1.05rem; }
 .site-header-inner { display: grid; grid-template-columns: auto auto minmax(14rem, 20rem) auto; align-items: center; gap: 1.6rem; width: min(100% - 2rem, 1480px); min-height: 4.7rem; margin: 0 auto; }
 .voyage-brand { color: #074ea8; font-size: 1.35rem; font-weight: 850; letter-spacing: -.02em; text-decoration: none; }
 .main-navigation { display: flex; align-items: stretch; gap: 1.35rem; min-width: 0; }
+.main-navigation[hidden] { display: none; }
 .navigation-item { position: relative; min-height: 4.7rem; padding: 0 .1rem; border-radius: 0; color: #20293a; background: transparent; font-weight: 600; }
 .navigation-item:hover { color: var(--brand-dark); background: transparent; }
 .navigation-item.is-active { color: var(--brand-dark); background: transparent; }

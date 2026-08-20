@@ -840,6 +840,36 @@ test("repeated city selections share one in-flight weather request", async () =>
   await harness.settle();
 });
 
+test("anonymous weather resolving after sign-in is discarded instead of cached", async () => {
+  const auth = new FakeSupabaseAuth();
+  let resolveAnonymousWeather;
+  const anonymousWeather = new Promise((resolve) => { resolveAnonymousWeather = resolve; });
+  let weatherCalls = 0;
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url !== "/api/weather/cities/xiamen") throw new Error(`unexpected ${call.url}`);
+    weatherCalls += 1;
+    if (weatherCalls === 1) return anonymousWeather;
+    return jsonResponse(200, { city: "厦门", status: "available", summary: "当前会话天气", report_time: null });
+  } });
+  await settle();
+
+  await findByText(harness.elements.get("explore-map"), "福建").dispatch("click");
+  await findByText(harness.elements.get("explore-map"), "厦门").dispatch("click");
+  await settle(1);
+  auth.session = SESSION;
+  auth.emit("SIGNED_IN", SESSION);
+  resolveAnonymousWeather(jsonResponse(200, { city: "厦门", status: "available", summary: "过时匿名天气", report_time: null }));
+  await settle();
+
+  await harness.document.getElementById("explore-city-xiamen").dispatch("click");
+  await settle();
+
+  assert.equal(weatherCalls, 2);
+  const weatherCard = descendants(harness.document.body).find((node) => node.className === "city-weather-card");
+  assert.match(weatherCard.textContent, /当前会话天气/);
+  assert.doesNotMatch(weatherCard.textContent, /过时匿名天气|天气暂不可用/);
+});
+
 test("weather endpoint failure shows unavailable copy while the city map stays usable", async () => {
   const harness = createHarness({ fetch: async (call) => {
     if (call.url === "/api/weather/cities/xiamen") throw new Error("offline");
@@ -916,7 +946,7 @@ test("real map navigation clears a selected place card before province and city 
   assert.equal(card.textContent, "");
 });
 
-test("public shared itinerary hides the assistant launcher", async () => {
+test("public shared itinerary hides assistant and account controls", async () => {
   const harness = createHarness({ hash: "#share=opaque", fetch: async () => jsonResponse(200, {
     id: "trip-1", title: "共享行程", status: "planned", profile: {}, itinerary: { title: "共享行程", days: [] }, updated_at: null,
   }) });
@@ -925,6 +955,54 @@ test("public shared itinerary hides the assistant launcher", async () => {
 
   assert.equal(harness.elements.get("assistant-toggle").hidden, true);
   assert.equal(harness.elements.get("assistant-panel").hidden, true);
+  assert.equal(harness.elements.get("chat-panel").hidden, true);
+  assert.equal(harness.elements.get("auth-panel").hidden, true);
+  assert.equal(harness.elements.get("main-navigation").hidden, true);
+  assert.equal(harness.auth.listeners.length, 0);
+});
+
+test("brand exit from a public share clears reload state and initializes the normal app once", async () => {
+  let resolveShare;
+  const pendingShare = new Promise((resolve) => { resolveShare = resolve; });
+  const harness = createHarness({ hash: "#share=opaque", fetch: async (call) => {
+    if (call.url !== "/api/shared/resolve") throw new Error(`unexpected ${call.url}`);
+    return pendingShare;
+  } });
+  await settle(1);
+
+  await harness.elements.get("voyage-brand").dispatch("click");
+  await settle();
+  await harness.elements.get("voyage-brand").dispatch("click");
+  resolveShare(jsonResponse(200, {
+    id: "trip-1", title: "过时共享行程", status: "planned", profile: {}, itinerary: { title: "过时共享行程", days: [] }, updated_at: null,
+  }));
+  await settle();
+
+  assert.equal(harness.window.location.hash, "");
+  assert.equal(harness.historyCalls.length, 1);
+  assert.equal(harness.historyCalls[0].url, "https://travel.example/");
+  assert.equal(harness.elements.get("explore-page").hidden, false);
+  assert.equal(harness.elements.get("trip-view").hidden, true);
+  assert.doesNotMatch(harness.elements.get("trip-content").textContent, /过时共享行程/);
+  assert.equal(harness.elements.get("assistant-toggle").hidden, false);
+  assert.equal(harness.elements.get("assistant-panel").hidden, true);
+  assert.equal(harness.elements.get("chat-panel").hidden, false);
+  assert.equal(harness.elements.get("auth-panel").hidden, false);
+  assert.equal(harness.elements.get("main-navigation").hidden, false);
+  assert.equal(harness.elements.get("explore-map").dataset.mapLevel, "nation");
+  assert.equal(harness.elements.get("explore-title").focused, true);
+  assert.equal(harness.auth.listeners.length, 1);
+
+  const reloaded = createHarness({ hash: harness.window.location.hash, fetch: async (call) => {
+    if (call.url === "/api/shared/resolve") throw new Error("share mode restored after reload");
+    return jsonResponse(200, {});
+  } });
+  await settle();
+
+  assert.equal(reloaded.fetchCalls.some((call) => call.url === "/api/shared/resolve"), false);
+  assert.equal(reloaded.elements.get("assistant-toggle").hidden, false);
+  assert.equal(reloaded.elements.get("explore-map").dataset.mapLevel, "nation");
+  assert.equal(reloaded.auth.listeners.length, 1);
 });
 
 test("login uses the Supabase session lifecycle and starts a fresh authenticated conversation", async () => {
@@ -958,6 +1036,49 @@ test("login uses the Supabase session lifecycle and starts a fresh authenticated
   assert.match(harness.elements.get("status-message").textContent, /已切换登录会话|资料/);
   const authenticatedCall = harness.fetchCalls.filter((call) => call.url === "/api/chat")[1];
   assert.equal(authenticatedCall.options.headers.Authorization, "Bearer access-one");
+});
+
+test("an anonymous chat response resolving after sign-in cannot update the authenticated conversation", async () => {
+  const auth = new FakeSupabaseAuth();
+  let resolveAnonymousChat;
+  const anonymousChat = new Promise((resolve) => { resolveAnonymousChat = resolve; });
+  let chatCalls = 0;
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url !== "/api/chat") return jsonResponse(200, []);
+    chatCalls += 1;
+    if (chatCalls === 1) return anonymousChat;
+    return jsonResponse(200, { reply: "当前账户回复", stage: "collecting", profile: {} });
+  } });
+  await settle();
+
+  harness.elements.get("message-input").value = "匿名请求";
+  const staleChat = harness.elements.get("chat-form").dispatch("submit");
+  await settle(1);
+
+  auth.session = SESSION;
+  auth.emit("SIGNED_IN", SESSION);
+  await settle();
+  resolveAnonymousChat(jsonResponse(200, {
+    reply: "过时匿名回复", stage: "confirming", profile: {
+      origin: "旧出发地", destination: "旧目的地", start_date: "2026-10-01", end_date: "2026-10-02",
+      travelers: 1, budget_cny: 1000,
+    },
+  }));
+  await staleChat;
+  await settle();
+
+  assert.equal(harness.elements.get("account-email").textContent, "owner@example.test");
+  assert.equal(harness.elements.get("account-summary").hidden, false);
+  assert.equal(harness.elements.get("auth-form").hidden, true);
+  assert.equal(harness.document.body.dataset.appState, "collecting");
+  assert.equal(harness.elements.get("profile-confirmation").hidden, true);
+  assert.doesNotMatch(harness.elements.get("chat-messages").textContent, /匿名请求|过时匿名回复|旧出发地/);
+
+  harness.elements.get("message-input").value = "当前账户请求";
+  await harness.elements.get("chat-form").dispatch("submit");
+
+  assert.equal(harness.fetchCalls.at(-1).options.headers.Authorization, "Bearer access-one");
+  assert.match(harness.elements.get("chat-messages").textContent, /当前账户回复/);
 });
 
 test("SIGNED_IN for a different stable user clears account A state before rendering account B", async () => {

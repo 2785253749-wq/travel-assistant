@@ -24,11 +24,12 @@
   });
   const $ = (id) => document.getElementById(id);
   const elements = {
-    body: document.body, brand: $("voyage-brand"), authForm: $("auth-form"), email: $("email"), password: $("password"),
+    body: document.body, brand: $("voyage-brand"), navigationPanel: $("main-navigation"),
+    authPanel: $("auth-panel"), authForm: $("auth-form"), email: $("email"), password: $("password"),
     signIn: $("sign-in-button"), signUp: $("sign-up-button"), signOut: $("sign-out-button"),
     account: $("account-summary"), accountEmail: $("account-email"), authFormPanel: $("auth-form"), accountMenu: $("account-menu"),
     authHelp: $("auth-help"), status: $("status-message"), providerNotice: $("provider-notice"),
-    providerUpdatedAt: $("provider-updated-at"), chatForm: $("chat-form"), message: $("message-input"),
+    providerUpdatedAt: $("provider-updated-at"), chatPanel: $("chat-panel"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"),
     explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"), communityPage: $("community-page"),
@@ -58,6 +59,9 @@
   let tripsLoadGeneration = 0;
   let mapExplorer = null;
   let cityWeatherCard = null;
+  let exploreInitialized = false;
+  let authInitializationPromise = null;
+  let publicShareActive = false;
 
   function makeThreadId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
@@ -80,7 +84,7 @@
   }
 
   function identitiesDiffer(currentSession, nextSession) {
-    if (!currentSession) return false;
+    if (!currentSession) return Boolean(nextSession);
     const currentUserId = stableUserId(currentSession);
     const nextUserId = stableUserId(nextSession);
     return !currentUserId || !nextUserId || currentUserId !== nextUserId;
@@ -294,12 +298,15 @@
       let weatherRequest = state.cityWeatherRequests.get(cityId);
       if (!weatherRequest) {
         weatherRequest = requestJson(`/api/weather/cities/${encodeURIComponent(cityId)}`)
-          .catch(() => ({ city: fallbackCity, status: "unavailable", summary: "天气暂不可用" }));
+          .catch((error) => error && error.code === "STALE_REQUEST"
+            ? null
+            : { city: fallbackCity, status: "unavailable", summary: "天气暂不可用" });
         state.cityWeatherRequests.set(cityId, weatherRequest);
       }
       weather = await weatherRequest;
-      state.cityWeather.set(cityId, weather);
       state.cityWeatherRequests.delete(cityId);
+      if (!weather) return;
+      state.cityWeather.set(cityId, weather);
     }
     if (state.selectedExploreCityId === cityId) renderCityWeatherCard(weather, fallbackCity);
   }
@@ -399,10 +406,8 @@
   }
 
   function requestCurrencyIsCurrent(currency) {
-    return currency.callerIsCurrent() && (currency.generation === null || (
-      currency.generation === authGeneration && currency.revision === sessionRevision
-      && Boolean(state.session) && stableUserId(state.session) === currency.userId
-    ));
+    return currency.callerIsCurrent() && currency.generation === authGeneration
+      && currency.revision === sessionRevision && stableUserId(state.session) === currency.userId;
   }
 
   function currencyAtRevision(currency, revision) {
@@ -412,15 +417,12 @@
   }
 
   function captureRequestCurrency(options) {
-    const generation = state.session ? authGeneration : null;
-    const revision = generation === null ? null : sessionRevision;
-    const userId = generation === null ? null : stableUserId(state.session);
     const currency = {
       allowRefresh: true,
       callerIsCurrent: typeof options.isCurrent === "function" ? options.isCurrent : () => true,
-      generation,
-      revision,
-      userId,
+      generation: authGeneration,
+      revision: sessionRevision,
+      userId: stableUserId(state.session),
     };
     currency.isCurrent = () => requestCurrencyIsCurrent(currency);
     return currency;
@@ -977,7 +979,7 @@
   }
 
   async function refreshBrowserSession(currency) {
-    if (!state.authClient || currency.generation === null || !currency.isCurrent()) {
+    if (!state.authClient || !currency.isCurrent()) {
       return { refreshed: false, sessionInvalidated: false };
     }
     let request = refreshRequest;
@@ -1254,18 +1256,24 @@
     if (state.busy) return false;
     const match = /^#share=([^&]+)$/.exec(window.location.hash);
     if (!match) return false;
+    const shareHash = window.location.hash;
+    const isCurrentShare = () => publicShareActive && window.location.hash === shareHash;
     const token = decodeURIComponent(match[1]);
+    setPublicShareMode(true);
+    elements.explorePage.hidden = true;
+    elements.tripsPage.hidden = true;
+    elements.communityPage.hidden = true;
+    elements.history.hidden = true;
     setBusy(true, "正在打开只读分享…");
     try {
-      const trip = await requestJson("/api/shared/resolve", { method: "POST", body: { token } });
+      const trip = await requestJson("/api/shared/resolve", { method: "POST", body: { token }, isCurrent: isCurrentShare });
       renderTrip(trip, { public: true });
-      elements.messages.closest("section").hidden = true;
-      setAssistantOpen(false);
-      elements.assistantToggle.hidden = true;
-      elements.explorePage.hidden = true;
-      elements.history.hidden = true;
       setStatus("这是只读分享视图，不包含账户信息或聊天记录。", false);
-    } catch (error) { showError(error); } finally { setBusy(false); }
+    } catch (error) {
+      if (isCurrentShare()) showError(error);
+    } finally {
+      if (isCurrentShare()) setBusy(false);
+    }
     return true;
   }
 
@@ -1285,17 +1293,54 @@
     }
   }
 
-  async function initializeApp() {
-    switchView("explore");
-    if (await showPublicShare()) return;
+  function initializeExploreOnce() {
+    if (exploreInitialized) return;
+    exploreInitialized = true;
     initializeExplore();
-    await initializeAuth();
+  }
+
+  function initializeAuthOnce() {
+    if (!authInitializationPromise) authInitializationPromise = initializeAuth();
+    return authInitializationPromise;
+  }
+
+  function setPublicShareMode(active) {
+    publicShareActive = active;
+    elements.navigationPanel.hidden = active;
+    elements.authPanel.hidden = active;
+    elements.chatPanel.hidden = active;
+    elements.assistantToggle.hidden = active;
+    setAssistantOpen(false);
+  }
+
+  function exitPublicShareMode() {
+    setPublicShareMode(false);
+    const url = new URL(window.location.href);
+    url.hash = "";
+    window.history.replaceState(null, "", url.toString());
+    setBusy(false);
+    clearConversationState();
+    setState("signed_out");
+    setStatus("");
+  }
+
+  async function initializeNormalApp({ focusHeading = false } = {}) {
+    setPublicShareMode(false);
+    initializeExploreOnce();
+    await initializeAuthOnce();
+    await switchView("explore", { focusHeading });
+  }
+
+  async function initializeApp() {
+    if (await showPublicShare()) return;
+    await initializeNormalApp();
   }
 
   elements.chatForm.addEventListener("submit", sendMessage);
-  elements.brand.addEventListener("click", (event) => {
+  elements.brand.addEventListener("click", async (event) => {
     event.preventDefault();
-    switchView("explore", { focusHeading: true });
+    if (publicShareActive || /^#share=([^&]+)$/.test(window.location.hash)) exitPublicShareMode();
+    await initializeNormalApp({ focusHeading: true });
   });
   for (const button of elements.navigation) button.addEventListener("click", () => switchView(button.dataset.view, { focusHeading: true }));
   elements.assistantToggle.addEventListener("click", () => {

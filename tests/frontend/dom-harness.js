@@ -203,9 +203,17 @@ function createHarness(options = {}) {
   const fetchImpl = options.fetch || (async () => jsonResponse(200, {}));
   let uuid = 0;
   const location = new URL(`https://travel.example/${options.hash || ""}`);
+  const historyCalls = [];
   const window = {
     document,
     location,
+    history: {
+      replaceState(state, title, url) {
+        const next = new URL(String(url), location.href);
+        historyCalls.push({ state, title, url: next.href });
+        location.href = next.href;
+      },
+    },
     crypto: { randomUUID() { uuid += 1; return `thread-${uuid}`; } },
     confirm: () => true,
     TRAVEL_ASSISTANT_CONFIG: {
@@ -241,7 +249,7 @@ function createHarness(options = {}) {
   vm.runInNewContext(exploreDataSource, context, { filename: "explore-data.js" });
   vm.runInNewContext(mapExplorerSource, context, { filename: "map-explorer.js" });
   vm.runInNewContext(source, context, { filename: "app.js" });
-  return { auth, document, elements, created, fetchCalls, window, settle, jsonResponse };
+  return { auth, document, elements, created, fetchCalls, historyCalls, window, settle, jsonResponse };
 }
 
 function findByText(root, text) {
