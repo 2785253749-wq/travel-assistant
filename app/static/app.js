@@ -1052,6 +1052,7 @@
     elements.history.hidden = state.activeView !== "trips";
     setState("collecting");
     if (identityChanged || options.resetConversation) setStatus("已切换登录会话，请重新确认行程资料。", false);
+    if (!elements.authPage.hidden) return closeAuthPage();
     if (state.activeView === "trips" && refreshTrips) return renderTripsPage();
   }
 
