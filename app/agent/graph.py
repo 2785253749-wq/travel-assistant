@@ -541,7 +541,7 @@ class SafeTravelAgent:
                     intent=intent,
                 )
             return ChatResult(
-                "Trip details are complete. Confirm them to generate the itinerary.",
+                "资料已完整，请确认后生成行程。",
                 "confirming",
                 profile.model_dump(),
                 intent=intent,

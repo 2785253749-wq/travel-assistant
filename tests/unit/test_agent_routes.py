@@ -104,6 +104,22 @@ def test_missing_fields_asks_without_calling_planner():
     planner.invoke.assert_not_called()
 
 
+def test_complete_profile_confirmation_prompt_is_in_chinese():
+    result = make_agent(
+        profile=TravelProfile(
+            origin="福州",
+            destination="厦门",
+            start_date="2026-08-16",
+            end_date="2026-08-18",
+            travelers=2,
+            budget_cny=5000,
+        ),
+    ).collect("规划行程", trip=None)
+
+    assert result.stage == "confirming"
+    assert result.reply == "资料已完整，请确认后生成行程。"
+
+
 def test_live_inventory_question_is_refused():
     result = make_agent().run("保证明天还有两张高铁票并帮我买", trip=None)
 
