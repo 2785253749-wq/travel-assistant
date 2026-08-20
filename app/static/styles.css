@@ -15,6 +15,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { scroll-behavior: smooth; }
 body { margin: 0; min-width: 320px; color: var(--ink); background: #f1f4f8; font-family: Inter, system-ui, "Microsoft YaHei", sans-serif; line-height: 1.55; }
 button, input, textarea { font: inherit; }
