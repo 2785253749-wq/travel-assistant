@@ -72,6 +72,12 @@ test("navigation switches between explore, trips, and community without a reload
   assert.equal(harness.elements.get("explore-nav-button").getAttribute("aria-current"), null);
 });
 
+test("inactive app pages stay hidden when their page classes define display", () => {
+  const styles = fs.readFileSync(path.join(__dirname, "../../app/static/styles.css"), "utf8");
+
+  assert.match(styles, /\[hidden\]\s*\{\s*display:\s*none\s*!important\s*;\s*\}/);
+});
+
 test("user navigation focuses each programmatically focusable view heading", async () => {
   const harness = createHarness();
   await settle();
