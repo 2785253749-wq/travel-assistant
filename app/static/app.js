@@ -2,6 +2,7 @@
   "use strict";
 
   const STATES = new Set(["signed_out", "collecting", "confirming", "planning", "planned", "error"]);
+  const VIEWS = new Set(["explore", "trips", "community"]);
   const PROFILE_LABELS = {
     origin: "出发地", destination: "目的地", start_date: "出发日期", end_date: "返回日期",
     travelers: "出行人数", budget_cny: "总预算（元）", preferences: "偏好", constraints: "限制",
@@ -23,14 +24,18 @@
   });
   const $ = (id) => document.getElementById(id);
   const elements = {
-    body: document.body, authForm: $("auth-form"), email: $("email"), password: $("password"),
+    body: document.body, brand: $("voyage-brand"), navigationPanel: $("main-navigation"),
+    authPanel: $("auth-panel"), authForm: $("auth-form"), email: $("email"), password: $("password"),
     signIn: $("sign-in-button"), signUp: $("sign-up-button"), signOut: $("sign-out-button"),
-    account: $("account-summary"), accountEmail: $("account-email"), authFormPanel: $("auth-form"),
+    account: $("account-summary"), accountEmail: $("account-email"), authFormPanel: $("auth-form"), accountMenu: $("account-menu"),
     authHelp: $("auth-help"), status: $("status-message"), providerNotice: $("provider-notice"),
-    providerUpdatedAt: $("provider-updated-at"), chatForm: $("chat-form"), message: $("message-input"),
+    providerUpdatedAt: $("provider-updated-at"), chatPanel: $("chat-panel"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"),
-    explorePage: $("explore-page"), exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
+    explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"), communityPage: $("community-page"),
+    navigation: [$("explore-nav-button"), $("trips-nav-button"), $("community-nav-button")],
+    viewHeadings: { explore: $("explore-title"), trips: $("trips-page-title"), community: $("community-page-title") },
+    exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
     mapBreadcrumb: $("map-breadcrumb"), mapTitle: $("map-title"), exploreShortcuts: $("explore-shortcuts"),
     recommendationsTitle: $("recommendations-title"), recommendationCount: $("recommendation-count"),
     recommendationGrid: $("recommendation-grid"), explorePlaceCard: $("explore-place-card"),
@@ -38,18 +43,25 @@
     edit: $("edit-profile-button"), tripView: $("trip-view"), tripTitle: $("trip-title"),
     tripContent: $("trip-content"), tripActions: $("trip-actions"), save: $("save-trip-button"),
     share: $("share-trip-button"), history: $("trip-history"), historyList: $("trip-history-list"),
+    tripsAuthPrompt: $("trips-auth-prompt"), tripsLogin: $("trips-login-button"),
     shareDialog: $("share-dialog"), shareLink: $("share-link"), shareExpiry: $("share-expiry"),
     copyShare: $("copy-share-link"), revokeShare: $("revoke-share-link"), closeShare: $("close-share-dialog"), renameDialog: $("rename-dialog"),
     renameForm: $("rename-form"), renameInput: $("rename-input"), cancelRename: $("cancel-rename"),
   };
   const state = {
-    name: "signed_out", busy: false, session: null, authClient: null, user: null, profile: null,
-    pendingResult: null, currentTrip: null, renameTripId: null, shareTripId: null,
+    name: "signed_out", activeView: "explore", busy: false, session: null, authClient: null, user: null, profile: null,
+    pendingResult: null, currentTrip: null, renameTripId: null, shareTripId: null, providerNoticeActive: false,
     threadId: makeThreadId(), cityWeather: new Map(), cityWeatherRequests: new Map(), selectedExploreCityId: null,
   };
-  let refreshPromise = null;
+  let authGeneration = 0;
+  let sessionRevision = 0;
+  let refreshRequest = null;
+  let tripsLoadGeneration = 0;
   let mapExplorer = null;
   let cityWeatherCard = null;
+  let exploreInitialized = false;
+  let authInitializationPromise = null;
+  let publicShareActive = false;
 
   function makeThreadId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
@@ -60,6 +72,51 @@
     if (!STATES.has(next)) throw new Error("Invalid page state");
     state.name = next;
     elements.body.dataset.appState = next;
+  }
+
+  function invalidateTripsLoads() {
+    tripsLoadGeneration += 1;
+  }
+
+  function stableUserId(session) {
+    const id = session && session.user && session.user.id;
+    return typeof id === "string" && id.trim() ? id : null;
+  }
+
+  function identitiesDiffer(currentSession, nextSession) {
+    if (!currentSession) return Boolean(nextSession);
+    const currentUserId = stableUserId(currentSession);
+    const nextUserId = stableUserId(nextSession);
+    return !currentUserId || !nextUserId || currentUserId !== nextUserId;
+  }
+
+  function sessionsShareAccessToken(left, right) {
+    return Boolean(left && right && typeof left.access_token === "string" && left.access_token
+      && left.access_token === right.access_token);
+  }
+
+  function sessionsShareTokens(left, right) {
+    return sessionsShareAccessToken(left, right) && typeof left.refresh_token === "string"
+      && left.refresh_token && left.refresh_token === right.refresh_token;
+  }
+
+  async function switchView(view, { focusHeading = false } = {}) {
+    if (!VIEWS.has(view)) return;
+    if (state.activeView !== view) invalidateTripsLoads();
+    state.activeView = view;
+    for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage], ["community", elements.communityPage]]) {
+      element.hidden = name !== view;
+    }
+    for (const button of elements.navigation) {
+      const active = button.dataset.view === view;
+      button.classList.toggle("is-active", active);
+      if (active) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    }
+    elements.exploreOutput.hidden = view !== "explore";
+    elements.providerNotice.hidden = view !== "explore" || !state.providerNoticeActive;
+    if (focusHeading) elements.viewHeadings[view].focus();
+    if (view === "trips") await renderTripsPage();
   }
 
   function setStatus(message, isError = false) {
@@ -241,12 +298,15 @@
       let weatherRequest = state.cityWeatherRequests.get(cityId);
       if (!weatherRequest) {
         weatherRequest = requestJson(`/api/weather/cities/${encodeURIComponent(cityId)}`)
-          .catch(() => ({ city: fallbackCity, status: "unavailable", summary: "天气暂不可用" }));
+          .catch((error) => error && error.code === "STALE_REQUEST"
+            ? null
+            : { city: fallbackCity, status: "unavailable", summary: "天气暂不可用" });
         state.cityWeatherRequests.set(cityId, weatherRequest);
       }
       weather = await weatherRequest;
-      state.cityWeather.set(cityId, weather);
       state.cityWeatherRequests.delete(cityId);
+      if (!weather) return;
+      state.cityWeather.set(cityId, weather);
     }
     if (state.selectedExploreCityId === cityId) renderCityWeatherCard(weather, fallbackCity);
   }
@@ -345,27 +405,80 @@
     return { ...headers, Authorization: `Bearer ${state.session.access_token}` };
   }
 
-  async function requestJson(path, options = {}, allowRefresh = true) {
-    const response = await fetch(path, {
-      method: options.method || "GET",
-      headers: authorizationHeaders({ "Content-Type": "application/json", ...(options.headers || {}) }),
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    });
+  function requestCurrencyIsCurrent(currency) {
+    return currency.callerIsCurrent() && currency.generation === authGeneration
+      && currency.revision === sessionRevision && stableUserId(state.session) === currency.userId;
+  }
+
+  function currencyAtRevision(currency, revision) {
+    const next = { ...currency, allowRefresh: false, revision };
+    next.isCurrent = () => requestCurrencyIsCurrent(next);
+    return next;
+  }
+
+  function captureRequestCurrency(options) {
+    const currency = {
+      allowRefresh: true,
+      callerIsCurrent: typeof options.isCurrent === "function" ? options.isCurrent : () => true,
+      generation: authGeneration,
+      revision: sessionRevision,
+      userId: stableUserId(state.session),
+    };
+    currency.isCurrent = () => requestCurrencyIsCurrent(currency);
+    return currency;
+  }
+
+  function staleRequestError() {
+    const error = new Error("STALE_REQUEST");
+    error.code = "STALE_REQUEST";
+    return error;
+  }
+
+  function authenticationError(payload, sessionInvalidated = false) {
+    const detail = payload && payload.detail;
+    const authCode = detail && ["AUTH_REQUIRED", "AUTH_INVALID", "AUTH_UNAVAILABLE"].includes(detail.code)
+      ? detail.code : "AUTH_INVALID";
+    const error = new Error(authCode);
+    error.code = authCode;
+    error.status = 401;
+    error.sessionInvalidated = sessionInvalidated;
+    return error;
+  }
+
+  async function requestJson(path, options = {}, existingCurrency = null) {
+    const currency = existingCurrency || captureRequestCurrency(options);
+    if (!currency.isCurrent()) throw staleRequestError();
+    let response;
+    try {
+      response = await fetch(path, {
+        method: options.method || "GET",
+        headers: authorizationHeaders({ "Content-Type": "application/json", ...(options.headers || {}) }),
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+    } catch (error) {
+      if (!currency.isCurrent()) throw staleRequestError();
+      throw error;
+    }
     const payload = await response.json().catch(() => ({}));
+    if (!currency.isCurrent()) throw staleRequestError();
     if (response.status === 401) {
-      if (allowRefresh && state.session) {
-        const refreshed = await refreshBrowserSession();
-        if (refreshed) return requestJson(path, options, false);
+      let sessionInvalidated = false;
+      if (currency.allowRefresh && state.session) {
+        const refreshResult = await refreshBrowserSession(currency);
+        sessionInvalidated = refreshResult.sessionInvalidated;
+        if (sessionInvalidated) throw authenticationError(payload, true);
+        if (refreshResult.refreshed) {
+          if (!refreshResult.currency.isCurrent()) throw staleRequestError();
+          return requestJson(path, options, refreshResult.currency);
+        }
+        if (!currency.isCurrent()) throw staleRequestError();
+        sessionInvalidated = !state.session;
       } else if (state.session) {
-        await signOutAndClearSession();
+        sessionInvalidated = await signOutAndClearSession(currency.isCurrent);
+        if (sessionInvalidated) throw authenticationError(payload, true);
+        if (!currency.isCurrent()) throw staleRequestError();
       }
-      const detail = payload && payload.detail;
-      const authCode = detail && ["AUTH_REQUIRED", "AUTH_INVALID", "AUTH_UNAVAILABLE"].includes(detail.code)
-        ? detail.code : "AUTH_INVALID";
-      const authError = new Error(authCode);
-      authError.code = authCode;
-      authError.status = 401;
-      throw authError;
+      throw authenticationError(payload, sessionInvalidated);
     }
     if (!response.ok) {
       const detail = payload && payload.detail;
@@ -397,12 +510,14 @@
   }
 
   function showError(error) {
+    if (error && error.code === "STALE_REQUEST") return;
     setState("error");
     setStatus(publicError(error && error.code), true);
   }
 
   function showProviderNotice(warnings, itinerary = null) {
     if (!Array.isArray(warnings) || warnings.length === 0) {
+      state.providerNoticeActive = false;
       elements.providerUpdatedAt.textContent = "";
       clearChildren(elements.providerNotice);
       elements.providerNotice.hidden = true;
@@ -418,7 +533,8 @@
     const fallback = document.createElement("span");
     fallback.textContent = " 仍可查看不依赖实时数据的行程框架。";
     elements.providerNotice.append(summary, elements.providerUpdatedAt, fallback);
-    elements.providerNotice.hidden = false;
+    state.providerNoticeActive = true;
+    elements.providerNotice.hidden = state.activeView !== "explore";
   }
 
   function canonicalCitations(itinerary) {
@@ -764,9 +880,8 @@
         setStatus("注册请求已提交，请按邮箱提示完成验证后登录。", false);
         return;
       }
-      applySession(data.session, { resetConversation: true });
+      await applySession(data.session, { resetConversation: true });
       elements.password.value = "";
-      await refreshHistory();
     } catch (error) {
       showError(error);
     } finally {
@@ -786,21 +901,26 @@
     }
   }
 
-  function clearSession() {
-    state.session = null;
-    state.user = null;
-    clearConversationState({ showWelcome: false });
-    state.profile = null;
-    state.pendingResult = null;
-    state.currentTrip = null;
+  function clearAccountScopedState(options = {}) {
+    invalidateTripsLoads();
+    clearConversationState(options);
     state.renameTripId = null;
     state.shareTripId = null;
     elements.password.value = "";
     elements.email.value = "";
-    elements.authFormPanel.hidden = false;
-    elements.account.hidden = true;
     clearChildren(elements.historyList);
     elements.history.hidden = true;
+  }
+
+  function clearSession() {
+    authGeneration += 1;
+    sessionRevision += 1;
+    state.session = null;
+    state.user = null;
+    clearAccountScopedState({ showWelcome: false });
+    elements.authFormPanel.hidden = false;
+    elements.account.hidden = true;
+    if (state.activeView === "trips") renderTripsPage();
     setState("signed_out");
   }
 
@@ -831,52 +951,111 @@
     elements.profileCard.hidden = true;
     elements.tripView.hidden = true;
     elements.tripActions.hidden = true;
+    state.providerNoticeActive = false;
     elements.providerNotice.hidden = true;
   }
 
   function applySession(session, options = {}) {
+    const identityChanged = identitiesDiffer(state.session, session);
+    const tokensChanged = !sessionsShareTokens(state.session, session);
+    const refreshTrips = identityChanged || options.refreshTrips !== false;
+    if (tokensChanged) sessionRevision += 1;
+    if (identityChanged) {
+      authGeneration += 1;
+      clearAccountScopedState();
+    } else if (refreshTrips) {
+      invalidateTripsLoads();
+    }
     state.session = session;
     state.user = session.user || {};
-    if (options.resetConversation) clearConversationState();
+    if (options.resetConversation && !identityChanged) clearConversationState();
     elements.accountEmail.textContent = state.user.email || "已登录账户";
     elements.authFormPanel.hidden = true;
     elements.account.hidden = false;
-    elements.history.hidden = false;
+    elements.history.hidden = state.activeView !== "trips";
     setState("collecting");
-    if (options.resetConversation) setStatus("已切换登录会话，请重新确认行程资料。", false);
+    if (identityChanged || options.resetConversation) setStatus("已切换登录会话，请重新确认行程资料。", false);
+    if (state.activeView === "trips" && refreshTrips) return renderTripsPage();
   }
 
-  async function refreshBrowserSession() {
-    if (!state.authClient) return false;
-    if (!refreshPromise) {
-      refreshPromise = (async () => {
-        try {
-          const { data, error } = await state.authClient.auth.refreshSession();
-          if (error || !data || !data.session) {
-            await signOutAndClearSession();
-            return false;
-          }
-          applySession(data.session);
-          return true;
-        } catch (_) {
-          await signOutAndClearSession();
-          return false;
-        }
-      })().finally(() => { refreshPromise = null; });
+  async function refreshBrowserSession(currency) {
+    if (!state.authClient || !currency.isCurrent()) {
+      return { refreshed: false, sessionInvalidated: false };
     }
-    return refreshPromise;
+    let request = refreshRequest;
+    if (!request || request.generation !== currency.generation || request.revision !== currency.revision) {
+      request = {
+        acceptedRevision: null,
+        generation: currency.generation,
+        promise: null,
+        revision: currency.revision,
+        userId: currency.userId,
+      };
+      refreshRequest = request;
+      request.promise = (async () => {
+        try {
+          return await state.authClient.auth.refreshSession();
+        } catch (error) {
+          return { data: null, error };
+        }
+      })().finally(() => {
+        if (refreshRequest === request) refreshRequest = null;
+      });
+    }
+    const { data, error } = await request.promise;
+    if (error || !data || !data.session) {
+      if (!currency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
+      const sessionInvalidated = await signOutAndClearSession(currency.isCurrent);
+      return { refreshed: false, sessionInvalidated };
+    }
+
+    if (request.acceptedRevision !== null) {
+      const nextCurrency = currencyAtRevision(currency, request.acceptedRevision);
+      if (!nextCurrency.isCurrent() || !sessionsShareAccessToken(state.session, data.session)) {
+        return { refreshed: false, sessionInvalidated: false };
+      }
+      return { refreshed: true, sessionInvalidated: false, currency: nextCurrency };
+    }
+
+    if (!currency.isCurrent()) {
+      const resultAlreadyCurrent = request.generation === authGeneration
+        && request.userId === stableUserId(state.session)
+        && sessionsShareAccessToken(state.session, data.session);
+      if (!resultAlreadyCurrent) return { refreshed: false, sessionInvalidated: false };
+      request.acceptedRevision = sessionRevision;
+      const nextCurrency = currencyAtRevision(currency, request.acceptedRevision);
+      if (!nextCurrency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
+      return { refreshed: true, sessionInvalidated: false, currency: nextCurrency };
+    }
+
+    applySession(data.session, { refreshTrips: false });
+    if (request.generation !== authGeneration || request.userId !== stableUserId(state.session)
+      || !sessionsShareAccessToken(state.session, data.session)) {
+      return { refreshed: false, sessionInvalidated: false };
+    }
+    request.acceptedRevision = sessionRevision;
+    const nextCurrency = currencyAtRevision(currency, request.acceptedRevision);
+    if (!nextCurrency.isCurrent()) return { refreshed: false, sessionInvalidated: false };
+    return { refreshed: true, sessionInvalidated: false, currency: nextCurrency };
   }
 
-  async function signOutAndClearSession() {
+  async function signOutAndClearSession(isCurrent = () => true) {
+    if (!isCurrent()) return false;
+    let cleared = false;
     try {
       if (state.authClient && state.authClient.auth && typeof state.authClient.auth.signOut === "function") {
+        if (!isCurrent()) return false;
         await state.authClient.auth.signOut();
       }
     } catch (_) {
       // Local privacy cleanup is mandatory even if the SDK cannot reach auth.
     } finally {
-      clearSession();
+      if (isCurrent()) {
+        clearSession();
+        cleared = true;
+      }
     }
+    return cleared || !state.session;
   }
 
   function requireAuthentication() {
@@ -887,10 +1066,45 @@
     return false;
   }
 
+  function renderTripsState(stateName) {
+    const signedOut = stateName === "signed_out";
+    elements.tripsAuthPrompt.hidden = !signedOut;
+    elements.history.hidden = signedOut;
+    if (signedOut) return;
+    clearChildren(elements.historyList);
+    if (stateName === "loading") {
+      appendTextBlock(elements.historyList, "li", "正在加载行程…", "empty-state");
+    } else if (stateName === "error") {
+      const errorItem = document.createElement("li");
+      errorItem.className = "empty-state";
+      appendTextBlock(errorItem, "p", "行程加载失败，请重试。");
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.textContent = "重试";
+      retry.addEventListener("click", refreshHistory);
+      errorItem.append(retry);
+      elements.historyList.append(errorItem);
+    }
+  }
+
+  async function renderTripsPage() {
+    if (!state.session) {
+      renderTripsState("signed_out");
+      return;
+    }
+    elements.tripsAuthPrompt.hidden = true;
+    elements.history.hidden = false;
+    await refreshHistory();
+  }
+
   async function refreshHistory() {
-    if (!state.session) return;
+    if (!state.session || state.activeView !== "trips") return;
+    const loadGeneration = ++tripsLoadGeneration;
+    const isCurrentLoad = () => loadGeneration === tripsLoadGeneration && Boolean(state.session) && state.activeView === "trips";
+    renderTripsState("loading");
     try {
-      const trips = await requestJson("/api/trips");
+      const trips = await requestJson("/api/trips", { isCurrent: isCurrentLoad });
+      if (!isCurrentLoad()) return;
       clearChildren(elements.historyList);
       if (!Array.isArray(trips) || trips.length === 0) {
         appendTextBlock(elements.historyList, "li", "还没有保存的行程。", "empty-state");
@@ -898,7 +1112,12 @@
       }
       for (const trip of trips) elements.historyList.append(historyItem(trip));
     } catch (error) {
-      showError(error);
+      if (error && error.sessionInvalidated) {
+        showError(error);
+        return;
+      }
+      if (!isCurrentLoad()) return;
+      renderTripsState("error");
     }
   }
 
@@ -925,7 +1144,10 @@
     if (!requireAuthentication() || state.busy) return;
     if (operation === "open") {
       setBusy(true, "正在打开行程…");
-      try { renderTrip(await requestJson(`/api/trips/${encodeURIComponent(trip.id)}`)); } catch (error) { showError(error); } finally { setBusy(false); }
+      try {
+        renderTrip(await requestJson(`/api/trips/${encodeURIComponent(trip.id)}`));
+        await switchView("explore", { focusHeading: true });
+      } catch (error) { showError(error); } finally { setBusy(false); }
       return;
     }
     if (operation === "rename") {
@@ -1034,18 +1256,24 @@
     if (state.busy) return false;
     const match = /^#share=([^&]+)$/.exec(window.location.hash);
     if (!match) return false;
+    const shareHash = window.location.hash;
+    const isCurrentShare = () => publicShareActive && window.location.hash === shareHash;
     const token = decodeURIComponent(match[1]);
+    setPublicShareMode(true);
+    elements.explorePage.hidden = true;
+    elements.tripsPage.hidden = true;
+    elements.communityPage.hidden = true;
+    elements.history.hidden = true;
     setBusy(true, "正在打开只读分享…");
     try {
-      const trip = await requestJson("/api/shared/resolve", { method: "POST", body: { token } });
+      const trip = await requestJson("/api/shared/resolve", { method: "POST", body: { token }, isCurrent: isCurrentShare });
       renderTrip(trip, { public: true });
-      elements.messages.closest("section").hidden = true;
-      setAssistantOpen(false);
-      elements.assistantToggle.hidden = true;
-      elements.explorePage.hidden = true;
-      elements.history.hidden = true;
       setStatus("这是只读分享视图，不包含账户信息或聊天记录。", false);
-    } catch (error) { showError(error); } finally { setBusy(false); }
+    } catch (error) {
+      if (isCurrentShare()) showError(error);
+    } finally {
+      if (isCurrentShare()) setBusy(false);
+    }
     return true;
   }
 
@@ -1061,18 +1289,60 @@
     });
     const { data, error } = await state.authClient.auth.getSession();
     if (!error && data && data.session) {
-      applySession(data.session);
-      await refreshHistory();
+      await applySession(data.session);
     }
+  }
+
+  function initializeExploreOnce() {
+    if (exploreInitialized) return;
+    exploreInitialized = true;
+    initializeExplore();
+  }
+
+  function initializeAuthOnce() {
+    if (!authInitializationPromise) authInitializationPromise = initializeAuth();
+    return authInitializationPromise;
+  }
+
+  function setPublicShareMode(active) {
+    publicShareActive = active;
+    elements.navigationPanel.hidden = active;
+    elements.authPanel.hidden = active;
+    elements.chatPanel.hidden = active;
+    elements.assistantToggle.hidden = active;
+    setAssistantOpen(false);
+  }
+
+  function exitPublicShareMode() {
+    setPublicShareMode(false);
+    const url = new URL(window.location.href);
+    url.hash = "";
+    window.history.replaceState(null, "", url.toString());
+    setBusy(false);
+    clearConversationState();
+    setState("signed_out");
+    setStatus("");
+  }
+
+  async function initializeNormalApp({ focusHeading = false } = {}) {
+    setPublicShareMode(false);
+    initializeExploreOnce();
+    await initializeAuthOnce();
+    await switchView("explore", { focusHeading });
   }
 
   async function initializeApp() {
     if (await showPublicShare()) return;
-    initializeExplore();
-    await initializeAuth();
+    await initializeNormalApp();
   }
 
   elements.chatForm.addEventListener("submit", sendMessage);
+  elements.brand.addEventListener("click", async (event) => {
+    event.preventDefault();
+    if (publicShareActive || /^#share=([^&]+)$/.test(window.location.hash)) exitPublicShareMode();
+    await initializeNormalApp({ focusHeading: true });
+  });
+  for (const button of elements.navigation) button.addEventListener("click", () => switchView(button.dataset.view, { focusHeading: true }));
   elements.assistantToggle.addEventListener("click", () => {
     if (state.busy) return;
     const open = elements.assistantPanel.hidden;
@@ -1086,6 +1356,10 @@
   elements.authForm.addEventListener("submit", (event) => { event.preventDefault(); authRequest("signin"); });
   elements.signUp.addEventListener("click", () => authRequest("signup"));
   elements.signOut.addEventListener("click", signOut);
+  elements.tripsLogin.addEventListener("click", () => {
+    elements.accountMenu.open = true;
+    elements.email.focus();
+  });
   elements.save.addEventListener("click", saveTrip);
   elements.share.addEventListener("click", createShare);
   elements.copyShare.addEventListener("click", copyShareLink);

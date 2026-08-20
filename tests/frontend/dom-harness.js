@@ -16,6 +16,15 @@ class FakeElement {
     this.open = false;
     this.value = "";
     this.className = "";
+    this.classList = {
+      toggle: (name, force) => {
+        const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+        if (force) classes.add(name);
+        else classes.delete(name);
+        this.className = [...classes].join(" ");
+        return force;
+      },
+    };
     this.type = "";
     this.href = "";
     this.rel = "";
@@ -61,6 +70,7 @@ class FakeElement {
 
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) || null; }
+  removeAttribute(name) { this.attributes.delete(name); }
 
   async dispatch(type) {
     if (type === "click" && this.disabled) return;
@@ -103,6 +113,17 @@ function buildDocument(html) {
   for (const match of html.matchAll(pattern)) {
     const element = new FakeElement(match[1], match[3]);
     element.hidden = /\bhidden\b/i.test(match[2]);
+    const className = /\bclass="([^"]+)"/i.exec(match[2]);
+    if (className) element.className = className[1];
+    for (const dataAttribute of match[2].matchAll(/\bdata-([\w-]+)="([^"]*)"/gi)) {
+      const name = dataAttribute[1].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+      element.dataset[name] = dataAttribute[2];
+    }
+    for (const attribute of match[2].matchAll(/\b(aria-[\w-]+)="([^"]*)"/gi)) element.setAttribute(attribute[1], attribute[2]);
+    for (const attributeName of ["href", "tabindex"]) {
+      const attribute = new RegExp(`\\b${attributeName}="([^"]*)"`, "i").exec(match[2]);
+      if (attribute) element.setAttribute(attributeName, attribute[1]);
+    }
     const type = /\btype="([^"]+)"/i.exec(match[2]);
     if (type) element.type = type[1];
     elements.set(element.id, element);
@@ -111,8 +132,9 @@ function buildDocument(html) {
   const body = new FakeElement("body", "body");
   const head = new FakeElement("head", "head");
   const parents = {
-    "chat-messages": "chat-panel", "chat-form": "chat-panel", "trip-history-list": "trip-history",
-    "profile-fields": "profile-confirmation", "trip-content": "trip-view", "trip-actions": "trip-view",
+    "chat-messages": "chat-panel", "chat-form": "chat-panel", "trip-history-list": "trip-history", "trip-history": "trips-page",
+    "profile-confirmation": "explore-output", "trip-view": "explore-output", "profile-fields": "profile-confirmation",
+    "trip-content": "trip-view", "trip-actions": "trip-view",
     "share-link": "share-dialog", "share-expiry": "share-dialog", "rename-input": "rename-dialog",
   };
   for (const [childId, parentId] of Object.entries(parents)) elements.get(parentId).append(elements.get(childId));
@@ -181,9 +203,17 @@ function createHarness(options = {}) {
   const fetchImpl = options.fetch || (async () => jsonResponse(200, {}));
   let uuid = 0;
   const location = new URL(`https://travel.example/${options.hash || ""}`);
+  const historyCalls = [];
   const window = {
     document,
     location,
+    history: {
+      replaceState(state, title, url) {
+        const next = new URL(String(url), location.href);
+        historyCalls.push({ state, title, url: next.href });
+        location.href = next.href;
+      },
+    },
     crypto: { randomUUID() { uuid += 1; return `thread-${uuid}`; } },
     confirm: () => true,
     TRAVEL_ASSISTANT_CONFIG: {
@@ -219,7 +249,7 @@ function createHarness(options = {}) {
   vm.runInNewContext(exploreDataSource, context, { filename: "explore-data.js" });
   vm.runInNewContext(mapExplorerSource, context, { filename: "map-explorer.js" });
   vm.runInNewContext(source, context, { filename: "app.js" });
-  return { auth, document, elements, created, fetchCalls, window, settle, jsonResponse };
+  return { auth, document, elements, created, fetchCalls, historyCalls, window, settle, jsonResponse };
 }
 
 function findByText(root, text) {
