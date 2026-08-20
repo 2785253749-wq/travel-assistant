@@ -1038,6 +1038,55 @@ test("login uses the Supabase session lifecycle and starts a fresh authenticated
   assert.equal(authenticatedCall.options.headers.Authorization, "Bearer access-one");
 });
 
+test("dedicated account page opens from the account menu and supports sign-in", async () => {
+  const auth = new FakeSupabaseAuth({ loginSession: SESSION });
+  const harness = createHarness({ auth, fetch: async () => jsonResponse(200, []) });
+  await settle();
+
+  assert.ok(harness.elements.get("account-page-link"));
+  await harness.elements.get("account-page-link").dispatch("click");
+  await settle();
+
+  assert.equal(harness.elements.get("auth-page").hidden, false);
+  assert.equal(harness.elements.get("explore-page").hidden, true);
+  assert.equal(harness.elements.get("auth-page-title").focused, true);
+
+  harness.elements.get("auth-page-email").value = "owner@example.test";
+  harness.elements.get("auth-page-password").value = "password1";
+  await harness.elements.get("auth-page-form").dispatch("submit");
+  await settle();
+
+  assert.equal(harness.elements.get("auth-page").hidden, true);
+  assert.equal(harness.elements.get("explore-page").hidden, false);
+  assert.equal(harness.elements.get("account-email").textContent, "owner@example.test");
+});
+
+test("registration shortcut opens the dedicated account page in signup mode", async () => {
+  const harness = createHarness({ fetch: async () => jsonResponse(200, []) });
+  await settle();
+
+  await harness.elements.get("sign-up-button").dispatch("click");
+  await settle();
+
+  assert.equal(harness.elements.get("auth-page").hidden, false);
+  assert.equal(harness.elements.get("auth-page-title").textContent, "注册 Voyage 账户");
+  assert.equal(harness.elements.get("auth-page-submit").textContent, "注册账户");
+  assert.equal(harness.elements.get("auth-page-alternate").textContent, "已有账户，去登录");
+});
+
+test("registration failure shows registration-specific guidance", async () => {
+  const harness = createHarness({ fetch: async () => jsonResponse(200, []) });
+  await settle();
+
+  await harness.elements.get("sign-up-button").dispatch("click");
+  harness.elements.get("auth-page-email").value = "owner@example.test";
+  harness.elements.get("auth-page-password").value = "password1";
+  await harness.elements.get("auth-page-form").dispatch("submit");
+  await settle();
+
+  assert.match(harness.elements.get("status-message").textContent, /注册失败/);
+});
+
 test("an anonymous chat response resolving after sign-in cannot update the authenticated conversation", async () => {
   const auth = new FakeSupabaseAuth();
   let resolveAnonymousChat;

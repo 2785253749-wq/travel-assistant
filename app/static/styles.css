@@ -104,6 +104,13 @@ h3 { margin: .05rem 0 .15rem; font-size: 1.05rem; }
 
 .workspace { display: grid; gap: 1rem; }
 .auth-panel form { margin: 0; }
+.auth-page { display: grid; place-items: center; min-height: 34rem; padding: clamp(1rem, 4vw, 3rem); border: 1px solid var(--line); border-radius: 1.7rem; background: linear-gradient(145deg, #f8fbff, #fff); box-shadow: 0 10px 35px rgb(37 57 88 / 6%); }
+.auth-page-card { width: min(100%, 30rem); max-width: 30rem; padding: clamp(1.25rem, 4vw, 2.4rem); border: 1px solid var(--line); border-radius: 1.3rem; background: var(--paper); box-shadow: var(--shadow); }
+.auth-page-card h1 { margin-bottom: .45rem; }
+.auth-page-card > p:not(.eyebrow) { color: var(--muted); }
+.auth-page-card form { margin-top: 1.4rem; }
+.link-button { min-height: auto; margin-top: .8rem; padding: .25rem 0; color: var(--brand-dark); background: transparent; }
+.link-button:hover { color: var(--brand); background: transparent; text-decoration: underline; }
 .trip-history, .profile-card, .trip-view { padding: 1rem; }
 .section-heading { margin-bottom: .8rem; }
 .section-heading h2 { margin-bottom: .15rem; }
