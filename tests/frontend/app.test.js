@@ -228,15 +228,15 @@ test("signed-out trips view shows a login prompt instead of requesting private t
   assert.equal(harness.fetchCalls.some((call) => call.url === "/api/trips"), false);
 });
 
-test("trips login prompt opens the account menu and focuses the email field", async () => {
+test("trips login prompt navigates to the dedicated auth page", async () => {
   const harness = createHarness();
   await settle();
   await harness.elements.get("trips-nav-button").dispatch("click");
 
   await harness.elements.get("trips-login-button").dispatch("click");
 
-  assert.equal(harness.elements.get("account-menu").open, true);
-  assert.equal(harness.elements.get("email").focused, true);
+  assert.equal(harness.window.location.pathname, "/auth");
+  assert.equal(harness.window.location.search, "?mode=signin");
 });
 
 test("signed-in trips view renders the empty and populated states", async () => {
@@ -1005,60 +1005,26 @@ test("brand exit from a public share clears reload state and initializes the nor
   assert.equal(reloaded.auth.listeners.length, 1);
 });
 
-test("login uses the Supabase session lifecycle and starts a fresh authenticated conversation", async () => {
-  const chatCalls = [];
-  const auth = new FakeSupabaseAuth({ loginSession: SESSION });
-  const harness = createHarness({ auth, fetch: async (call) => {
-    if (call.url === "/api/trips") return jsonResponse(200, []);
-    if (call.url === "/api/chat") {
-      chatCalls.push(JSON.parse(call.options.body));
-      return jsonResponse(200, { reply: "请继续", stage: "collecting", profile: { origin: "上海" } });
-    }
-    throw new Error(`unexpected ${call.url}`);
-  } });
-  await settle();
-  harness.elements.get("message-input").value = "匿名资料";
-  await harness.elements.get("chat-form").dispatch("submit");
-  await settle();
-  harness.elements.get("email").value = "owner@example.test";
-  harness.elements.get("password").value = "password1";
-  await harness.elements.get("auth-form").dispatch("submit");
-  await settle();
-  harness.elements.get("message-input").value = "登录资料";
-  await harness.elements.get("chat-form").dispatch("submit");
+test("account form navigates to the dedicated sign-in page", async () => {
+  const harness = createHarness({ fetch: async () => jsonResponse(200, []) });
   await settle();
 
-  assert.equal(harness.window.supabaseCreate.clientOptions.auth.persistSession, true);
-  assert.equal(harness.window.supabaseCreate.clientOptions.auth.autoRefreshToken, true);
-  assert.equal(harness.window.supabaseCreate.clientOptions.auth.detectSessionInUrl, true);
-  assert.equal(chatCalls.length, 2);
-  assert.notEqual(chatCalls[0].thread_id, chatCalls[1].thread_id);
-  assert.match(harness.elements.get("status-message").textContent, /已切换登录会话|资料/);
-  const authenticatedCall = harness.fetchCalls.filter((call) => call.url === "/api/chat")[1];
-  assert.equal(authenticatedCall.options.headers.Authorization, "Bearer access-one");
+  await harness.elements.get("auth-form").dispatch("submit");
+
+  assert.equal(harness.window.location.pathname, "/auth");
+  assert.equal(harness.window.location.search, "?mode=signin");
 });
 
-test("dedicated account page opens from the account menu and supports sign-in", async () => {
-  const auth = new FakeSupabaseAuth({ loginSession: SESSION });
-  const harness = createHarness({ auth, fetch: async () => jsonResponse(200, []) });
+test("account page link navigates to the dedicated sign-in page", async () => {
+  const harness = createHarness({ fetch: async () => jsonResponse(200, []) });
   await settle();
 
   assert.ok(harness.elements.get("account-page-link"));
   await harness.elements.get("account-page-link").dispatch("click");
   await settle();
 
-  assert.equal(harness.elements.get("auth-page").hidden, false);
-  assert.equal(harness.elements.get("explore-page").hidden, true);
-  assert.equal(harness.elements.get("auth-page-title").focused, true);
-
-  harness.elements.get("auth-page-email").value = "owner@example.test";
-  harness.elements.get("auth-page-password").value = "password1";
-  await harness.elements.get("auth-page-form").dispatch("submit");
-  await settle();
-
-  assert.equal(harness.elements.get("auth-page").hidden, true);
-  assert.equal(harness.elements.get("explore-page").hidden, false);
-  assert.equal(harness.elements.get("account-email").textContent, "owner@example.test");
+  assert.equal(harness.window.location.pathname, "/auth");
+  assert.equal(harness.window.location.search, "?mode=signin");
 });
 
 test("registration shortcut opens the dedicated account page in signup mode", async () => {
@@ -1068,38 +1034,8 @@ test("registration shortcut opens the dedicated account page in signup mode", as
   await harness.elements.get("sign-up-button").dispatch("click");
   await settle();
 
-  assert.equal(harness.elements.get("auth-page").hidden, false);
-  assert.equal(harness.elements.get("auth-page-title").textContent, "注册 Voyage 账户");
-  assert.equal(harness.elements.get("auth-page-submit").textContent, "注册账户");
-  assert.equal(harness.elements.get("auth-page-alternate").textContent, "已有账户，去登录");
-});
-
-test("registration failure shows registration-specific guidance", async () => {
-  const harness = createHarness({ fetch: async () => jsonResponse(200, []) });
-  await settle();
-
-  await harness.elements.get("sign-up-button").dispatch("click");
-  harness.elements.get("auth-page-email").value = "owner@example.test";
-  harness.elements.get("auth-page-password").value = "password1";
-  await harness.elements.get("auth-page-form").dispatch("submit");
-  await settle();
-
-  assert.match(harness.elements.get("status-message").textContent, /注册失败/);
-});
-
-test("signed-in auth state closes an account page that is still open", async () => {
-  const auth = new FakeSupabaseAuth();
-  const harness = createHarness({ auth, fetch: async () => jsonResponse(200, []) });
-  await settle();
-
-  await harness.elements.get("account-page-link").dispatch("click");
-  assert.equal(harness.elements.get("auth-page").hidden, false);
-
-  auth.emit("SIGNED_IN", SESSION);
-  await settle();
-
-  assert.equal(harness.elements.get("auth-page").hidden, true);
-  assert.equal(harness.elements.get("explore-page").hidden, false);
+  assert.equal(harness.window.location.pathname, "/auth");
+  assert.equal(harness.window.location.search, "?mode=signup");
 });
 
 test("an anonymous chat response resolving after sign-in cannot update the authenticated conversation", async () => {
