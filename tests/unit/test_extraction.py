@@ -36,6 +36,18 @@ def test_rule_extractor_normalizes_common_route_and_date_formats(message, start_
     assert profile.end_date == end_date
 
 
+@pytest.mark.parametrize("traveler_prefix", ["2人", "两人"])
+def test_rule_extractor_does_not_include_traveler_prefix_in_origin(traveler_prefix):
+    profile = RuleTravelExtractor().extract(
+        f"{traveler_prefix}从福州到厦门，2026.8.16到2026.8.18，预算5000",
+        TravelProfile(),
+    )
+
+    assert profile.origin == "福州"
+    assert profile.destination == "厦门"
+    assert profile.travelers == 2
+
+
 class _StructuredExtractionModel:
     def __init__(self, payload: dict[str, object]) -> None:
         self._payload = payload

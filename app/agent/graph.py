@@ -275,15 +275,38 @@ class ModelTravelExtractor:
 class RuleTravelExtractor:
     """Conservatively extracts explicit profile fields without any model call."""
 
+    _TRAVELER_PREFIX = (
+        r"(?:(?:[1-9]\d?|[\u4e00-\u4e5d\u4e24\u5341]+)\s*(?:\u4e2a)?\s*"
+        r"(?:\u4eba|travellers?|travelers?)\s*)?"
+    )
     _ROUTE = re.compile(
-        r"(?:(?:\u4ece|from)\s*)?([^\s\uff0c,\u3002]{1,30}?)(?:\u51fa\u53d1)?\s*(?:\u5230|\u53bb|to)\s*([^\s\uff0c,\u30020-9]{1,30})",
+        _TRAVELER_PREFIX
+        + r"(?:(?:\u4ece|from)\s*)?([^\s\uff0c,\u3002]{1,30}?)(?:\u51fa\u53d1)?\s*"
+        r"(?:\u5230|\u53bb|to)\s*([^\s\uff0c,\u30020-9]{1,30})",
         re.IGNORECASE,
     )
     _DATE = re.compile(
         r"(?<!\d)(20\d{2})\s*(?:[-./\u5e74])\s*(0?[1-9]|1[0-2])\s*"
         r"(?:[-./\u6708])\s*([12]\d|3[01]|0?[1-9])\s*\u65e5?"
     )
-    _TRAVELERS = re.compile(r"(?<!\d)([1-9]\d?)\s*(?:\u4eba|travellers?|travelers?)", re.IGNORECASE)
+    _TRAVELERS = re.compile(
+        r"(?<!\d)([1-9]\d?|[\u4e00-\u4e5d\u4e24\u5341]+)\s*(?:\u4e2a)?\s*"
+        r"(?:\u4eba|travellers?|travelers?)",
+        re.IGNORECASE,
+    )
+    _CHINESE_TRAVELERS = {
+        "\u4e00": 1,
+        "\u4e8c": 2,
+        "\u4e24": 2,
+        "\u4e09": 3,
+        "\u56db": 4,
+        "\u4e94": 5,
+        "\u516d": 6,
+        "\u4e03": 7,
+        "\u516b": 8,
+        "\u4e5d": 9,
+        "\u5341": 10,
+    }
     _BUDGET = re.compile(
         r"(?:\u9884\u7b97(?:\u6539\u4e3a|\u8c03\u6574\u4e3a|\u4e3a|\u662f|\u7ea6)?|budget(?:\s+(?:to|is))?)\s*[:\uff1a]?\s*(\d{1,8})",
         re.IGNORECASE,
@@ -304,7 +327,12 @@ class RuleTravelExtractor:
             updates["end_date"] = dates[1]
         travelers = self._TRAVELERS.search(message)
         if travelers:
-            updates["travelers"] = int(travelers.group(1))
+            raw_travelers = travelers.group(1)
+            updates["travelers"] = (
+                int(raw_travelers)
+                if raw_travelers.isdigit()
+                else self._CHINESE_TRAVELERS.get(raw_travelers)
+            )
         budget = self._BUDGET.search(message)
         if budget:
             updates["budget_cny"] = int(budget.group(1))
