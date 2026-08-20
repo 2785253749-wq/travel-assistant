@@ -1087,6 +1087,21 @@ test("registration failure shows registration-specific guidance", async () => {
   assert.match(harness.elements.get("status-message").textContent, /注册失败/);
 });
 
+test("signed-in auth state closes an account page that is still open", async () => {
+  const auth = new FakeSupabaseAuth();
+  const harness = createHarness({ auth, fetch: async () => jsonResponse(200, []) });
+  await settle();
+
+  await harness.elements.get("account-page-link").dispatch("click");
+  assert.equal(harness.elements.get("auth-page").hidden, false);
+
+  auth.emit("SIGNED_IN", SESSION);
+  await settle();
+
+  assert.equal(harness.elements.get("auth-page").hidden, true);
+  assert.equal(harness.elements.get("explore-page").hidden, false);
+});
+
 test("an anonymous chat response resolving after sign-in cannot update the authenticated conversation", async () => {
   const auth = new FakeSupabaseAuth();
   let resolveAnonymousChat;
