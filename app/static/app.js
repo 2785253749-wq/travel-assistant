@@ -28,9 +28,6 @@
     authPanel: $("auth-panel"), authForm: $("auth-form"), email: $("email"), password: $("password"),
     signIn: $("sign-in-button"), signUp: $("sign-up-button"), signOut: $("sign-out-button"), accountPageLink: $("account-page-link"),
     account: $("account-summary"), accountEmail: $("account-email"), authFormPanel: $("auth-form"), accountMenu: $("account-menu"),
-    authPage: $("auth-page"), authPageTitle: $("auth-page-title"), authPageDescription: $("auth-page-description"),
-    authPageForm: $("auth-page-form"), authPageEmail: $("auth-page-email"), authPagePassword: $("auth-page-password"),
-    authPageSubmit: $("auth-page-submit"), authPageAlternate: $("auth-page-alternate"), authPageForgot: $("auth-page-forgot"),
     authHelp: $("auth-help"), status: $("status-message"), providerNotice: $("provider-notice"),
     providerUpdatedAt: $("provider-updated-at"), chatPanel: $("chat-panel"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
@@ -65,11 +62,16 @@
   let exploreInitialized = false;
   let authInitializationPromise = null;
   let publicShareActive = false;
-  let authPageMode = "signin";
 
   function makeThreadId() {
     if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
     return `thread-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function navigateToAuth(mode = "signin") {
+    const url = new URL("/auth", window.location.origin);
+    url.searchParams.set("mode", mode === "signup" ? "signup" : "signin");
+    window.location.href = url.toString();
   }
 
   function setState(next) {
@@ -108,7 +110,6 @@
     if (!VIEWS.has(view)) return;
     if (state.activeView !== view) invalidateTripsLoads();
     state.activeView = view;
-    elements.authPage.hidden = true;
     for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage], ["community", elements.communityPage]]) {
       element.hidden = name !== view;
     }
@@ -122,38 +123,6 @@
     elements.providerNotice.hidden = view !== "explore" || !state.providerNoticeActive;
     if (focusHeading) elements.viewHeadings[view].focus();
     if (view === "trips") await renderTripsPage();
-  }
-
-  function setAuthPageMode(mode) {
-    authPageMode = mode === "signup" ? "signup" : "signin";
-    const signup = authPageMode === "signup";
-    elements.authPageTitle.textContent = signup ? "注册 Voyage 账户" : "登录 Voyage";
-    elements.authPageDescription.textContent = signup
-      ? "注册后可以保存、打开和管理你的私有行程。"
-      : "登录后可以保存、打开和管理你的私有行程。";
-    elements.authPageSubmit.textContent = signup ? "注册账户" : "登录";
-    elements.authPageAlternate.textContent = signup ? "已有账户，去登录" : "注册账户";
-    elements.authPagePassword.autocomplete = signup ? "new-password" : "current-password";
-  }
-
-  function openAuthPage(mode = "signin") {
-    if (state.busy) return;
-    setAuthPageMode(mode);
-    elements.accountMenu.open = false;
-    elements.authPage.hidden = false;
-    elements.explorePage.hidden = true;
-    elements.tripsPage.hidden = true;
-    elements.communityPage.hidden = true;
-    elements.exploreOutput.hidden = true;
-    elements.providerNotice.hidden = true;
-    setAssistantOpen(false);
-    for (const button of elements.navigation) button.removeAttribute("aria-current");
-    elements.authPageTitle.focus();
-  }
-
-  function closeAuthPage() {
-    elements.authPage.hidden = true;
-    return switchView("explore", { focusHeading: true });
   }
 
   function setStatus(message, isError = false) {
@@ -552,14 +521,6 @@
     setStatus(publicError(error && error.code), true);
   }
 
-  function showAuthError(mode) {
-    setState("error");
-    setStatus(
-      mode === "signup" ? "注册失败，请检查邮箱格式和密码要求。" : "登录失败，请检查邮箱和密码。",
-      true,
-    );
-  }
-
   function showProviderNotice(warnings, itinerary = null) {
     if (!Array.isArray(warnings) || warnings.length === 0) {
       state.providerNoticeActive = false;
@@ -903,69 +864,6 @@
     setStatus("请在对话中告诉我需要修改的资料。", false);
   }
 
-  async function authRequest(mode, controls = {
-    email: elements.email,
-    password: elements.password,
-  }) {
-    if (state.busy) return;
-    const config = browserAuthConfig();
-    if (!config || !state.authClient) {
-      setStatus("当前部署尚未配置浏览器认证；你仍可进行临时规划。", true);
-      return;
-    }
-    const email = controls.email.value.trim();
-    const password = controls.password.value;
-    if (!email || !password) {
-      setStatus("请输入邮箱和密码。", true);
-      return;
-    }
-    setBusy(true, mode === "signup" ? "正在注册…" : "正在登录…");
-    try {
-      const operation = mode === "signup" ? state.authClient.auth.signUp({ email, password }) : state.authClient.auth.signInWithPassword({ email, password });
-      const { data, error } = await operation;
-      if (error) throw Object.assign(new Error("AUTH_FAILED"), { code: "AUTH_REQUIRED", status: 401 });
-      if (!data || !data.session) {
-        setStatus("注册请求已提交，请按邮箱提示完成验证后登录。", false);
-        controls.password.value = "";
-        return;
-      }
-      await applySession(data.session, { resetConversation: true });
-      controls.password.value = "";
-      if (!elements.authPage.hidden) await closeAuthPage();
-    } catch (error) {
-      showAuthError(mode);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function resetPassword() {
-    if (state.busy) return;
-    if (!state.authClient || typeof state.authClient.auth.resetPasswordForEmail !== "function") {
-      setStatus("当前部署尚未配置密码重置服务，请稍后再试。", true);
-      return;
-    }
-    const email = elements.authPageEmail.value.trim();
-    if (!email) {
-      setStatus("请先输入注册邮箱。", true);
-      elements.authPageEmail.focus();
-      return;
-    }
-    setBusy(true, "正在发送重置邮件…");
-    try {
-      const { error } = await state.authClient.auth.resetPasswordForEmail(email, {
-        redirectTo: window.location.origin,
-      });
-      if (error) throw Object.assign(new Error("AUTH_FAILED"), { code: "AUTH_REQUIRED", status: 401 });
-      setStatus("密码重置邮件已发送，请检查邮箱。", false);
-    } catch (error) {
-      setState("error");
-      setStatus("密码重置失败，请检查邮箱后重试。", true);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function signOut() {
     if (state.busy) return;
     setBusy(true, "正在退出…");
@@ -1052,7 +950,6 @@
     elements.history.hidden = state.activeView !== "trips";
     setState("collecting");
     if (identityChanged || options.resetConversation) setStatus("已切换登录会话，请重新确认行程资料。", false);
-    if (!elements.authPage.hidden) return closeAuthPage();
     if (state.activeView === "trips" && refreshTrips) return renderTripsPage();
   }
 
@@ -1388,7 +1285,6 @@
     elements.authPanel.hidden = active;
     elements.chatPanel.hidden = active;
     elements.assistantToggle.hidden = active;
-    elements.authPage.hidden = active;
     setAssistantOpen(false);
   }
 
@@ -1432,23 +1328,11 @@
   });
   elements.confirm.addEventListener("click", confirmProfile);
   elements.edit.addEventListener("click", editProfile);
-  elements.authForm.addEventListener("submit", (event) => { event.preventDefault(); authRequest("signin"); });
-  elements.signUp.addEventListener("click", () => openAuthPage("signup"));
-  elements.accountPageLink.addEventListener("click", () => openAuthPage("signin"));
-  elements.authPageForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    authRequest(authPageMode, { email: elements.authPageEmail, password: elements.authPagePassword });
-  });
-  elements.authPageAlternate.addEventListener("click", () => {
-    setAuthPageMode(authPageMode === "signup" ? "signin" : "signup");
-    elements.authPageTitle.focus();
-  });
-  elements.authPageForgot.addEventListener("click", resetPassword);
+  elements.authForm.addEventListener("submit", (event) => { event.preventDefault(); navigateToAuth("signin"); });
+  elements.signUp.addEventListener("click", () => navigateToAuth("signup"));
+  elements.accountPageLink.addEventListener("click", () => navigateToAuth("signin"));
   elements.signOut.addEventListener("click", signOut);
-  elements.tripsLogin.addEventListener("click", () => {
-    elements.accountMenu.open = true;
-    elements.email.focus();
-  });
+  elements.tripsLogin.addEventListener("click", () => navigateToAuth("signin"));
   elements.save.addEventListener("click", saveTrip);
   elements.share.addEventListener("click", createShare);
   elements.copyShare.addEventListener("click", copyShareLink);

@@ -9,6 +9,12 @@ def test_home():
     response = TestClient(app).get("/")
     assert response.status_code == 200 and "旅行助手" in response.text
 
+def test_auth_page_is_a_standalone_route():
+    response = TestClient(app).get("/auth?mode=signup")
+    assert response.status_code == 200
+    assert 'id="auth-page-form"' in response.text
+    assert "Voyage 账户" in response.text
+
 def test_extract_uses_json_mode(monkeypatch):
     from app import graph
 
