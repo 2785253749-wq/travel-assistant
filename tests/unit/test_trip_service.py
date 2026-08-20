@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.core.errors import AppError
 from app.infrastructure.repositories import InMemoryTripRepository
 from app.schemas import Itinerary, TravelProfile
+from app.trips.models import destination_trip_title
 from app.trips.service import TripService
 
 
@@ -44,13 +45,18 @@ def test_create_trip_uses_authenticated_owner_and_profile_title(service):
     trip = service.create_trip(USER_A, TravelProfile(destination="Hangzhou"))
 
     assert trip.user_id == USER_A
-    assert trip.title == "Hangzhou trip"
+    assert trip.title == "Hangzhou行程"
+
+
+def test_destination_trip_title_uses_a_chinese_default_title():
+    assert destination_trip_title("厦门") == "厦门行程"
+    assert destination_trip_title(None) == "未命名行程"
 
 
 def test_trip_titles_are_bounded_for_long_destinations_and_updates(service):
     trip = service.create_trip(USER_A, TravelProfile(destination="x" * 200))
 
-    assert trip.title == f"{'x' * 95} trip"
+    assert trip.title == f"{'x' * 98}行程"
     assert len(trip.title) == 100
 
     with pytest.raises(ValidationError):

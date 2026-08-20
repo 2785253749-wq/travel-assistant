@@ -27,8 +27,8 @@ def validate_trip_title(value: object) -> str:
 
 
 def destination_trip_title(destination: str | None) -> str:
-    suffix = " trip"
-    stem = destination or "New"
+    suffix = "行程"
+    stem = destination or "未命名"
     return validate_trip_title(stem[: TRIP_TITLE_MAX_LENGTH - len(suffix)] + suffix)
 
 
