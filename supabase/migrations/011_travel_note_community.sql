@@ -248,10 +248,62 @@ with check (
   and deleted_at is null
 );
 
-create policy "owners manage own travel note images" on public.travel_note_images
-for all to authenticated
-using (auth.uid() = owner_id)
-with check (auth.uid() = owner_id);
+create policy "owners view own travel note images" on public.travel_note_images
+for select to authenticated
+using (auth.uid() = owner_id);
+
+create policy "owners insert images for editable travel notes" on public.travel_note_images
+for insert to authenticated
+with check (
+  auth.uid() = owner_id
+  and exists (
+    select 1
+    from public.travel_notes as note_row
+    where note_row.id = note_id
+      and note_row.author_id = owner_id
+      and note_row.status in ('draft', 'rejected')
+      and note_row.deleted_at is null
+  )
+);
+
+create policy "owners update images for editable travel notes" on public.travel_note_images
+for update to authenticated
+using (
+  auth.uid() = owner_id
+  and exists (
+    select 1
+    from public.travel_notes as note_row
+    where note_row.id = note_id
+      and note_row.author_id = owner_id
+      and note_row.status in ('draft', 'rejected')
+      and note_row.deleted_at is null
+  )
+)
+with check (
+  auth.uid() = owner_id
+  and exists (
+    select 1
+    from public.travel_notes as note_row
+    where note_row.id = note_id
+      and note_row.author_id = owner_id
+      and note_row.status in ('draft', 'rejected')
+      and note_row.deleted_at is null
+  )
+);
+
+create policy "owners delete images for editable travel notes" on public.travel_note_images
+for delete to authenticated
+using (
+  auth.uid() = owner_id
+  and exists (
+    select 1
+    from public.travel_notes as note_row
+    where note_row.id = note_id
+      and note_row.author_id = owner_id
+      and note_row.status in ('draft', 'rejected')
+      and note_row.deleted_at is null
+  )
+);
 
 create policy "users view own travel note likes" on public.travel_note_likes
 for select to authenticated
@@ -356,9 +408,55 @@ begin
 end;
 $$;
 
+create or replace function public.enforce_travel_note_image_write_rules()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+declare
+  v_allow_moderation_write boolean := coalesce(
+    current_setting('travel_notes.allow_moderation_write', true),
+    'off'
+  ) = 'on';
+  v_note_id uuid := case when tg_op = 'delete' then old.note_id else new.note_id end;
+  v_owner_id uuid := case when tg_op = 'delete' then old.owner_id else new.owner_id end;
+begin
+  if v_allow_moderation_write then
+    if tg_op = 'delete' then
+      return old;
+    end if;
+
+    return new;
+  end if;
+
+  perform 1
+  from public.travel_notes as note_row
+  where note_row.id = v_note_id
+    and note_row.author_id = v_owner_id
+    and note_row.status in ('draft', 'rejected')
+    and note_row.deleted_at is null
+  for key share;
+
+  if not found then
+    raise exception 'travel note images require editable parent note'
+      using errcode = '42501';
+  end if;
+
+  if tg_op = 'delete' then
+    return old;
+  end if;
+
+  return new;
+end;
+$$;
+
 create trigger enforce_travel_note_client_write_rules
 before insert or update on public.travel_notes
 for each row execute function public.enforce_travel_note_client_write_rules();
+
+create trigger enforce_travel_note_image_write_rules
+before insert or update or delete on public.travel_note_images
+for each row execute function public.enforce_travel_note_image_write_rules();
 
 create trigger travel_notes_set_updated_at
 before update on public.travel_notes

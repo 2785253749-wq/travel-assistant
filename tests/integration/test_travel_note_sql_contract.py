@@ -140,6 +140,7 @@ def test_submit_and_review_rpcs_lock_rows_and_reject_stale_transitions():
     submit = function_block(sql, "submit_travel_note")
     review_note = function_block(sql, "review_travel_note")
     review_comment = function_block(sql, "review_travel_note_comment")
+    image_guard = routine_block(sql, "enforce_travel_note_image_write_rules")
 
     assert re.search(
         r"from public\.travel_notes as note_row[\s\S]*?for update",
@@ -156,6 +157,12 @@ def test_submit_and_review_rpcs_lock_rows_and_reject_stale_transitions():
     )
     assert "travel note images changed during submission" in submit
     assert "if not found then" in submit
+    assert "for key share" in image_guard
+    assert re.search(
+        r"from public\.travel_notes as note_row[\s\S]*?where note_row\.id = v_note_id[\s\S]*?and note_row\.author_id = v_owner_id[\s\S]*?and note_row\.status in \('draft', 'rejected'\)[\s\S]*?and note_row\.deleted_at is null[\s\S]*?for key share",
+        image_guard,
+    )
+    assert "travel note images require editable parent note" in image_guard
 
     assert re.search(
         r"from public\.travel_notes as note_row[\s\S]*?for update",
@@ -252,6 +259,39 @@ def test_travel_note_owner_write_path_blocks_direct_moderation_field_changes():
     assert "old.status = 'draft' and new.status <> 'draft'" in guard
     assert "old.status = 'rejected' and new.status not in ('rejected', 'draft')" in guard
     assert "create trigger enforce_travel_note_client_write_rules" in sql
+
+
+def test_travel_note_image_owner_write_path_requires_editable_parent_note():
+    sql = migration_011()
+    guard = routine_block(sql, "enforce_travel_note_image_write_rules")
+
+    assert not re.search(
+        r'create\s+policy\s+"owners manage own travel note images"\s+on\s+public\.travel_note_images\s+for\s+all',
+        sql,
+    )
+    assert re.search(
+        r'create\s+policy\s+"owners view own travel note images"\s+on\s+public\.travel_note_images\s+for\s+select\s+to\s+authenticated\s+using\s*\(\s*auth\.uid\(\)\s*=\s*owner_id\s*\)',
+        sql,
+    )
+    for policy_name, clause in (
+        ("owners insert images for editable travel notes", "with check"),
+        ("owners update images for editable travel notes", "using"),
+        ("owners delete images for editable travel notes", "using"),
+    ):
+        assert policy_name in sql
+        assert "travel_note_images" in sql
+        assert "travel_notes as note_row" in sql
+        assert "note_row.status in ('draft', 'rejected')" in sql
+        assert "note_row.deleted_at is null" in sql
+        assert clause in sql
+
+    assert "current_setting('travel_notes.allow_moderation_write', true)" in guard
+    assert "tg_op = 'delete'" in guard
+    assert "v_note_id uuid" in guard
+    assert "v_owner_id uuid" in guard
+    assert "for key share" in guard
+    assert "travel note images require editable parent note" in guard
+    assert "create trigger enforce_travel_note_image_write_rules" in sql
 
 
 def test_storage_objects_are_owner_scoped():

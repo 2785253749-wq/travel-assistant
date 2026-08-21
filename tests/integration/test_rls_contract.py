@@ -13,9 +13,9 @@ OWNER_SCOPED_TABLES = {
     "conversation_messages": "user_id",
     "share_links": "user_id",
     "ai_usage": "user_id",
-    "travel_note_images": "owner_id",
 }
 CONTROLLED_OWNER_UPDATE_TABLES = {"travel_notes": "author_id"}
+PARENT_STATUS_GUARDED_OWNER_TABLES = {"travel_note_images": "owner_id"}
 OWNER_DELETE_ONLY_TABLES = {"community_posts": "user_id"}
 OWNER_INSERT_DELETE_TABLES = {
     "travel_note_likes": "user_id",
@@ -36,6 +36,7 @@ SERVICE_ROLE_TABLES = (
 PRIVATE_TABLES = (
     tuple(OWNER_SCOPED_TABLES)
     + tuple(CONTROLLED_OWNER_UPDATE_TABLES)
+    + tuple(PARENT_STATUS_GUARDED_OWNER_TABLES)
     + tuple(OWNER_DELETE_ONLY_TABLES)
     + tuple(OWNER_INSERT_DELETE_TABLES)
     + tuple(OWNER_INSERT_ONLY_TABLES)
@@ -537,6 +538,20 @@ def _assert_private_rls_contract(migration: str) -> None:
             assert not re.search(r"\bfor\s+all\b", policy)
             assert not re.search(r"\bfor\s+delete\b", policy)
 
+    for table, owner_column in PARENT_STATUS_GUARDED_OWNER_TABLES.items():
+        table_policies = [body for policy_table, body in policies if policy_table == table]
+        assert table_policies
+        allowed_patterns = (
+            rf"\bfor\s+select\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+            rf"\bfor\s+insert\b[\s\S]*\bwith\s+check\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}[\s\S]*?exists\s*\([\s\S]*?from public\.travel_notes as note_row[\s\S]*?note_row\.id = note_id[\s\S]*?note_row\.author_id = {owner_column}[\s\S]*?note_row\.status in \('draft',\s*'rejected'\)[\s\S]*?note_row\.deleted_at is null[\s\S]*?\)\s*\)",
+            rf"\bfor\s+update\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}[\s\S]*?exists\s*\([\s\S]*?from public\.travel_notes as note_row[\s\S]*?note_row\.id = note_id[\s\S]*?note_row\.author_id = {owner_column}[\s\S]*?note_row\.status in \('draft',\s*'rejected'\)[\s\S]*?note_row\.deleted_at is null[\s\S]*?\)\s*\)[\s\S]*\bwith\s+check\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}[\s\S]*?exists\s*\([\s\S]*?from public\.travel_notes as note_row[\s\S]*?note_row\.id = note_id[\s\S]*?note_row\.author_id = {owner_column}[\s\S]*?note_row\.status in \('draft',\s*'rejected'\)[\s\S]*?note_row\.deleted_at is null[\s\S]*?\)\s*\)",
+            rf"\bfor\s+delete\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}[\s\S]*?exists\s*\([\s\S]*?from public\.travel_notes as note_row[\s\S]*?note_row\.id = note_id[\s\S]*?note_row\.author_id = {owner_column}[\s\S]*?note_row\.status in \('draft',\s*'rejected'\)[\s\S]*?note_row\.deleted_at is null[\s\S]*?\)\s*\)",
+        )
+        assert len(table_policies) == len(allowed_patterns)
+        for policy in table_policies:
+            assert any(re.fullmatch(pattern, policy) for pattern in allowed_patterns)
+            assert not re.search(r"\bfor\s+all\b", policy)
+
     for table, owner_column in OWNER_INSERT_DELETE_TABLES.items():
         table_policies = [body for policy_table, body in policies if policy_table == table]
         assert table_policies
@@ -755,6 +770,20 @@ def test_travel_notes_table_uses_controlled_owner_update_policies():
     assert 'create policy "authors create own draft travel notes"' in migration
     assert 'create policy "authors edit own draft or rejected travel notes"' in migration
     assert 'create policy "authors manage own travel notes"' not in migration
+
+
+def test_travel_note_images_table_uses_parent_status_guarded_owner_policies():
+    migration = _migration()
+
+    assert (
+        "grant select, insert, update, delete on table public.travel_note_images to authenticated"
+        in migration
+    )
+    assert 'create policy "owners view own travel note images"' in migration
+    assert 'create policy "owners insert images for editable travel notes"' in migration
+    assert 'create policy "owners update images for editable travel notes"' in migration
+    assert 'create policy "owners delete images for editable travel notes"' in migration
+    assert 'create policy "owners manage own travel note images"' not in migration
 
 
 @pytest.mark.parametrize("child_table", ["conversation_messages", "share_links"])
