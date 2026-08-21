@@ -476,8 +476,13 @@ class _StatefulQuery:
             return self._client._insert(self._table_name, self._payload)
         rows = self._matching_rows()
         if self._operation == "update":
+            self._client.update_payloads.append(
+                (self._table_name, deepcopy(self._payload))
+            )
             for row in rows:
                 row.update(deepcopy(self._payload))
+                if self._table_name == "travel_notes" and "updated_at" not in self._payload:
+                    row["updated_at"] = "2026-08-21T10:00:00+00:00"
             return _response(deepcopy(rows))
         if self._operation == "delete":
             deleted = []
@@ -508,6 +513,8 @@ class _StatefulClient:
         self.images: list[dict[str, object]] = []
         self.profiles: list[dict[str, object]] = []
         self.table_calls: list[str] = []
+        self.insert_payloads: list[tuple[str, object]] = []
+        self.update_payloads: list[tuple[str, object]] = []
         self.fail_image_insert = False
 
     def table(self, table_name: str):
@@ -522,6 +529,7 @@ class _StatefulClient:
         }[table_name]
 
     def _insert(self, table_name: str, payload):
+        self.insert_payloads.append((table_name, deepcopy(payload)))
         rows = payload if isinstance(payload, list) else [payload]
         inserted: list[dict[str, object]] = []
         for index, source in enumerate(rows):
@@ -542,6 +550,7 @@ class _StatefulClient:
             self._table(table_name).append(row)
             inserted.append(row)
             if table_name == "travel_note_images" and self.fail_image_insert and index == 0:
+                self.fail_image_insert = False
                 raise RuntimeError("image insert failed after one row")
         return _response(deepcopy(inserted))
 
@@ -609,8 +618,9 @@ def test_create_draft_persists_snapshot_and_compensates_after_partial_image_writ
         itinerary_snapshot=snapshot,
     )
 
-    assert created.itinerary_snapshot == snapshot
-    assert client.notes[0]["itinerary_snapshot"] == snapshot
+    assert created.itinerary_snapshot is None
+    assert "itinerary_snapshot" not in client.insert_payloads[-2][1]
+    assert client.notes[0].get("itinerary_snapshot") is None
 
 
 def test_replace_draft_restores_old_note_and_images_after_failed_image_write():
@@ -623,7 +633,13 @@ def test_replace_draft_restores_old_note_and_images_after_failed_image_write():
         path=f"{USER_A}/{NOTE_A}/old.webp",
         sort_order=0,
     )
-    client.images.append(old_image)
+    old_image_2 = _stateful_image(
+        image_id=UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+        note_id=NOTE_A,
+        path=f"{USER_A}/{NOTE_A}/old-2.webp",
+        sort_order=1,
+    )
+    client.images.extend([old_image, old_image_2])
     replacement = TravelNoteDraftInput.model_validate(
         {
             "title": "新标题",
@@ -659,7 +675,12 @@ def test_replace_draft_restores_old_note_and_images_after_failed_image_write():
 
     assert error.value.code == "TRAVEL_NOTE_UNAVAILABLE"
     assert client.notes == [_stateful_note()]
-    assert client.images == [old_image]
+    assert client.images == [old_image, old_image_2]
+    assert all(
+        "itinerary_snapshot" not in payload
+        for table, payload in client.update_payloads
+        if table == "travel_notes"
+    )
 
 
 def test_replace_draft_persists_the_new_itinerary_snapshot():
@@ -701,8 +722,18 @@ def test_replace_draft_persists_the_new_itinerary_snapshot():
     )
 
     assert stored is not None
-    assert stored.itinerary_snapshot == snapshot
-    assert client.notes[0]["itinerary_snapshot"] == snapshot
+    assert stored.itinerary_snapshot == {"days": 2}
+    assert client.notes[0]["itinerary_snapshot"] == {"days": 2}
+    assert client.update_payloads[0] == (
+        "travel_notes",
+        {
+            "title": "新标题",
+            "body": "新正文",
+            "location_name": "新地点",
+            "category": "自然风光",
+            "source_trip_id": None,
+        },
+    )
 
 
 def test_list_owned_batch_loads_images_and_profiles_once():

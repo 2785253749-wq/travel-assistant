@@ -51,8 +51,8 @@ class SupabaseTravelNoteRepository:
             "source_trip_id": (
                 str(value.source_trip_id) if value.source_trip_id is not None else None
             ),
-            "itinerary_snapshot": deepcopy(itinerary_snapshot),
         }
+        del itinerary_snapshot
         note_id: UUID | None = None
         try:
             with database_operation(
@@ -90,8 +90,8 @@ class SupabaseTravelNoteRepository:
             "source_trip_id": (
                 str(value.source_trip_id) if value.source_trip_id is not None else None
             ),
-            "itinerary_snapshot": deepcopy(itinerary_snapshot),
         }
+        del itinerary_snapshot
         original_row: dict[str, Any] | None = None
         original_images: list[dict[str, Any]] = []
         updated = False
@@ -559,9 +559,7 @@ class SupabaseTravelNoteRepository:
                     "location_name": original_row.get("location_name"),
                     "category": original_row.get("category"),
                     "source_trip_id": original_row.get("source_trip_id"),
-                    "itinerary_snapshot": deepcopy(
-                        original_row.get("itinerary_snapshot")
-                    ),
+                    "updated_at": original_row.get("updated_at"),
                 }
             ).eq("id", str(note_id)).eq("author_id", str(user_id)).execute()
         except Exception as exc:
