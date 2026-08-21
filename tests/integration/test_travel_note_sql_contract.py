@@ -151,8 +151,12 @@ def test_submit_and_review_rpcs_lock_rows_and_reject_stale_transitions():
         submit,
     )
     assert "travel note submission is stale" in submit
-    assert re.search(
+    assert not re.search(
         r"from public\.travel_note_images as image_row[\s\S]*?where image_row\.note_id = v_note\.id[\s\S]*?and image_row\.owner_id = v_user_id[\s\S]*?for update",
+        submit,
+    )
+    assert re.search(
+        r"select count\(\*\), bool_or\(image_row\.sort_order = 0\)[\s\S]*?from public\.travel_note_images as image_row[\s\S]*?where image_row\.note_id = v_note\.id[\s\S]*?and image_row\.owner_id = v_user_id",
         submit,
     )
     assert "travel note images changed during submission" in submit
@@ -160,6 +164,10 @@ def test_submit_and_review_rpcs_lock_rows_and_reject_stale_transitions():
     assert "for key share" in image_guard
     assert re.search(
         r"from public\.travel_notes as note_row[\s\S]*?where note_row\.id = v_note_id[\s\S]*?and note_row\.author_id = v_owner_id[\s\S]*?and note_row\.status in \('draft', 'rejected'\)[\s\S]*?and note_row\.deleted_at is null[\s\S]*?for key share",
+        image_guard,
+    )
+    assert not re.search(
+        r"from public\.travel_note_images as image_row[\s\S]*?for update",
         image_guard,
     )
     assert "travel note images require editable parent note" in image_guard

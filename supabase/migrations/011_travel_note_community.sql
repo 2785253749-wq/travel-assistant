@@ -687,17 +687,6 @@ begin
     raise exception 'travel note is not submittable' using errcode = 'P0001';
   end if;
 
-  perform 1
-  from public.travel_note_images as image_row
-  where image_row.note_id = v_note.id
-    and image_row.owner_id = v_user_id
-  for update;
-
-  if not found then
-    raise exception 'travel note requires one to nine ordered images'
-      using errcode = 'P0001';
-  end if;
-
   select count(*), bool_or(image_row.sort_order = 0)
   into v_image_count, v_has_cover
   from public.travel_note_images as image_row
