@@ -93,6 +93,26 @@ def test_draft_trims_text_and_rejects_duplicate_image_sort_orders():
             )
         )
 
+    with pytest.raises(ValidationError):
+        TravelNoteDraftInput.model_validate(
+            draft_payload(
+                images=[
+                    {
+                        "storage_path": "user-a/note-a/cover.webp",
+                        "sort_order": 1,
+                        "width": 1440,
+                        "height": 1920,
+                    },
+                    {
+                        "storage_path": "user-a/note-a/detail.webp",
+                        "sort_order": 2,
+                        "width": 1920,
+                        "height": 1440,
+                    },
+                ]
+            )
+        )
+
 
 def test_draft_rejects_invalid_image_metadata():
     with pytest.raises(ValidationError):
@@ -154,6 +174,7 @@ def test_detail_owner_and_page_models_keep_public_contracts_strict():
             "review_reason": None,
             "source_trip_id": None,
             "submitted_at": None,
+            "published_at": None,
             "updated_at": datetime(2026, 8, 21, 9, 30, tzinfo=UTC),
             "deleted_at": None,
             "images": [
@@ -196,3 +217,45 @@ def test_travel_note_comment_and_cursor_round_trip():
 
     with pytest.raises(ValueError):
         decode_travel_note_cursor("not-a-valid-cursor")
+
+
+def test_owner_view_and_comment_reject_impossible_lifecycle_shapes():
+    with pytest.raises(ValidationError):
+        TravelNoteOwnerView.model_validate(
+            {
+                **{
+                    key: value
+                    for key, value in public_card_payload().items()
+                    if key != "body_preview"
+                },
+                "body": "苍山脚下散步，傍晚去洱海看日落。",
+                "status": "draft",
+                "review_reason": "not allowed",
+                "source_trip_id": None,
+                "submitted_at": None,
+                "published_at": None,
+                "updated_at": datetime(2026, 8, 21, 9, 30, tzinfo=UTC),
+                "deleted_at": None,
+                "images": [
+                    {
+                        "id": str(uuid4()),
+                        "storage_path": "user-a/note-a/cover.webp",
+                        "sort_order": 0,
+                        "width": 1440,
+                        "height": 1920,
+                    }
+                ],
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        TravelNoteComment.model_validate(
+            {
+                "id": str(uuid4()),
+                "note_id": str(uuid4()),
+                "author_display_name": "Voyage Alice",
+                "body": "请问最佳拍摄时间？",
+                "status": "approved",
+                "published_at": None,
+            }
+        )

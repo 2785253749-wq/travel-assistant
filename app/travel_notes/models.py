@@ -51,6 +51,8 @@ class TravelNoteDraftInput(StrictSchema):
         sort_orders = [image.sort_order for image in self.images]
         if len(sort_orders) != len(set(sort_orders)):
             raise ValueError("image sort_order values must be unique")
+        if sorted(sort_orders) != list(range(len(sort_orders))):
+            raise ValueError("image sort_order values must start at zero and be contiguous")
         return self
 
 
@@ -136,6 +138,13 @@ class TravelNoteDetail(StrictSchema):
     def _trim_detail_text(cls, value: object) -> object:
         return _trim_text(value)
 
+    @model_validator(mode="after")
+    def _images_are_contiguous(self) -> "TravelNoteDetail":
+        sort_orders = [image.sort_order for image in self.images]
+        if sorted(sort_orders) != list(range(len(sort_orders))):
+            raise ValueError("image sort_order values must start at zero and be contiguous")
+        return self
+
 
 class TravelNoteOwnerView(StrictSchema):
     id: UUID
@@ -171,6 +180,26 @@ class TravelNoteOwnerView(StrictSchema):
     def _trim_owner_text(cls, value: object) -> object:
         return _trim_text(value)
 
+    @model_validator(mode="after")
+    def _validate_lifecycle_shape(self) -> "TravelNoteOwnerView":
+        sort_orders = [image.sort_order for image in self.images]
+        if sorted(sort_orders) != list(range(len(sort_orders))):
+            raise ValueError("image sort_order values must start at zero and be contiguous")
+
+        if self.status == "draft":
+            if self.submitted_at is not None or self.published_at is not None or self.review_reason is not None:
+                raise ValueError("draft notes must not carry submission, publication, or review state")
+        elif self.status == "pending_review":
+            if self.submitted_at is None or self.published_at is not None or self.review_reason is not None:
+                raise ValueError("pending review notes must have a submission timestamp and no review outcome")
+        elif self.status == "approved":
+            if self.submitted_at is None or self.published_at is None or self.review_reason is not None:
+                raise ValueError("approved notes must have submission and publication timestamps and no review reason")
+        elif self.status == "rejected":
+            if self.submitted_at is None or self.published_at is not None or self.review_reason is None:
+                raise ValueError("rejected notes must have a submission timestamp and review reason")
+        return self
+
 
 class TravelNotePage(StrictSchema):
     items: list[TravelNoteCard]
@@ -189,6 +218,16 @@ class TravelNoteComment(StrictSchema):
     @classmethod
     def _trim_comment_text(cls, value: object) -> object:
         return _trim_text(value)
+
+    @model_validator(mode="after")
+    def _validate_comment_lifecycle(self) -> "TravelNoteComment":
+        if self.status == "pending_review" and self.published_at is not None:
+            raise ValueError("pending review comments must not have a published_at timestamp")
+        if self.status == "approved" and self.published_at is None:
+            raise ValueError("approved comments must have a published_at timestamp")
+        if self.status == "rejected" and self.published_at is not None:
+            raise ValueError("rejected comments must not have a published_at timestamp")
+        return self
 
 
 def encode_travel_note_cursor(published_at: datetime, note_id: UUID) -> str:
