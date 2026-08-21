@@ -175,6 +175,15 @@ def test_submit_and_review_rpcs_lock_rows_and_reject_stale_transitions():
         r"update public\.travel_note_comments as comment_row[\s\S]*?returning comment_row\.\* into v_comment;[\s\S]*?if not found then[\s\S]*?travel note comment review is stale[\s\S]*?update public\.travel_notes as note_row[\s\S]*?set comment_count = note_row\.comment_count \+ 1",
         review_comment,
     )
+    assert re.search(
+        r"from public\.travel_notes as note_row[\s\S]*?where note_row\.id = v_comment\.note_id[\s\S]*?and note_row\.status = 'approved'[\s\S]*?and note_row\.deleted_at is null[\s\S]*?for update",
+        review_comment,
+    )
+    assert re.search(
+        r"update public\.travel_notes as note_row[\s\S]*?where note_row\.id = v_comment\.note_id[\s\S]*?and note_row\.status = 'approved'[\s\S]*?and note_row\.deleted_at is null[\s\S]*?returning note_row\.comment_count into",
+        review_comment,
+    )
+    assert "travel note comment parent is stale" in review_comment
 
 
 def test_profiles_gain_random_creator_metadata_without_using_user_uuid():

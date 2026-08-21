@@ -810,6 +810,7 @@ as $$
 declare
   v_moderator_id uuid := auth.uid();
   v_comment public.travel_note_comments;
+  v_parent_comment_count integer;
   v_reason text := nullif(btrim(reason), '');
   v_decision text := lower(btrim(decision));
   v_reviewed_at timestamptz;
@@ -877,10 +878,27 @@ begin
       null
     );
 
+    perform 1
+    from public.travel_notes as note_row
+    where note_row.id = v_comment.note_id
+      and note_row.status = 'approved'
+      and note_row.deleted_at is null
+    for update;
+
+    if not found then
+      raise exception 'travel note comment parent is stale' using errcode = 'P0001';
+    end if;
+
     update public.travel_notes as note_row
     set comment_count = note_row.comment_count + 1
     where note_row.id = v_comment.note_id
-      and note_row.deleted_at is null;
+      and note_row.status = 'approved'
+      and note_row.deleted_at is null
+    returning note_row.comment_count into v_parent_comment_count;
+
+    if not found then
+      raise exception 'travel note comment parent is stale' using errcode = 'P0001';
+    end if;
 
     return query
     select
