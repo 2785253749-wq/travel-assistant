@@ -355,6 +355,49 @@ test("load more appends older pages without dropping newer cards", async () => {
   assert.equal(harness.elements.get("community-load-more").hidden, true);
 });
 
+test("append errors preserve existing cards and expose an explicit retry state", async () => {
+  const newer = communityNote({ title: "第一页游记" });
+  const older = communityNote({
+    id: "44444444-4444-4444-4444-444444444444",
+    creator_slug: "append-retry-note",
+    title: "重试后追加的游记",
+  });
+  let appendAttempts = 0;
+  const harness = createCommunityHarness({
+    fetch: async (call) => {
+      if (call.url === "/api/community/notes?limit=20") {
+        return jsonResponse(200, feedPage([newer], "cursor-1"));
+      }
+      if (call.url === "/api/community/notes?limit=20&cursor=cursor-1") {
+        appendAttempts += 1;
+        return appendAttempts === 1
+          ? jsonResponse(503, { detail: { code: "COMMUNITY_UNAVAILABLE" } })
+          : jsonResponse(200, feedPage([older]));
+      }
+      return jsonResponse(500, { detail: { code: "UNEXPECTED" } });
+    },
+  });
+  await settle();
+
+  await harness.elements.get("community-load-more").dispatch("click");
+  await settle();
+
+  assert.match(harness.elements.get("community-grid").textContent, /第一页游记/);
+  assert.doesNotMatch(harness.elements.get("community-grid").textContent, /重试后追加的游记/);
+  assert.equal(harness.elements.get("community-error").hidden, false);
+  assert.equal(harness.elements.get("community-retry").hidden, false);
+  assert.equal(harness.elements.get("community-load-more").hidden, true);
+  assert.match(harness.elements.get("community-error-message").textContent, /暂不可用|加载失败/);
+
+  await harness.elements.get("community-retry").dispatch("click");
+  await settle();
+
+  assert.equal(appendAttempts, 2);
+  assert.match(harness.elements.get("community-grid").textContent, /第一页游记/);
+  assert.match(harness.elements.get("community-grid").textContent, /重试后追加的游记/);
+  assert.equal(harness.elements.get("community-error").hidden, true);
+});
+
 test("stale request generations cannot overwrite a newer filtered result", async () => {
   let resolveInitial;
   let resolveFiltered;
@@ -410,7 +453,7 @@ test("error and empty states are retryable, and signed-out interactions redirect
   assert.equal(harness.window.location.pathname, "/auth");
   const params = new URLSearchParams(harness.window.location.search);
   assert.equal(params.get("mode"), "signin");
-  assert.equal(params.get("return_to"), "/community");
+  assert.equal(params.get("return_to"), "/community/notes/11111111-1111-1111-1111-111111111111");
 });
 
 test("signed-in readers keep create and interaction links inside the standalone community flow", async () => {

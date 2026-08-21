@@ -36,6 +36,7 @@
     signedIn: false,
     loadState: "idle",
     errorMessage: "",
+    retryMode: "reload",
     sessionGeneration: 0,
   };
   const client = createBrowserClient();
@@ -209,7 +210,7 @@
     likeButton.textContent = "点赞";
     likeButton.addEventListener("click", () => {
       if (!state.signedIn) {
-        client.redirectToSignIn("/community");
+        client.redirectToSignIn(detailPath(note && note.id));
         return;
       }
       navigate(detailPath(note && note.id));
@@ -226,7 +227,7 @@
     for (const item of state.items) elements.grid.append(renderCard(item));
 
     const showEmpty = state.loadState === "empty";
-    const showError = state.loadState === "error";
+    const showError = state.loadState === "error" || state.loadState === "append_error";
     elements.empty.hidden = !showEmpty;
     elements.error.hidden = !showError;
     elements.retry.hidden = !showError;
@@ -234,10 +235,14 @@
 
     if (state.loadState === "loading" && !state.items.length) {
       setStatus("正在加载社区内容…");
+    } else if (state.loadState === "loading" && state.items.length) {
+      setStatus("正在加载更多社区内容…");
     } else if (state.loadState === "ready" && state.items.length) {
       setStatus(`已加载 ${state.items.length} 篇公开游记。`);
     } else if (showEmpty) {
       setStatus("还没有公开游记。");
+    } else if (state.loadState === "append_error") {
+      setStatus(state.errorMessage);
     } else if (showError) {
       setStatus(state.errorMessage);
     } else {
@@ -258,6 +263,7 @@
     }
     state.loadState = "loading";
     state.errorMessage = "";
+    state.retryMode = append ? "append" : "reload";
     render();
 
     try {
@@ -269,7 +275,7 @@
       updateHistory();
     } catch (error) {
       if (generation !== state.requestGeneration) return;
-      state.loadState = state.items.length ? "ready" : "error";
+      state.loadState = append && state.items.length ? "append_error" : "error";
       state.errorMessage = publicError(error);
     } finally {
       if (generation === state.requestGeneration) render();
@@ -309,7 +315,7 @@
       if (button) button.addEventListener("click", onCategoryClick);
     }
     elements.searchForm.addEventListener("submit", onSearchSubmit);
-    elements.retry.addEventListener("click", () => loadFeed({ append: false }));
+    elements.retry.addEventListener("click", () => loadFeed({ append: state.retryMode === "append" }));
     elements.loadMore.addEventListener("click", () => {
       if (!state.nextCursor) return;
       loadFeed({ append: true });
