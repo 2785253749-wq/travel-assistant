@@ -139,6 +139,7 @@ def test_submit_and_review_rpcs_lock_rows_and_reject_stale_transitions():
     sql = migration_011()
     submit = function_block(sql, "submit_travel_note")
     review_note = function_block(sql, "review_travel_note")
+    review_comment = function_block(sql, "review_travel_note_comment")
 
     assert re.search(
         r"from public\.travel_notes as note_row[\s\S]*?for update",
@@ -160,6 +161,20 @@ def test_submit_and_review_rpcs_lock_rows_and_reject_stale_transitions():
         review_note,
     )
     assert "travel note review is stale" in review_note
+
+    assert re.search(
+        r"from public\.travel_note_comments as comment_row[\s\S]*?for update",
+        review_comment,
+    )
+    assert re.search(
+        r"update public\.travel_note_comments as comment_row[\s\S]*?where comment_row\.id = v_comment\.id[\s\S]*?and comment_row\.status = 'pending_review'[\s\S]*?and comment_row\.deleted_at is null",
+        review_comment,
+    )
+    assert "travel note comment review is stale" in review_comment
+    assert re.search(
+        r"update public\.travel_note_comments as comment_row[\s\S]*?returning comment_row\.\* into v_comment;[\s\S]*?if not found then[\s\S]*?travel note comment review is stale[\s\S]*?update public\.travel_notes as note_row[\s\S]*?set comment_count = note_row\.comment_count \+ 1",
+        review_comment,
+    )
 
 
 def test_profiles_gain_random_creator_metadata_without_using_user_uuid():

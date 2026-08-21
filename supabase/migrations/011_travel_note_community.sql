@@ -812,6 +812,7 @@ declare
   v_comment public.travel_note_comments;
   v_reason text := nullif(btrim(reason), '');
   v_decision text := lower(btrim(decision));
+  v_reviewed_at timestamptz;
 begin
   if v_moderator_id is null then
     raise exception 'authentication required' using errcode = '42501';
@@ -832,7 +833,8 @@ begin
   from public.travel_note_comments as comment_row
   where comment_row.id = p_comment_id
     and comment_row.status = 'pending_review'
-    and comment_row.deleted_at is null;
+    and comment_row.deleted_at is null
+  for update;
 
   if not found then
     raise exception 'travel note comment not found' using errcode = 'P0002';
@@ -842,6 +844,65 @@ begin
     and (v_reason is null or char_length(v_reason) not between 1 and 500)
   then
     raise exception 'rejection reason is required' using errcode = 'P0001';
+  end if;
+
+  v_reviewed_at := now();
+
+  if v_decision = 'approved' then
+    update public.travel_note_comments as comment_row
+    set status = 'approved',
+        review_reason = null,
+        published_at = v_reviewed_at
+    where comment_row.id = v_comment.id
+      and comment_row.status = 'pending_review'
+      and comment_row.deleted_at is null
+    returning comment_row.* into v_comment;
+
+    if not found then
+      raise exception 'travel note comment review is stale' using errcode = 'P0001';
+    end if;
+
+    insert into public.moderation_decisions (
+      target_type,
+      target_id,
+      moderator_id,
+      decision,
+      reason
+    )
+    values (
+      'comment',
+      v_comment.id,
+      v_moderator_id,
+      v_decision,
+      null
+    );
+
+    update public.travel_notes as note_row
+    set comment_count = note_row.comment_count + 1
+    where note_row.id = v_comment.note_id
+      and note_row.deleted_at is null;
+
+    return query
+    select
+      v_comment.id,
+      v_comment.note_id,
+      v_comment.status,
+      v_comment.review_reason,
+      v_comment.published_at,
+      v_reviewed_at;
+  end if;
+
+  update public.travel_note_comments as comment_row
+  set status = 'rejected',
+      review_reason = v_reason,
+      published_at = null
+  where comment_row.id = v_comment.id
+    and comment_row.status = 'pending_review'
+    and comment_row.deleted_at is null
+  returning comment_row.* into v_comment;
+
+  if not found then
+    raise exception 'travel note comment review is stale' using errcode = 'P0001';
   end if;
 
   insert into public.moderation_decisions (
@@ -856,43 +917,17 @@ begin
     v_comment.id,
     v_moderator_id,
     v_decision,
-    case when v_decision = 'rejected' then v_reason else null end
+    v_reason
   );
 
-  if v_decision = 'approved' then
-    update public.travel_notes as note_row
-    set comment_count = note_row.comment_count + 1
-    where note_row.id = v_comment.note_id
-      and note_row.deleted_at is null;
-
-    return query
-    update public.travel_note_comments as comment_row
-    set status = 'approved',
-        review_reason = null,
-        published_at = now()
-    where comment_row.id = v_comment.id
-    returning
-      comment_row.id,
-      comment_row.note_id,
-      comment_row.status,
-      comment_row.review_reason,
-      comment_row.published_at,
-      now() as reviewed_at;
-  end if;
-
   return query
-  update public.travel_note_comments as comment_row
-  set status = 'rejected',
-      review_reason = v_reason,
-      published_at = null
-  where comment_row.id = v_comment.id
-  returning
-    comment_row.id,
-    comment_row.note_id,
-    comment_row.status,
-    comment_row.review_reason,
-    comment_row.published_at,
-    now() as reviewed_at;
+  select
+    v_comment.id,
+    v_comment.note_id,
+    v_comment.status,
+    v_comment.review_reason,
+    v_comment.published_at,
+    v_reviewed_at;
 end;
 $$;
 
