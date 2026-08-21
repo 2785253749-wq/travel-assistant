@@ -12,7 +12,7 @@ from app.agent.graph import (
 )
 from app.application.chat import ConfirmationStore, TravelChatApplication
 from app.application.weather import UnavailableWeatherService, WeatherService
-from app.api.auth import CurrentUser
+from app.api.auth import CurrentUser, OptionalCurrentUser
 from app.core.config import Settings, get_settings
 from app.core.usage import InMemoryUsageRepository, UsageGuard, UsageRepository
 from app.infrastructure.repositories import (
@@ -33,6 +33,17 @@ from app.rag.service import (
     UnavailableKnowledgeAnswerService,
 )
 from app.schemas import TravelProfile
+from app.travel_notes.in_memory import (
+    InMemoryTravelNoteMediaGateway,
+    InMemoryTravelNoteRepository,
+)
+from app.travel_notes.service import TravelNoteModule
+from app.travel_notes.supabase_repositories import (
+    create_internal_supabase_client,
+    create_public_travel_note_repository,
+    create_travel_note_media_gateway,
+    create_user_scoped_travel_note_repository,
+)
 from app.trips.service import TripService
 
 
@@ -67,6 +78,15 @@ def _supabase_public_credentials() -> tuple[str, str]:
     )
 
 
+def _supabase_internal_credentials() -> tuple[str, str]:
+    settings = get_settings()
+    if settings.supabase_url is None or settings.supabase_service_key is None:
+        raise RuntimeError("Supabase internal storage is not configured")
+    return (
+        str(settings.supabase_url),
+        settings.supabase_service_key.get_secret_value(),
+    )
+
 def get_trip_service(user: CurrentUser) -> TripService:
     if not _uses_supabase():
         return TripService(get_development_repository())
@@ -86,6 +106,129 @@ def get_public_trip_service() -> TripService:
         InMemoryTripRepository(), create_public_share_repository(url, anon_key)
     )
 
+
+@lru_cache(maxsize=1)
+def get_development_travel_note_repository() -> InMemoryTravelNoteRepository:
+    return InMemoryTravelNoteRepository()
+
+
+@lru_cache(maxsize=1)
+def get_development_travel_note_module() -> TravelNoteModule:
+    repository = get_development_travel_note_repository()
+    return TravelNoteModule(
+        repository=repository,
+        public_repository=repository,
+        media_gateway=InMemoryTravelNoteMediaGateway(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_travel_note_internal_client():
+    if not _uses_supabase():
+        raise RuntimeError("Travel note internal storage is not configured")
+    url, service_key = _supabase_internal_credentials()
+    return create_internal_supabase_client(url, service_key)
+
+
+@lru_cache(maxsize=1)
+def get_public_travel_note_repository():
+    if not _uses_supabase():
+        return get_development_travel_note_repository()
+    url, service_key = _supabase_internal_credentials()
+    return create_public_travel_note_repository(
+        url, service_key, client=get_travel_note_internal_client()
+    )
+
+
+@lru_cache(maxsize=1)
+def get_travel_note_media_gateway():
+    if not _uses_supabase():
+        return InMemoryTravelNoteMediaGateway()
+    url, service_key = _supabase_internal_credentials()
+    return create_travel_note_media_gateway(
+        url, service_key, client=get_travel_note_internal_client()
+    )
+
+
+class _AnonymousTravelNoteRepository:
+    def create_draft(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note creation is unavailable")
+
+    def replace_draft(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note editing is unavailable")
+
+    def attach_image(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note media changes are unavailable")
+
+    def remove_image(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note media changes are unavailable")
+
+    def get_owned(self, user_id: UUID, note_id: UUID):
+        del user_id, note_id
+        return None
+
+    def get_note(self, note_id: UUID):
+        del note_id
+        return None
+
+    def submit(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note submission is unavailable")
+
+    def soft_delete(self, user_id: UUID, note_id: UUID, *, now):
+        del user_id, note_id, now
+        return False
+
+    def list_owned(self, user_id: UUID):
+        del user_id
+        return []
+
+    def get_source_trip_snapshot(self, user_id: UUID, trip_id: UUID):
+        del user_id, trip_id
+        return None
+
+    def approve(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note moderation is unavailable")
+
+    def reject(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note moderation is unavailable")
+
+
+def get_travel_note_module(user: CurrentUser) -> TravelNoteModule:
+    if not _uses_supabase():
+        return get_development_travel_note_module()
+    if not user.access_token:
+        raise RuntimeError("A verified bearer token is required for travel note access")
+    url, anon_key = _supabase_public_credentials()
+    return TravelNoteModule(
+        repository=create_user_scoped_travel_note_repository(
+            url,
+            anon_key,
+            user.access_token,
+            internal_client=get_travel_note_internal_client(),
+        ),
+        public_repository=get_public_travel_note_repository(),
+        media_gateway=get_travel_note_media_gateway(),
+    )
+
+
+def get_optional_travel_note_module(user: OptionalCurrentUser) -> TravelNoteModule:
+    if not _uses_supabase():
+        return get_development_travel_note_module()
+    if user is not None and user.access_token:
+        url, anon_key = _supabase_public_credentials()
+        private_repository = create_user_scoped_travel_note_repository(
+            url,
+            anon_key,
+            user.access_token,
+            internal_client=get_travel_note_internal_client(),
+        )
+    else:
+        private_repository = _AnonymousTravelNoteRepository()
+    return TravelNoteModule(
+        repository=private_repository,
+        public_repository=get_public_travel_note_repository(),
+        media_gateway=get_travel_note_media_gateway(),
+    )
 
 def get_usage_guard() -> UsageGuard:
     settings = get_settings()
@@ -246,3 +389,4 @@ def execute_chat_request(
     if action == "confirm":
         return application.confirm(**arguments, quota_subject=quota_subject)
     raise ValueError("unsupported chat action")
+
