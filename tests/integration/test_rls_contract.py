@@ -7,19 +7,39 @@ import pytest
 
 MIGRATIONS = Path(__file__).parents[2] / "supabase" / "migrations"
 MIGRATION = MIGRATIONS / "001_initial.sql"
-OWNER_SCOPED_TABLES = (
-    "profiles",
-    "trips",
-    "conversation_messages",
-    "share_links",
-    "ai_usage",
-)
+OWNER_SCOPED_TABLES = {
+    "profiles": "user_id",
+    "trips": "user_id",
+    "conversation_messages": "user_id",
+    "share_links": "user_id",
+    "ai_usage": "user_id",
+    "travel_notes": "author_id",
+    "travel_note_images": "owner_id",
+}
+OWNER_DELETE_ONLY_TABLES = {"community_posts": "user_id"}
+OWNER_INSERT_DELETE_TABLES = {
+    "travel_note_likes": "user_id",
+    "travel_note_bookmarks": "user_id",
+}
+OWNER_INSERT_ONLY_TABLES = {
+    "travel_note_comments": "author_id",
+    "travel_note_reports": "reporter_id",
+}
 SERVICE_ROLE_TABLES = (
     "ai_usage_counters",
     "ai_usage_reservations",
     "ai_model_cost_counters",
+    "user_roles",
+    "moderation_decisions",
+    "community_media_cleanup_jobs",
 )
-PRIVATE_TABLES = OWNER_SCOPED_TABLES + SERVICE_ROLE_TABLES
+PRIVATE_TABLES = (
+    tuple(OWNER_SCOPED_TABLES)
+    + tuple(OWNER_DELETE_ONLY_TABLES)
+    + tuple(OWNER_INSERT_DELETE_TABLES)
+    + tuple(OWNER_INSERT_ONLY_TABLES)
+    + SERVICE_ROLE_TABLES
+)
 AUDITED_PRIVATE_TABLE_ALTERS = {
     (
         "ai_usage_reservations",
@@ -30,6 +50,52 @@ AUDITED_PRIVATE_TABLE_ALTERS = {
         "ai_usage_reservations",
         "add column if not exists incurred_model_calls integer not null "
         "default 0 check (incurred_model_calls between 0 and 2)",
+    ),
+    ("profiles", "alter column preferences set default '{}'::jsonb"),
+    (
+        "profiles",
+        "add constraint profiles_preferences_is_object "
+        "check (jsonb_typeof(preferences) = 'object')",
+    ),
+    (
+        "profiles",
+        "add constraint profiles_preferences_bio_is_valid "
+        "check (not (preferences ? 'bio') or "
+        "(jsonb_typeof(preferences -> 'bio') = 'string' and "
+        "char_length(btrim(preferences ->> 'bio')) <= 160))",
+    ),
+    (
+        "profiles",
+        "add constraint profiles_preferences_home_city_is_valid "
+        "check (not (preferences ? 'home_city') or "
+        "(jsonb_typeof(preferences -> 'home_city') = 'string' and "
+        "char_length(btrim(preferences ->> 'home_city')) <= 40))",
+    ),
+    (
+        "profiles",
+        "add constraint profiles_preferences_travel_styles_are_valid "
+        "check (not (preferences ? 'travel_styles') or "
+        "(jsonb_typeof(preferences -> 'travel_styles') = 'array' and "
+        "jsonb_array_length(preferences -> 'travel_styles') <= 5 and "
+        "public.profile_travel_styles_are_valid(preferences -> 'travel_styles')))",
+    ),
+    ("profiles", "add column if not exists creator_slug text"),
+    ("profiles", "add column if not exists avatar_path text"),
+    (
+        "profiles",
+        "alter column creator_slug set default public.generate_creator_slug()",
+    ),
+    ("profiles", "alter column creator_slug set not null"),
+    (
+        "profiles",
+        "add constraint profiles_creator_slug_format "
+        "check (creator_slug ~ '^[a-z0-9-]{8,40}$')",
+    ),
+    (
+        "profiles",
+        "add constraint profiles_avatar_path_length "
+        "check (avatar_path is null or char_length(btrim(avatar_path)) "
+        "between 5 and 500)",
     ),
 }
 
@@ -428,18 +494,61 @@ def _assert_private_rls_contract(migration: str) -> None:
         assert table in created_tables
         assert rls_enabled[table]
 
-    for table in OWNER_SCOPED_TABLES:
+    for table, owner_column in OWNER_SCOPED_TABLES.items():
         table_policies = [body for policy_table, body in policies if policy_table == table]
         assert table_policies
         for policy in table_policies:
             assert re.search(r"\bfor\s+all\b", policy)
             assert re.search(
-                r"\busing\s*\(\s*auth\.uid\(\)\s*=\s*user_id\s*\)", policy
+                rf"\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)", policy
             )
             assert re.search(
-                r"\bwith\s+check\s*\(\s*auth\.uid\(\)\s*=\s*user_id\s*\)",
+                rf"\bwith\s+check\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
                 policy,
             )
+
+    for table, owner_column in OWNER_DELETE_ONLY_TABLES.items():
+        table_policies = [body for policy_table, body in policies if policy_table == table]
+        assert table_policies
+        allowed_patterns = (
+            rf"\bfor\s+select\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+            rf"\bfor\s+delete\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+        )
+        assert len(table_policies) == len(allowed_patterns)
+        for policy in table_policies:
+            assert any(re.fullmatch(pattern, policy) for pattern in allowed_patterns)
+            assert not re.search(r"\bfor\s+all\b", policy)
+            assert not re.search(r"\bfor\s+insert\b", policy)
+            assert not re.search(r"\bfor\s+update\b", policy)
+            assert not re.search(r"\bwith\s+check\b", policy)
+
+    for table, owner_column in OWNER_INSERT_DELETE_TABLES.items():
+        table_policies = [body for policy_table, body in policies if policy_table == table]
+        assert table_policies
+        allowed_patterns = (
+            rf"\bfor\s+select\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+            rf"\bfor\s+insert\b[\s\S]*\bwith\s+check\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+            rf"\bfor\s+delete\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+        )
+        assert len(table_policies) == len(allowed_patterns)
+        for policy in table_policies:
+            assert any(re.fullmatch(pattern, policy) for pattern in allowed_patterns)
+            assert not re.search(r"\bfor\s+all\b", policy)
+            assert not re.search(r"\bfor\s+update\b", policy)
+
+    for table, owner_column in OWNER_INSERT_ONLY_TABLES.items():
+        table_policies = [body for policy_table, body in policies if policy_table == table]
+        assert table_policies
+        allowed_patterns = (
+            rf"\bfor\s+select\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+            rf"\bfor\s+insert\b[\s\S]*\bwith\s+check\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+        )
+        assert len(table_policies) == len(allowed_patterns)
+        for policy in table_policies:
+            assert any(re.fullmatch(pattern, policy) for pattern in allowed_patterns)
+            assert not re.search(r"\bfor\s+all\b", policy)
+            assert not re.search(r"\bfor\s+update\b", policy)
+            assert not re.search(r"\bfor\s+delete\b", policy)
 
     for table in SERVICE_ROLE_TABLES:
         assert not [body for policy_table, body in policies if policy_table == table]
@@ -536,6 +645,19 @@ def test_policy_parser_handles_comments_quoted_identifiers_and_statement_boundar
         'create policy weak_unqualified on trips for select using (true);',
         'drop policy "users manage own trips" on trips;',
         'alter policy "users manage own trips" on trips using (true);',
+        'alter table public.community_posts disable row level security;',
+        'create policy weak on public.community_posts for select using (true);',
+        (
+            'create policy "users insert own community posts" '
+            'on public.community_posts for insert '
+            'with check (auth.uid() = user_id);'
+        ),
+        (
+            'create policy "users update own community posts" '
+            'on public.community_posts for update '
+            'using (auth.uid() = user_id) '
+            'with check (auth.uid() = user_id);'
+        ),
         (
             'create policy weak_unicode on u&"public".u&"trips" '
             'for select using (true);'
@@ -556,6 +678,27 @@ def test_private_user_tables_enable_rls_and_scope_to_authenticated_owner():
     _assert_private_rls_contract(_migration())
 
 
+def test_community_posts_table_is_private_and_authenticated_cannot_insert_or_update_directly():
+    migration = _migration()
+
+    assert (
+        "revoke all on table public.community_posts from public, anon, authenticated"
+        in migration
+    )
+    assert (
+        "grant select, delete on table public.community_posts to authenticated"
+        in migration
+    )
+    assert not re.search(
+        r"grant\s+[^;]*\binsert\b[^;]*on\s+table\s+public\.community_posts[^;]*to\s+authenticated",
+        migration,
+    )
+    assert not re.search(
+        r"grant\s+[^;]*\bupdate\b[^;]*on\s+table\s+public\.community_posts[^;]*to\s+authenticated",
+        migration,
+    )
+
+
 def test_share_links_store_only_hashes_and_have_no_public_read_policy():
     """Storing plaintext tokens or public select policy must fail this security contract."""
     migration = _migration()
@@ -564,6 +707,16 @@ def test_share_links_store_only_hashes_and_have_no_public_read_policy():
     assert "token_hash text not null unique" in migration
     assert "create policy \"public" not in migration
     assert "using (true)" not in migration
+
+
+def test_profiles_creator_metadata_columns_are_private_audited_extensions():
+    migration = _migration()
+
+    assert "add column if not exists creator_slug text" in migration
+    assert "add column if not exists avatar_path text" in migration
+    assert "alter column creator_slug set default public.generate_creator_slug()" in migration
+    assert "alter column creator_slug set not null" in migration
+    assert "create unique index if not exists profiles_creator_slug_key" in migration
 
 
 @pytest.mark.parametrize("child_table", ["conversation_messages", "share_links"])
