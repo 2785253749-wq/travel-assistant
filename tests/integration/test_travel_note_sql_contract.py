@@ -150,6 +150,11 @@ def test_submit_and_review_rpcs_lock_rows_and_reject_stale_transitions():
         submit,
     )
     assert "travel note submission is stale" in submit
+    assert re.search(
+        r"from public\.travel_note_images as image_row[\s\S]*?where image_row\.note_id = v_note\.id[\s\S]*?and image_row\.owner_id = v_user_id[\s\S]*?for update",
+        submit,
+    )
+    assert "travel note images changed during submission" in submit
     assert "if not found then" in submit
 
     assert re.search(

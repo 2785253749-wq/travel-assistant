@@ -563,6 +563,8 @@ declare
   v_trip public.trips;
   v_image_count integer;
   v_has_cover boolean;
+  v_current_image_count integer;
+  v_current_has_cover boolean;
   v_snapshot jsonb;
 begin
   if v_user_id is null then
@@ -585,6 +587,17 @@ begin
 
   if v_note.status not in ('draft', 'rejected') then
     raise exception 'travel note is not submittable' using errcode = 'P0001';
+  end if;
+
+  perform 1
+  from public.travel_note_images as image_row
+  where image_row.note_id = v_note.id
+    and image_row.owner_id = v_user_id
+  for update;
+
+  if not found then
+    raise exception 'travel note requires one to nine ordered images'
+      using errcode = 'P0001';
   end if;
 
   select count(*), bool_or(image_row.sort_order = 0)
@@ -635,9 +648,34 @@ begin
     and note_row.author_id = v_user_id
     and note_row.status = v_note.status
     and note_row.deleted_at is null
+    and (
+      select count(*)
+      from public.travel_note_images as image_row
+      where image_row.note_id = v_note.id
+        and image_row.owner_id = v_user_id
+    ) = v_image_count
+    and coalesce((
+      select bool_or(image_row.sort_order = 0)
+      from public.travel_note_images as image_row
+      where image_row.note_id = v_note.id
+        and image_row.owner_id = v_user_id
+    ), false) = coalesce(v_has_cover, false)
   returning note_row.* into v_note;
 
   if not found then
+    select count(*), bool_or(image_row.sort_order = 0)
+    into v_current_image_count, v_current_has_cover
+    from public.travel_note_images as image_row
+    where image_row.note_id = v_note.id
+      and image_row.owner_id = v_user_id;
+
+    if v_current_image_count <> v_image_count
+      or coalesce(v_current_has_cover, false) <> coalesce(v_has_cover, false)
+    then
+      raise exception 'travel note images changed during submission'
+        using errcode = 'P0001';
+    end if;
+
     raise exception 'travel note submission is stale' using errcode = 'P0001';
   end if;
 
