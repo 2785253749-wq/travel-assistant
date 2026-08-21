@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from copy import deepcopy
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -126,7 +127,7 @@ def test_public_repository_and_media_gateway_use_service_key_clients(monkeypatch
     assert media_client.postgrest.tokens == []
 
 
-def test_public_repository_uses_only_internal_public_read_rpcs():
+def test_public_repository_uses_migration_rpc_argument_names_and_only_internal_reads():
     published_at = datetime(2026, 8, 21, 9, 30, tzinfo=UTC).isoformat()
     detail_note_id = str(NOTE_A)
     list_row = {
@@ -214,6 +215,49 @@ def test_public_repository_uses_only_internal_public_read_rpcs():
             },
         ),
         ("get_public_travel_note_internal", {"p_note_id": detail_note_id}),
+    ]
+
+
+def test_review_rpcs_use_the_migration_note_id_and_decision_arguments(monkeypatch):
+    class RpcCall:
+        def execute(self):
+            return _response({"id": str(NOTE_A)})
+
+    class RpcClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def rpc(self, name: str, params: dict[str, object]):
+            self.calls.append((name, params))
+            return RpcCall()
+
+    client = RpcClient()
+    repository = SupabaseTravelNoteRepository(client)
+    monkeypatch.setattr(repository, "get_note", lambda _note_id: object())
+
+    assert repository.approve(
+        REVIEWER_A, NOTE_A, now=datetime(2026, 8, 21, 10, 0, tzinfo=UTC)
+    ) is not None
+    assert repository.reject(
+        REVIEWER_A,
+        NOTE_A,
+        reason="需要补充图片说明",
+        now=datetime(2026, 8, 21, 10, 0, tzinfo=UTC),
+    ) is not None
+
+    assert client.calls == [
+        (
+            "review_travel_note",
+            {"p_note_id": str(NOTE_A), "decision": "approved", "reason": None},
+        ),
+        (
+            "review_travel_note",
+            {
+                "p_note_id": str(NOTE_A),
+                "decision": "rejected",
+                "reason": "需要补充图片说明",
+            },
+        ),
     ]
 
 
@@ -386,3 +430,319 @@ def test_media_gateway_uses_the_private_community_bucket():
         f"https://signed.example.test/{USER_A}/{NOTE_A}/cover.webp",
         f"https://signed.example.test/{USER_A}/{NOTE_A}/detail.webp",
     ]
+
+
+class _StatefulQuery:
+    def __init__(self, client, table_name: str) -> None:
+        self._client = client
+        self._table_name = table_name
+        self._operation = "select"
+        self._payload = None
+        self._filters: list[tuple[str, object, str]] = []
+        self._orders: list[tuple[str, bool]] = []
+
+    def select(self, _columns: str):
+        self._operation = "select"
+        return self
+
+    def insert(self, payload):
+        self._operation = "insert"
+        self._payload = payload
+        return self
+
+    def update(self, payload):
+        self._operation = "update"
+        self._payload = payload
+        return self
+
+    def delete(self):
+        self._operation = "delete"
+        return self
+
+    def eq(self, field: str, value: object):
+        self._filters.append((field, value, "eq"))
+        return self
+
+    def in_(self, field: str, values: list[object]):
+        self._filters.append((field, values, "in"))
+        return self
+
+    def order(self, field: str, *, desc: bool = False):
+        self._orders.append((field, desc))
+        return self
+
+    def execute(self):
+        if self._operation == "insert":
+            return self._client._insert(self._table_name, self._payload)
+        rows = self._matching_rows()
+        if self._operation == "update":
+            for row in rows:
+                row.update(deepcopy(self._payload))
+            return _response(deepcopy(rows))
+        if self._operation == "delete":
+            deleted = []
+            table = self._client._table(self._table_name)
+            for row in list(table):
+                if self._matches(row):
+                    deleted.append(table.pop(table.index(row)))
+            return _response(deepcopy(deleted))
+        for field, desc in reversed(self._orders):
+            rows.sort(key=lambda row: row.get(field), reverse=desc)
+        return _response(deepcopy(rows))
+
+    def _matching_rows(self):
+        return [row for row in self._client._table(self._table_name) if self._matches(row)]
+
+    def _matches(self, row: dict[str, object]) -> bool:
+        for field, expected, operator in self._filters:
+            if operator == "eq" and row.get(field) != expected:
+                return False
+            if operator == "in" and row.get(field) not in expected:
+                return False
+        return True
+
+
+class _StatefulClient:
+    def __init__(self) -> None:
+        self.notes: list[dict[str, object]] = []
+        self.images: list[dict[str, object]] = []
+        self.profiles: list[dict[str, object]] = []
+        self.table_calls: list[str] = []
+        self.fail_image_insert = False
+
+    def table(self, table_name: str):
+        self.table_calls.append(table_name)
+        return _StatefulQuery(self, table_name)
+
+    def _table(self, table_name: str) -> list[dict[str, object]]:
+        return {
+            "travel_notes": self.notes,
+            "travel_note_images": self.images,
+            "profiles": self.profiles,
+        }[table_name]
+
+    def _insert(self, table_name: str, payload):
+        rows = payload if isinstance(payload, list) else [payload]
+        inserted: list[dict[str, object]] = []
+        for index, source in enumerate(rows):
+            row = deepcopy(source)
+            if table_name == "travel_notes":
+                row.setdefault("id", str(uuid4()))
+                row.setdefault("status", "draft")
+                row.setdefault("review_reason", None)
+                row.setdefault("submitted_at", None)
+                row.setdefault("published_at", None)
+                row.setdefault("deleted_at", None)
+                row.setdefault("like_count", 0)
+                row.setdefault("comment_count", 0)
+                row.setdefault("created_at", datetime(2026, 8, 21, tzinfo=UTC).isoformat())
+                row.setdefault("updated_at", row["created_at"])
+            elif table_name == "travel_note_images":
+                row.setdefault("id", str(uuid4()))
+            self._table(table_name).append(row)
+            inserted.append(row)
+            if table_name == "travel_note_images" and self.fail_image_insert and index == 0:
+                raise RuntimeError("image insert failed after one row")
+        return _response(deepcopy(inserted))
+
+
+def _stateful_note(*, note_id: UUID = NOTE_A, title: str = "旧标题") -> dict[str, object]:
+    timestamp = datetime(2026, 8, 21, 9, 0, tzinfo=UTC).isoformat()
+    return {
+        "id": str(note_id),
+        "author_id": str(USER_A),
+        "title": title,
+        "body": "旧正文",
+        "location_name": "旧地点",
+        "category": "城市漫步",
+        "source_trip_id": None,
+        "itinerary_snapshot": {"days": 2},
+        "status": "draft",
+        "review_reason": None,
+        "submitted_at": None,
+        "published_at": None,
+        "deleted_at": None,
+        "like_count": 0,
+        "comment_count": 0,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+def _stateful_image(
+    *, image_id: UUID, note_id: UUID, path: str, sort_order: int
+) -> dict[str, object]:
+    return {
+        "id": str(image_id),
+        "note_id": str(note_id),
+        "owner_id": str(USER_A),
+        "storage_path": path,
+        "sort_order": sort_order,
+        "width": 1200,
+        "height": 800,
+    }
+
+
+def test_create_draft_persists_snapshot_and_compensates_after_partial_image_write():
+    client = _StatefulClient()
+    client.fail_image_insert = True
+    snapshot = {"days": [{"day": 1, "places": ["大理古城"]}]}
+    repository = SupabaseTravelNoteRepository(client)
+
+    with pytest.raises(AppError) as error:
+        repository.create_draft(
+            USER_A,
+            draft_input(),
+            now=datetime(2026, 8, 21, 10, 0, tzinfo=UTC),
+            itinerary_snapshot=snapshot,
+        )
+
+    assert error.value.code == "TRAVEL_NOTE_UNAVAILABLE"
+    assert client.notes == []
+    assert client.images == []
+
+    client.fail_image_insert = False
+    created = repository.create_draft(
+        USER_A,
+        draft_input(),
+        now=datetime(2026, 8, 21, 10, 0, tzinfo=UTC),
+        itinerary_snapshot=snapshot,
+    )
+
+    assert created.itinerary_snapshot == snapshot
+    assert client.notes[0]["itinerary_snapshot"] == snapshot
+
+
+def test_replace_draft_restores_old_note_and_images_after_failed_image_write():
+    client = _StatefulClient()
+    client.fail_image_insert = True
+    client.notes.append(_stateful_note())
+    old_image = _stateful_image(
+        image_id=UUID("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+        note_id=NOTE_A,
+        path=f"{USER_A}/{NOTE_A}/old.webp",
+        sort_order=0,
+    )
+    client.images.append(old_image)
+    replacement = TravelNoteDraftInput.model_validate(
+        {
+            "title": "新标题",
+            "body": "新正文",
+            "location_name": "新地点",
+            "category": "自然风光",
+            "source_trip_id": None,
+            "images": [
+                {
+                    "storage_path": f"{USER_A}/{NOTE_A}/new.webp",
+                    "sort_order": 0,
+                    "width": 1600,
+                    "height": 1000,
+                },
+                {
+                    "storage_path": f"{USER_A}/{NOTE_A}/new-2.webp",
+                    "sort_order": 1,
+                    "width": 1600,
+                    "height": 1000,
+                },
+            ],
+        }
+    )
+
+    with pytest.raises(AppError) as error:
+        SupabaseTravelNoteRepository(client).replace_draft(
+            USER_A,
+            NOTE_A,
+            replacement,
+            now=datetime(2026, 8, 21, 10, 0, tzinfo=UTC),
+            itinerary_snapshot={"days": 4},
+        )
+
+    assert error.value.code == "TRAVEL_NOTE_UNAVAILABLE"
+    assert client.notes == [_stateful_note()]
+    assert client.images == [old_image]
+
+
+def test_replace_draft_persists_the_new_itinerary_snapshot():
+    client = _StatefulClient()
+    client.notes.append(_stateful_note())
+    client.images.append(
+        _stateful_image(
+            image_id=UUID("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            note_id=NOTE_A,
+            path=f"{USER_A}/{NOTE_A}/old.webp",
+            sort_order=0,
+        )
+    )
+    replacement = TravelNoteDraftInput.model_validate(
+        {
+            "title": "新标题",
+            "body": "新正文",
+            "location_name": "新地点",
+            "category": "自然风光",
+            "source_trip_id": None,
+            "images": [
+                {
+                    "storage_path": f"{USER_A}/{NOTE_A}/new.webp",
+                    "sort_order": 0,
+                    "width": 1600,
+                    "height": 1000,
+                }
+            ],
+        }
+    )
+    snapshot = {"days": [{"day": 1, "places": ["洱海"]}]}
+
+    stored = SupabaseTravelNoteRepository(client).replace_draft(
+        USER_A,
+        NOTE_A,
+        replacement,
+        now=datetime(2026, 8, 21, 10, 0, tzinfo=UTC),
+        itinerary_snapshot=snapshot,
+    )
+
+    assert stored is not None
+    assert stored.itinerary_snapshot == snapshot
+    assert client.notes[0]["itinerary_snapshot"] == snapshot
+
+
+def test_list_owned_batch_loads_images_and_profiles_once():
+    client = _StatefulClient()
+    client.notes.extend(
+        [
+            _stateful_note(note_id=NOTE_A, title="第一篇"),
+            _stateful_note(
+                note_id=UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"), title="第二篇"
+            ),
+        ]
+    )
+    client.images.extend(
+        [
+            _stateful_image(
+                image_id=UUID("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+                note_id=NOTE_A,
+                path=f"{USER_A}/{NOTE_A}/one.webp",
+                sort_order=0,
+            ),
+            _stateful_image(
+                image_id=UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+                note_id=UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+                path=f"{USER_A}/dddddddd-dddd-dddd-dddd-dddddddddddd/two.webp",
+                sort_order=0,
+            ),
+        ]
+    )
+    client.profiles.append(
+        {
+            "user_id": str(USER_A),
+            "display_name": "Voyage Alice",
+            "avatar_path": None,
+            "creator_slug": "creator-alice",
+        }
+    )
+
+    notes = SupabaseTravelNoteRepository(client).list_owned(USER_A)
+
+    assert [note.title for note in notes] == ["第二篇", "第一篇"]
+    assert all(len(note.images) == 1 for note in notes)
+    assert all(note.author_display_name == "Voyage Alice" for note in notes)
+    assert client.table_calls == ["travel_notes", "travel_note_images", "profiles"]

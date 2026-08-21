@@ -16,6 +16,16 @@ COMMUNITY_MEDIA_BUCKET = "community-media"
 DEFAULT_SIGNED_URL_TTL_SECONDS = 3600
 _DEFAULT_AUTHOR_DISPLAY_NAME = "Voyage 旅行者"
 _DEFAULT_AUTHOR_SLUG = "voyage-traveler"
+# These names mirror the deployed 011 migration. Keep them centralized so the
+# RPC contract cannot drift between owner and moderation operations.
+_RPC_NOTE_ID_PARAM = "p_note_id"
+_PUBLIC_LIST_RPC_PARAMS = (
+    "cursor_published_at",
+    "cursor_id",
+    "page_size",
+    "category_filter",
+    "search_query",
+)
 
 
 class SupabaseTravelNoteRepository:
@@ -31,7 +41,7 @@ class SupabaseTravelNoteRepository:
         now: datetime,
         itinerary_snapshot: dict[str, object] | None,
     ) -> StoredTravelNote:
-        del now, itinerary_snapshot
+        del now
         payload = {
             "author_id": str(user_id),
             "title": value.title,
@@ -41,7 +51,9 @@ class SupabaseTravelNoteRepository:
             "source_trip_id": (
                 str(value.source_trip_id) if value.source_trip_id is not None else None
             ),
+            "itinerary_snapshot": deepcopy(itinerary_snapshot),
         }
+        note_id: UUID | None = None
         try:
             with database_operation(
                 "travel_note.create_draft", subject=hashed_log_subject("user", user_id)
@@ -53,9 +65,11 @@ class SupabaseTravelNoteRepository:
             if stored is None:
                 raise RuntimeError("travel note draft insert returned no row")
             return stored
-        except AppError:
-            raise
         except Exception as exc:  # pragma: no cover - exercised through fakes
+            if note_id is not None:
+                self._cleanup_created_draft(user_id, note_id)
+            if isinstance(exc, AppError):
+                raise
             raise _map_travel_note_database_error(exc) from exc
 
     def replace_draft(
@@ -67,7 +81,7 @@ class SupabaseTravelNoteRepository:
         now: datetime,
         itinerary_snapshot: dict[str, object] | None,
     ) -> StoredTravelNote | None:
-        del now, itinerary_snapshot
+        del now
         payload = {
             "title": value.title,
             "body": value.body,
@@ -76,8 +90,16 @@ class SupabaseTravelNoteRepository:
             "source_trip_id": (
                 str(value.source_trip_id) if value.source_trip_id is not None else None
             ),
+            "itinerary_snapshot": deepcopy(itinerary_snapshot),
         }
+        original_row: dict[str, Any] | None = None
+        original_images: list[dict[str, Any]] = []
+        updated = False
         try:
+            original_row = self._get_owned_row(user_id, note_id)
+            if original_row is None or original_row.get("deleted_at") is not None:
+                return None
+            original_images = self._load_image_rows(self._client, note_id)
             with database_operation(
                 "travel_note.replace_draft", subject=hashed_log_subject("user", user_id)
             ):
@@ -90,11 +112,14 @@ class SupabaseTravelNoteRepository:
                 )
             if not _row_list(response.data):
                 return None
-            self._replace_images(user_id, note_id, value.images)
+            updated = True
+            self._replace_images(user_id, note_id, value.images, original_images)
             return self.get_owned(user_id, note_id)
-        except AppError:
-            raise
         except Exception as exc:  # pragma: no cover - exercised through fakes
+            if updated and original_row is not None:
+                self._restore_draft(user_id, note_id, original_row, original_images)
+            if isinstance(exc, AppError):
+                raise
             raise _map_travel_note_database_error(exc) from exc
 
     def attach_image(
@@ -213,7 +238,7 @@ class SupabaseTravelNoteRepository:
                 "travel_note.submit", subject=hashed_log_subject("user", user_id)
             ):
                 response = self._client.rpc(
-                    "submit_travel_note", {"p_note_id": str(note_id)}
+                    "submit_travel_note", {_RPC_NOTE_ID_PARAM: str(note_id)}
                 ).execute()
             if not _row_list(response.data, allow_single_object=True):
                 return None
@@ -259,11 +284,11 @@ class SupabaseTravelNoteRepository:
                     .execute()
                 )
             notes = [
-                stored
+                row
                 for row in _row_list(response.data)
-                if (stored := self._stored_from_private_row(row)).deleted_at is None
+                if _parse_datetime(row.get("deleted_at")) is None
             ]
-            return notes
+            return self._stored_from_private_rows(notes, query_client=self._client)
         except AppError:
             raise
         except Exception as exc:  # pragma: no cover - exercised through fakes
@@ -307,7 +332,11 @@ class SupabaseTravelNoteRepository:
             ):
                 response = self._client.rpc(
                     "review_travel_note",
-                    {"p_note_id": str(note_id), "decision": "approved", "reason": None},
+                    {
+                        _RPC_NOTE_ID_PARAM: str(note_id),
+                        "decision": "approved",
+                        "reason": None,
+                    },
                 ).execute()
             if not _row_list(response.data, allow_single_object=True):
                 return None
@@ -335,7 +364,11 @@ class SupabaseTravelNoteRepository:
             ):
                 response = self._client.rpc(
                     "review_travel_note",
-                    {"p_note_id": str(note_id), "decision": "rejected", "reason": reason},
+                    {
+                        _RPC_NOTE_ID_PARAM: str(note_id),
+                        "decision": "rejected",
+                        "reason": reason,
+                    },
                 ).execute()
             if not _row_list(response.data, allow_single_object=True):
                 return None
@@ -348,16 +381,54 @@ class SupabaseTravelNoteRepository:
         except Exception as exc:  # pragma: no cover - exercised through fakes
             raise _map_travel_note_database_error(exc) from exc
 
-    def _stored_from_private_row(self, row: dict[str, Any], *, query_client=None) -> StoredTravelNote:
+    def _get_owned_row(self, user_id: UUID, note_id: UUID) -> dict[str, Any] | None:
+        response = (
+            self._client.table("travel_notes")
+            .select("*")
+            .eq("id", str(note_id))
+            .eq("author_id", str(user_id))
+            .execute()
+        )
+        rows = _row_list(response.data)
+        return rows[0] if rows else None
+
+    def _stored_from_private_row(
+        self, row: dict[str, Any], *, query_client=None
+    ) -> StoredTravelNote:
         query_client = query_client or self._client
         author_id = UUID(str(row["author_id"]))
         images = self._load_images(query_client, UUID(str(row["id"])))
         profile = self._load_profile(query_client, author_id)
         return _stored_note_from_row(row, images=images, profile=profile)
 
+    def _stored_from_private_rows(
+        self, rows: list[dict[str, Any]], *, query_client=None
+    ) -> list[StoredTravelNote]:
+        if not rows:
+            return []
+        query_client = query_client or self._client
+        note_ids = [UUID(str(row["id"])) for row in rows]
+        author_ids = {UUID(str(row["author_id"])) for row in rows}
+        images_by_note = self._load_images_by_note_ids(query_client, note_ids)
+        profiles_by_author = self._load_profiles_by_author_ids(query_client, author_ids)
+        return [
+            _stored_note_from_row(
+                row,
+                images=images_by_note.get(UUID(str(row["id"])), ()),
+                profile=profiles_by_author.get(UUID(str(row["author_id"]))),
+            )
+            for row in rows
+        ]
+
     def _load_images(
         self, query_client, note_id: UUID
     ) -> tuple[StoredTravelNoteImage, ...]:
+        return tuple(
+            _stored_image_from_row(row)
+            for row in self._load_image_rows(query_client, note_id)
+        )
+
+    def _load_image_rows(self, query_client, note_id: UUID) -> list[dict[str, Any]]:
         response = (
             query_client.table("travel_note_images")
             .select("id, note_id, owner_id, storage_path, sort_order, width, height")
@@ -365,7 +436,22 @@ class SupabaseTravelNoteRepository:
             .order("sort_order", desc=False)
             .execute()
         )
-        return tuple(_stored_image_from_row(row) for row in _row_list(response.data))
+        return _row_list(response.data)
+
+    def _load_images_by_note_ids(
+        self, query_client, note_ids: list[UUID]
+    ) -> dict[UUID, tuple[StoredTravelNoteImage, ...]]:
+        response = (
+            query_client.table("travel_note_images")
+            .select("id, note_id, owner_id, storage_path, sort_order, width, height")
+            .in_("note_id", [str(note_id) for note_id in note_ids])
+            .order("sort_order", desc=False)
+            .execute()
+        )
+        grouped: defaultdict[UUID, list[StoredTravelNoteImage]] = defaultdict(list)
+        for row in _row_list(response.data):
+            grouped[UUID(str(row["note_id"]))].append(_stored_image_from_row(row))
+        return {note_id: tuple(images) for note_id, images in grouped.items()}
 
     def _load_profile(self, query_client, author_id: UUID) -> dict[str, Any] | None:
         response = (
@@ -377,31 +463,115 @@ class SupabaseTravelNoteRepository:
         rows = _row_list(response.data)
         return rows[0] if rows else None
 
+    def _load_profiles_by_author_ids(
+        self, query_client, author_ids: set[UUID]
+    ) -> dict[UUID, dict[str, Any]]:
+        response = (
+            query_client.table("profiles")
+            .select("user_id, display_name, avatar_path, creator_slug")
+            .in_("user_id", [str(author_id) for author_id in author_ids])
+            .execute()
+        )
+        return {
+            UUID(str(row["user_id"])): row
+            for row in _row_list(response.data)
+        }
+
     def _insert_images(
         self, user_id: UUID, note_id: UUID, images: list[TravelNoteImageInput]
     ) -> None:
         if not images:
             return
-        payload = [
-            {
-                "note_id": str(note_id),
-                "owner_id": str(user_id),
-                "storage_path": image.storage_path,
-                "sort_order": image.sort_order,
-                "width": image.width,
-                "height": image.height,
-            }
-            for image in images
-        ]
-        self._client.table("travel_note_images").insert(payload).execute()
+        self._insert_image_rows(
+            [
+                {
+                    "note_id": str(note_id),
+                    "owner_id": str(user_id),
+                    "storage_path": image.storage_path,
+                    "sort_order": image.sort_order,
+                    "width": image.width,
+                    "height": image.height,
+                }
+                for image in images
+            ]
+        )
 
     def _replace_images(
-        self, user_id: UUID, note_id: UUID, images: list[TravelNoteImageInput]
+        self,
+        user_id: UUID,
+        note_id: UUID,
+        images: list[TravelNoteImageInput],
+        original_images: list[dict[str, Any]],
     ) -> None:
-        self._client.table("travel_note_images").delete().eq("note_id", str(note_id)).eq(
-            "owner_id", str(user_id)
-        ).execute()
-        self._insert_images(user_id, note_id, images)
+        try:
+            self._delete_all_images(user_id, note_id)
+            self._insert_images(user_id, note_id, images)
+        except Exception as exc:
+            try:
+                self._restore_images(user_id, note_id, original_images)
+            except Exception as compensation_exc:
+                raise _compensation_failed(compensation_exc) from exc
+            raise
+
+    def _insert_image_rows(self, rows: list[dict[str, Any]]) -> None:
+        if rows:
+            self._client.table("travel_note_images").insert(rows).execute()
+
+    def _delete_all_images(self, user_id: UUID, note_id: UUID) -> None:
+        self._client.table("travel_note_images").delete().eq(
+            "note_id", str(note_id)
+        ).eq("owner_id", str(user_id)).execute()
+
+    def _restore_images(
+        self, user_id: UUID, note_id: UUID, original_images: list[dict[str, Any]]
+    ) -> None:
+        self._delete_all_images(user_id, note_id)
+        self._insert_image_rows(deepcopy(original_images))
+
+    def _cleanup_created_draft(self, user_id: UUID, note_id: UUID) -> None:
+        errors: list[Exception] = []
+        try:
+            self._delete_all_images(user_id, note_id)
+        except Exception as exc:
+            errors.append(exc)
+        try:
+            self._client.table("travel_notes").delete().eq(
+                "id", str(note_id)
+            ).eq("author_id", str(user_id)).execute()
+        except Exception as exc:
+            errors.append(exc)
+        if errors:
+            raise _compensation_failed(errors[0])
+
+    def _restore_draft(
+        self,
+        user_id: UUID,
+        note_id: UUID,
+        original_row: dict[str, Any],
+        original_images: list[dict[str, Any]],
+    ) -> None:
+        errors: list[Exception] = []
+        try:
+            self._client.table("travel_notes").update(
+                {
+                    "title": original_row.get("title"),
+                    "body": original_row.get("body"),
+                    "location_name": original_row.get("location_name"),
+                    "category": original_row.get("category"),
+                    "source_trip_id": original_row.get("source_trip_id"),
+                    "itinerary_snapshot": deepcopy(
+                        original_row.get("itinerary_snapshot")
+                    ),
+                }
+            ).eq("id", str(note_id)).eq("author_id", str(user_id)).execute()
+        except Exception as exc:
+            errors.append(exc)
+        try:
+            self._restore_images(user_id, note_id, original_images)
+        except Exception as exc:
+            errors.append(exc)
+        if errors:
+            raise _compensation_failed(errors[0])
 
     def _reindex_images(self, user_id: UUID, note_id: UUID) -> None:
         images = self._load_images(self._client, note_id)
@@ -425,13 +595,19 @@ class SupabasePublicTravelNoteRepository:
         category: str | None,
         search_query: str | None,
     ) -> list[StoredTravelNote]:
-        params = {
-            "cursor_published_at": cursor[0].isoformat() if cursor is not None else None,
-            "cursor_id": str(cursor[1]) if cursor is not None else None,
-            "page_size": limit,
-            "category_filter": category,
-            "search_query": search_query,
-        }
+        params = dict(
+            zip(
+                _PUBLIC_LIST_RPC_PARAMS,
+                (
+                    cursor[0].isoformat() if cursor is not None else None,
+                    str(cursor[1]) if cursor is not None else None,
+                    limit,
+                    category,
+                    search_query,
+                ),
+                strict=True,
+            )
+        )
         try:
             with database_operation("travel_note.list_public"):
                 response = self._client.rpc(
@@ -451,7 +627,8 @@ class SupabasePublicTravelNoteRepository:
                 "travel_note.get_public", subject=hashed_log_subject("travel_note", note_id)
             ):
                 response = self._client.rpc(
-                    "get_public_travel_note_internal", {"p_note_id": str(note_id)}
+                    "get_public_travel_note_internal",
+                    {_RPC_NOTE_ID_PARAM: str(note_id)},
                 ).execute()
             rows = _row_list(response.data)
             if not rows:
@@ -770,3 +947,10 @@ def _map_travel_note_database_error(error: Exception) -> AppError:
             "TRAVEL_NOTE_VALIDATION_FAILED", "Travel note request validation failed"
         )
     return AppError("TRAVEL_NOTE_UNAVAILABLE", "Travel note service is unavailable")
+
+
+def _compensation_failed(error: Exception) -> AppError:
+    return AppError(
+        "TRAVEL_NOTE_UNAVAILABLE",
+        "Travel note service is unavailable while restoring draft state",
+    )
