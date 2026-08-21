@@ -6,8 +6,12 @@ from uuid import uuid4
 
 from app.travel_notes.media import (
     CommunityMediaGateway,
+    CommunityMediaDeletionError,
+    CommunityMediaSigningPayloadError,
+    CommunityMediaStorageError,
     InMemoryCommunityMediaCleanupQueue,
     run_cleanup_batch,
+    sanitize_cleanup_error,
 )
 
 
@@ -51,6 +55,27 @@ class _FakeObjectStore:
                 )
 
 
+class _FailingSignedPayloadBucket:
+    def create_signed_urls(self, paths: list[str], expires_in: int):
+        del paths, expires_in
+        return {"data": [{"path": "avatar/plain-key.webp"}]}
+
+
+class _RaisingSignedUrlBucket:
+    def create_signed_urls(self, paths: list[str], expires_in: int):
+        del paths, expires_in
+        raise RuntimeError("storage backend failed for avatar/plain-key.webp")
+
+
+class _BucketBackedStorage:
+    def __init__(self, bucket) -> None:
+        self.bucket = bucket
+
+    def from_(self, bucket_name: str):
+        del bucket_name
+        return self.bucket
+
+
 def test_sign_paths_preserves_order_and_returns_signed_urls_only():
     storage = _FakeStorage(
         {
@@ -68,6 +93,34 @@ def test_sign_paths_preserves_order_and_returns_signed_urls_only():
         "https://signed.example.test/a.webp",
         "https://signed.example.test/b.webp",
     ]
+
+
+def test_sign_paths_raises_typed_payload_error_for_malformed_signed_url_payload():
+    gateway = CommunityMediaGateway(
+        _BucketBackedStorage(_FailingSignedPayloadBucket()),
+        bucket="community-media",
+    )
+
+    try:
+        gateway.sign_paths(["avatar/plain-key.webp"], expires_in=3600)
+    except CommunityMediaSigningPayloadError as error:
+        assert error.code == "COMMUNITY_MEDIA_SIGNING_PAYLOAD_INVALID"
+    else:  # pragma: no cover - enforced by assertion
+        raise AssertionError("expected CommunityMediaSigningPayloadError")
+
+
+def test_sign_paths_raises_typed_storage_error_when_storage_client_fails():
+    gateway = CommunityMediaGateway(
+        _BucketBackedStorage(_RaisingSignedUrlBucket()),
+        bucket="community-media",
+    )
+
+    try:
+        gateway.sign_paths(["avatar/plain-key.webp"], expires_in=3600)
+    except CommunityMediaStorageError as error:
+        assert error.code == "COMMUNITY_MEDIA_SIGNING_FAILED"
+    else:  # pragma: no cover - enforced by assertion
+        raise AssertionError("expected CommunityMediaStorageError")
 
 
 def test_run_cleanup_batch_marks_successes_requeues_failures_and_skips_retry_exhausted_jobs(
@@ -116,3 +169,44 @@ def test_run_cleanup_batch_marks_successes_requeues_failures_and_skips_retry_exh
     assert queue.jobs[skipped_id].attempts == 3
     assert queue.jobs[skipped_id].status == "pending"
     assert failing_path not in caplog.text
+
+
+def test_sanitize_cleanup_error_never_leaks_plain_storage_keys_or_short_paths():
+    plain_key_error = RuntimeError("delete failed for avatar/plain-key.webp")
+    short_path_error = RuntimeError("delete failed for ok.webp")
+
+    plain_key = sanitize_cleanup_error(plain_key_error)
+    short_path = sanitize_cleanup_error(short_path_error)
+
+    assert plain_key == "RuntimeError: cleanup operation failed"
+    assert short_path == "RuntimeError: cleanup operation failed"
+
+
+def test_cleanup_batch_uses_typed_deletion_error_and_generic_last_error():
+    class _TypedFailingObjectStore:
+        def remove_paths(self, paths: list[str]) -> None:
+            raise CommunityMediaDeletionError(
+                "COMMUNITY_MEDIA_DELETE_FAILED",
+                f"delete failed for {paths[0]}",
+            )
+
+    queue = InMemoryCommunityMediaCleanupQueue()
+    job_id = uuid4()
+    queue.jobs[job_id] = queue.job(
+        job_id,
+        "avatar/plain-key.webp",
+        attempts=0,
+        status="pending",
+    )
+
+    result = run_cleanup_batch(
+        queue,
+        _TypedFailingObjectStore(),
+        now=datetime(2026, 8, 21, 15, 0, tzinfo=UTC),
+        limit=10,
+        max_attempts=3,
+        retry_delay=timedelta(minutes=5),
+    )
+
+    assert result.failed == 1
+    assert queue.jobs[job_id].last_error == "CommunityMediaDeletionError: code=COMMUNITY_MEDIA_DELETE_FAILED"

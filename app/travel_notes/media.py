@@ -24,6 +24,24 @@ _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 _PATH_PATTERN = re.compile(r"(?:[0-9a-f-]{8,}/)+(?:[^\s/]+)", re.IGNORECASE)
 
 
+class CommunityMediaError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class CommunityMediaSigningPayloadError(CommunityMediaError):
+    pass
+
+
+class CommunityMediaStorageError(CommunityMediaError):
+    pass
+
+
+class CommunityMediaDeletionError(CommunityMediaError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class CommunityMediaCleanupJob:
     id: UUID
@@ -91,22 +109,37 @@ class CommunityMediaGateway:
         if not paths:
             return []
         ttl = expires_in or self._default_expires_in
-        raw = self._storage.from_(self._bucket).create_signed_urls(paths, ttl)
+        try:
+            raw = self._storage.from_(self._bucket).create_signed_urls(paths, ttl)
+        except Exception as exc:
+            raise CommunityMediaStorageError(
+                "COMMUNITY_MEDIA_SIGNING_FAILED",
+                "community media signing failed",
+            ) from exc
         rows = raw.get("data") if isinstance(raw, dict) else raw
         if not isinstance(rows, list):
-            raise RuntimeError("community media signing returned an invalid payload")
+            raise CommunityMediaSigningPayloadError(
+                "COMMUNITY_MEDIA_SIGNING_PAYLOAD_INVALID",
+                "community media signing returned an invalid payload",
+            )
         signed_urls: list[str] = []
         for row in rows:
             if isinstance(row, str):
                 signed_urls.append(row)
                 continue
             if not isinstance(row, dict):
-                raise RuntimeError("community media signing returned an invalid row")
+                raise CommunityMediaSigningPayloadError(
+                    "COMMUNITY_MEDIA_SIGNING_PAYLOAD_INVALID",
+                    "community media signing returned an invalid row",
+                )
             signed_url = (
                 row.get("signedURL") or row.get("signedUrl") or row.get("signed_url")
             )
             if not isinstance(signed_url, str) or not signed_url.strip():
-                raise RuntimeError("community media signing returned no signed URL")
+                raise CommunityMediaSigningPayloadError(
+                    "COMMUNITY_MEDIA_SIGNING_PAYLOAD_INVALID",
+                    "community media signing returned no signed URL",
+                )
             signed_urls.append(signed_url)
         return signed_urls
 
@@ -330,10 +363,19 @@ class SupabaseCommunityMediaObjectStore:
     def remove_paths(self, paths: list[str]) -> None:
         if not paths:
             return
-        raw = self._client.storage.from_(self._bucket).remove(paths)
+        try:
+            raw = self._client.storage.from_(self._bucket).remove(paths)
+        except Exception as exc:
+            raise CommunityMediaDeletionError(
+                "COMMUNITY_MEDIA_DELETE_FAILED",
+                "community media deletion failed",
+            ) from exc
         error = raw.get("error") if isinstance(raw, dict) else None
         if error:
-            raise RuntimeError("community media deletion failed")
+            raise CommunityMediaDeletionError(
+                "COMMUNITY_MEDIA_DELETE_FAILED",
+                "community media deletion failed",
+            )
 
 
 def run_cleanup_batch(
@@ -395,14 +437,17 @@ def sanitize_cleanup_error(error: Exception) -> str:
     code = getattr(error, "code", None)
     if code:
         parts.append(f"code={code}")
-    message = str(error).strip()
-    if message:
-        sanitized = _URL_PATTERN.sub("[redacted-url]", message)
-        sanitized = _UUID_PATTERN.sub("[redacted-id]", sanitized)
-        sanitized = _PATH_PATTERN.sub("[redacted-path]", sanitized)
-        sanitized = re.sub(r"\s+", " ", sanitized).strip()
-        if sanitized:
-            parts.append(sanitized[:160])
+    else:
+        message = str(error).strip()
+        if message:
+            sanitized = _URL_PATTERN.sub("[redacted-url]", message)
+            sanitized = _UUID_PATTERN.sub("[redacted-id]", sanitized)
+            sanitized = _PATH_PATTERN.sub("[redacted-path]", sanitized)
+            sanitized = re.sub(r"\s+", " ", sanitized).strip()
+            if sanitized != message:
+                parts.append(sanitized[:160])
+            else:
+                parts.append("cleanup operation failed")
     return ": ".join(parts)
 
 
