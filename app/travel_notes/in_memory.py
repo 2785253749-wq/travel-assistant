@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from app.travel_notes.models import TravelNoteDraftInput
+from app.travel_notes.models import TravelNoteDraftInput, TravelNoteImageInput
 from app.travel_notes.ports import StoredTravelNote, StoredTravelNoteImage
 
 
@@ -100,6 +100,58 @@ class InMemoryTravelNoteRepository:
             images=self._images_from_input(value),
         )
         self._notes[note_id] = updated
+        return self.get_note(note_id)
+
+    def attach_image(
+        self,
+        user_id: UUID,
+        note_id: UUID,
+        image: TravelNoteImageInput,
+        *,
+        now: datetime,
+    ) -> StoredTravelNote | None:
+        stored = self._notes.get(note_id)
+        if stored is None or stored.author_id != user_id or stored.deleted_at is not None:
+            return None
+        next_images = list(stored.images)
+        next_images.append(
+            StoredTravelNoteImage(
+                id=uuid4(),
+                storage_path=image.storage_path,
+                sort_order=image.sort_order,
+                width=image.width,
+                height=image.height,
+            )
+        )
+        self._notes[note_id] = replace(
+            stored,
+            images=tuple(next_images),
+            updated_at=now,
+        )
+        return self.get_note(note_id)
+
+    def remove_image(
+        self,
+        user_id: UUID,
+        note_id: UUID,
+        image_id: UUID,
+        *,
+        now: datetime,
+    ) -> StoredTravelNote | None:
+        stored = self._notes.get(note_id)
+        if stored is None or stored.author_id != user_id or stored.deleted_at is not None:
+            return None
+        remaining = [image for image in stored.images if image.id != image_id]
+        if len(remaining) == len(stored.images):
+            return None
+        reindexed = tuple(
+            replace(image, sort_order=index) for index, image in enumerate(remaining)
+        )
+        self._notes[note_id] = replace(
+            stored,
+            images=reindexed,
+            updated_at=now,
+        )
         return self.get_note(note_id)
 
     def get_owned(self, user_id: UUID, note_id: UUID) -> StoredTravelNote | None:
@@ -250,4 +302,3 @@ class InMemoryTravelNoteRepository:
             )
             for image in value.images
         )
-

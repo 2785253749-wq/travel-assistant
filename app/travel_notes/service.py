@@ -10,6 +10,7 @@ from app.travel_notes.models import (
     TravelNoteCategory,
     TravelNoteDetail,
     TravelNoteDraftInput,
+    TravelNoteImageInput,
     TravelNoteOwnerImage,
     TravelNoteOwnerView,
     TravelNotePage,
@@ -44,13 +45,13 @@ class TravelNoteModule:
         self,
         repository: TravelNoteRepository,
         *,
-        public_repository: PublicTravelNoteRepository | None = None,
-        media_gateway: TravelNoteMediaGateway | None = None,
+        public_repository: PublicTravelNoteRepository,
+        media_gateway: TravelNoteMediaGateway,
         clock: Clock | None = None,
     ) -> None:
         self._repository = repository
-        self._public_repository = public_repository or repository
-        self._media_gateway = media_gateway or _IdentityTravelNoteMediaGateway()
+        self._public_repository = public_repository
+        self._media_gateway = media_gateway
         self._clock = clock or _SystemClock()
 
     def create_draft(self, user_id: UUID, value: TravelNoteDraftInput) -> TravelNoteOwnerView:
@@ -81,6 +82,49 @@ class TravelNoteModule:
             value,
             now=self._clock.now(),
             itinerary_snapshot=itinerary_snapshot,
+        )
+        if stored is None:
+            raise _not_found()
+        return self._to_owner_view(stored)
+
+    def attach_image(
+        self, user_id: UUID, note_id: UUID, image: TravelNoteImageInput
+    ) -> TravelNoteOwnerView:
+        current = self._repository.get_owned(user_id, note_id)
+        if current is None:
+            raise _not_found()
+        if current.status not in {"draft", "rejected"}:
+            raise _invalid_state()
+        if len(current.images) >= 9 or image.sort_order != len(current.images):
+            raise _validation_failed()
+        self._validate_owner_path(user_id, image.storage_path)
+
+        stored = self._repository.attach_image(
+            user_id,
+            note_id,
+            image,
+            now=self._clock.now(),
+        )
+        if stored is None:
+            raise _not_found()
+        return self._to_owner_view(stored)
+
+    def remove_image(self, user_id: UUID, note_id: UUID, image_id: UUID) -> TravelNoteOwnerView:
+        current = self._repository.get_owned(user_id, note_id)
+        if current is None:
+            raise _not_found()
+        if current.status not in {"draft", "rejected"}:
+            raise _invalid_state()
+        if len(current.images) <= 1:
+            raise _validation_failed()
+        if all(image.id != image_id for image in current.images):
+            raise _not_found()
+
+        stored = self._repository.remove_image(
+            user_id,
+            note_id,
+            image_id,
+            now=self._clock.now(),
         )
         if stored is None:
             raise _not_found()
@@ -179,8 +223,13 @@ class TravelNoteModule:
         return self._to_owner_view(stored)
 
     def _validate_owner_paths(self, user_id: UUID, value: TravelNoteDraftInput) -> None:
+        for image in value.images:
+            self._validate_owner_path(user_id, image.storage_path)
+
+    @staticmethod
+    def _validate_owner_path(user_id: UUID, storage_path: str) -> None:
         prefix = f"{user_id}/"
-        if any(not image.storage_path.startswith(prefix) for image in value.images):
+        if not storage_path.startswith(prefix):
             raise _validation_failed()
 
     def _itinerary_snapshot_for(
@@ -257,9 +306,7 @@ class TravelNoteModule:
             raise _not_found()
 
         ordered_images = sorted(stored.images, key=lambda item: item.sort_order)
-        signed_paths = self._media_gateway.sign_paths(
-            [image.storage_path for image in ordered_images]
-        )
+        signed_paths = self._sign_paths([image.storage_path for image in ordered_images])
         return TravelNoteDetail(
             id=stored.id,
             title=stored.title,
@@ -287,12 +334,21 @@ class TravelNoteModule:
 
     def _signed_cover_path(self, stored: StoredTravelNote) -> str:
         ordered_images = sorted(stored.images, key=lambda item: item.sort_order)
-        return self._media_gateway.sign_paths([ordered_images[0].storage_path])[0]
+        return self._sign_paths([ordered_images[0].storage_path])[0]
 
     def _signed_optional_path(self, path: str | None) -> str | None:
         if path is None:
             return None
-        return self._media_gateway.sign_paths([path])[0]
+        return self._sign_paths([path])[0]
+
+    def _sign_paths(self, paths: list[str]) -> list[str]:
+        try:
+            signed_paths = self._media_gateway.sign_paths(paths)
+        except Exception as exc:
+            raise _unavailable() from exc
+        if len(signed_paths) != len(paths):
+            raise _unavailable()
+        return signed_paths
 
     @staticmethod
     def _body_preview(body: str) -> str:
@@ -315,3 +371,6 @@ def _validation_failed() -> AppError:
         "TRAVEL_NOTE_VALIDATION_FAILED", "Travel note request validation failed"
     )
 
+
+def _unavailable() -> AppError:
+    return AppError("TRAVEL_NOTE_UNAVAILABLE", "Travel note service is unavailable")

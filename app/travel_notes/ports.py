@@ -5,7 +5,12 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from app.travel_notes.models import TravelNoteCategory, TravelNoteDraftInput, TravelNoteStatus
+from app.travel_notes.models import (
+    TravelNoteCategory,
+    TravelNoteDraftInput,
+    TravelNoteImageInput,
+    TravelNoteStatus,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +75,24 @@ class TravelNoteRepository(Protocol):
         itinerary_snapshot: dict[str, object] | None,
     ) -> StoredTravelNote | None: ...
 
+    def attach_image(
+        self,
+        user_id: UUID,
+        note_id: UUID,
+        image: TravelNoteImageInput,
+        *,
+        now: datetime,
+    ) -> StoredTravelNote | None: ...
+
+    def remove_image(
+        self,
+        user_id: UUID,
+        note_id: UUID,
+        image_id: UUID,
+        *,
+        now: datetime,
+    ) -> StoredTravelNote | None: ...
+
     def get_owned(self, user_id: UUID, note_id: UUID) -> StoredTravelNote | None: ...
     def get_note(self, note_id: UUID) -> StoredTravelNote | None: ...
 
@@ -103,4 +126,3 @@ class PublicTravelNoteRepository(Protocol):
     ) -> list[StoredTravelNote]: ...
 
     def get_public(self, note_id: UUID) -> StoredTravelNote | None: ...
-

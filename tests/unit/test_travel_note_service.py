@@ -54,8 +54,11 @@ def draft_input(
 def create_module(
     *,
     clock_now: datetime | None = None,
+    repository: InMemoryTravelNoteRepository | None = None,
+    public_repository: InMemoryTravelNoteRepository | None = None,
+    media_gateway: InMemoryTravelNoteMediaGateway | None = None,
 ) -> tuple[TravelNoteModule, InMemoryTravelNoteRepository, FixedClock]:
-    repository = InMemoryTravelNoteRepository()
+    repository = repository or InMemoryTravelNoteRepository()
     repository.add_source_trip(
         USER_A,
         TRIP_A,
@@ -77,7 +80,8 @@ def create_module(
     clock = FixedClock(clock_now or datetime(2026, 8, 21, 9, 0, tzinfo=UTC))
     module = TravelNoteModule(
         repository=repository,
-        media_gateway=InMemoryTravelNoteMediaGateway(),
+        public_repository=public_repository or repository,
+        media_gateway=media_gateway or InMemoryTravelNoteMediaGateway(),
         clock=clock,
     )
     return module, repository, clock
@@ -85,6 +89,19 @@ def create_module(
 
 def error_code(exc_info: pytest.ExceptionInfo[AppError]) -> str:
     return exc_info.value.code
+
+
+class ExplodingMediaGateway(InMemoryTravelNoteMediaGateway):
+    def sign_paths(self, paths: list[str]) -> list[str]:
+        del paths
+        raise RuntimeError("storage offline")
+
+
+class ShortMediaGateway(InMemoryTravelNoteMediaGateway):
+    def sign_paths(self, paths: list[str]) -> list[str]:
+        if not paths:
+            return []
+        return [f"https://signed.example.test/{paths[0]}"]
 
 
 def test_author_can_create_replace_and_submit_a_complete_draft():
@@ -118,6 +135,32 @@ def test_author_can_create_replace_and_submit_a_complete_draft():
         "days": 4,
         "highlights": ["苍山", "洱海"],
     }
+
+
+def test_author_can_attach_and_remove_owned_images_without_replacing_draft():
+    module, _, clock = create_module()
+
+    created = module.create_draft(USER_A, draft_input())
+    new_image = draft_input(image_names=("cover.webp", "detail.webp")).images[1]
+    clock.set(clock.now() + timedelta(minutes=5))
+    attached = module.attach_image(USER_A, created.id, new_image)
+    clock.set(clock.now() + timedelta(minutes=5))
+    removed = module.remove_image(USER_A, created.id, attached.images[1].id)
+
+    assert [image.sort_order for image in attached.images] == [0, 1]
+    assert attached.images[1].storage_path == new_image.storage_path
+    assert len(removed.images) == 1
+    assert removed.images[0].sort_order == 0
+
+
+def test_remove_image_requires_at_least_one_remaining_image():
+    module, _, _ = create_module()
+    created = module.create_draft(USER_A, draft_input())
+
+    with pytest.raises(AppError) as error:
+        module.remove_image(USER_A, created.id, created.images[0].id)
+
+    assert error_code(error) == "TRAVEL_NOTE_VALIDATION_FAILED"
 
 
 def test_cross_user_mutation_is_indistinguishable_from_missing():
@@ -266,6 +309,21 @@ def test_list_public_supports_cursor_category_and_normalized_search():
     assert [item.title for item in food_page.items] == ["厦门海风"]
 
 
+def test_list_public_rejects_invalid_limit_and_cursor():
+    module, _, _ = create_module()
+
+    with pytest.raises(AppError) as zero_limit:
+        module.list_public(cursor=None, limit=0)
+    with pytest.raises(AppError) as large_limit:
+        module.list_public(cursor=None, limit=51)
+    with pytest.raises(AppError) as invalid_cursor:
+        module.list_public(cursor="bad-cursor", limit=10)
+
+    assert error_code(zero_limit) == "TRAVEL_NOTE_VALIDATION_FAILED"
+    assert error_code(large_limit) == "TRAVEL_NOTE_VALIDATION_FAILED"
+    assert error_code(invalid_cursor) == "TRAVEL_NOTE_VALIDATION_FAILED"
+
+
 def test_get_public_projection_hides_private_fields_but_keeps_public_media():
     module, repository, clock = create_module()
     created = module.create_draft(
@@ -291,6 +349,54 @@ def test_get_public_projection_hides_private_fields_but_keeps_public_media():
     assert stored is not None
     assert stored.source_trip_id == TRIP_A
     assert stored.itinerary_snapshot is not None
+
+
+def test_module_requires_explicit_public_repository_and_media_gateway():
+    repository = InMemoryTravelNoteRepository()
+    clock = FixedClock(datetime(2026, 8, 21, 9, 0, tzinfo=UTC))
+
+    with pytest.raises(TypeError):
+        TravelNoteModule(repository=repository, clock=clock)  # type: ignore[call-arg]
+
+
+def test_media_signing_failures_and_length_mismatches_return_stable_errors():
+    base_module, repository, clock = create_module()
+    created = base_module.create_draft(
+        USER_A, draft_input(image_names=("cover.webp", "detail.webp"))
+    )
+    base_module.submit(USER_A, created.id)
+    clock.set(clock.now() + timedelta(minutes=20))
+    base_module.approve(USER_B, created.id)
+
+    failing_module, _, _ = create_module(
+        repository=repository,
+        public_repository=repository,
+        media_gateway=ExplodingMediaGateway(),
+        clock_now=clock.now(),
+    )
+    with pytest.raises(AppError) as signing_error:
+        failing_module.get_public(created.id)
+
+    assert error_code(signing_error) == "TRAVEL_NOTE_UNAVAILABLE"
+
+    mismatch_base_module, mismatch_repository, mismatch_clock = create_module()
+    mismatch_created = mismatch_base_module.create_draft(
+        USER_A, draft_input(image_names=("cover.webp", "detail.webp"))
+    )
+    mismatch_base_module.submit(USER_A, mismatch_created.id)
+    mismatch_clock.set(mismatch_clock.now() + timedelta(minutes=20))
+    mismatch_base_module.approve(USER_B, mismatch_created.id)
+
+    mismatch_module, _, _ = create_module(
+        repository=mismatch_repository,
+        public_repository=mismatch_repository,
+        media_gateway=ShortMediaGateway(),
+        clock_now=mismatch_clock.now(),
+    )
+    with pytest.raises(AppError) as mismatch_error:
+        mismatch_module.get_public(mismatch_created.id)
+
+    assert error_code(mismatch_error) == "TRAVEL_NOTE_UNAVAILABLE"
 
 
 def test_reject_requires_pending_state_and_trimmed_reason():
