@@ -211,7 +211,7 @@ revoke all on table public.moderation_decisions from public, anon, authenticated
 revoke all on table public.user_roles from public, anon, authenticated;
 revoke all on table public.community_media_cleanup_jobs from public, anon, authenticated;
 
-grant select, insert, update, delete on table public.travel_notes to authenticated;
+grant select, insert, update on table public.travel_notes to authenticated;
 grant select, insert, update, delete on table public.travel_note_images to authenticated;
 grant select, insert, delete on table public.travel_note_likes to authenticated;
 grant select, insert, delete on table public.travel_note_bookmarks to authenticated;
@@ -228,10 +228,25 @@ grant select, insert, update, delete on table public.moderation_decisions to ser
 grant select, insert, update, delete on table public.user_roles to service_role;
 grant select, insert, update, delete on table public.community_media_cleanup_jobs to service_role;
 
-create policy "authors manage own travel notes" on public.travel_notes
-for all to authenticated
-using (auth.uid() = author_id)
+create policy "authors view own travel notes" on public.travel_notes
+for select to authenticated
+using (auth.uid() = author_id);
+
+create policy "authors create own draft travel notes" on public.travel_notes
+for insert to authenticated
 with check (auth.uid() = author_id);
+
+create policy "authors edit own draft or rejected travel notes" on public.travel_notes
+for update to authenticated
+using (
+  auth.uid() = author_id
+  and status in ('draft', 'rejected')
+  and deleted_at is null
+)
+with check (
+  auth.uid() = author_id
+  and deleted_at is null
+);
 
 create policy "owners manage own travel note images" on public.travel_note_images
 for all to authenticated
@@ -277,6 +292,73 @@ using (auth.uid() = reporter_id);
 create policy "reporters insert own travel note reports" on public.travel_note_reports
 for insert to authenticated
 with check (auth.uid() = reporter_id);
+
+create or replace function public.enforce_travel_note_client_write_rules()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+declare
+  v_allow_moderation_write boolean := coalesce(
+    current_setting('travel_notes.allow_moderation_write', true),
+    'off'
+  ) = 'on';
+begin
+  if v_allow_moderation_write then
+    return new;
+  end if;
+
+  if tg_op = 'insert' then
+    if new.status <> 'draft'
+      or new.review_reason is not null
+      or new.submitted_at is not null
+      or new.published_at is not null
+      or new.deleted_at is not null
+      or new.itinerary_snapshot is not null
+      or new.like_count <> 0
+      or new.comment_count <> 0
+    then
+      raise exception 'travel note direct inserts must remain draft-owned'
+        using errcode = '42501';
+    end if;
+
+    return new;
+  end if;
+
+  if old.status not in ('draft', 'rejected') or old.deleted_at is not null then
+    raise exception 'approved or pending travel notes require rpc moderation flow'
+      using errcode = '42501';
+  end if;
+
+  if new.review_reason is distinct from old.review_reason
+    or new.submitted_at is distinct from old.submitted_at
+    or new.published_at is distinct from old.published_at
+    or new.deleted_at is distinct from old.deleted_at
+    or new.itinerary_snapshot is distinct from old.itinerary_snapshot
+    or new.like_count is distinct from old.like_count
+    or new.comment_count is distinct from old.comment_count
+  then
+    raise exception 'travel note moderation fields are rpc controlled'
+      using errcode = '42501';
+  end if;
+
+  if old.status = 'draft' and new.status <> 'draft' then
+    raise exception 'draft status changes require rpc submission'
+      using errcode = '42501';
+  end if;
+
+  if old.status = 'rejected' and new.status not in ('rejected', 'draft') then
+    raise exception 'rejected travel notes may only return to draft directly'
+      using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger enforce_travel_note_client_write_rules
+before insert or update on public.travel_notes
+for each row execute function public.enforce_travel_note_client_write_rules();
 
 create trigger travel_notes_set_updated_at
 before update on public.travel_notes
@@ -487,6 +569,8 @@ begin
     raise exception 'authentication required' using errcode = '42501';
   end if;
 
+  perform set_config('travel_notes.allow_moderation_write', 'on', true);
+
   select note_row.*
   into v_note
   from public.travel_notes as note_row
@@ -591,6 +675,8 @@ begin
     raise exception 'community admin required' using errcode = '42501';
   end if;
 
+  perform set_config('travel_notes.allow_moderation_write', 'on', true);
+
   if v_decision not in ('approved', 'rejected') then
     raise exception 'invalid review decision' using errcode = 'P0001';
   end if;
@@ -690,6 +776,8 @@ begin
   if not public.is_community_admin() then
     raise exception 'community admin required' using errcode = '42501';
   end if;
+
+  perform set_config('travel_notes.allow_moderation_write', 'on', true);
 
   if v_decision not in ('approved', 'rejected') then
     raise exception 'invalid review decision' using errcode = 'P0001';

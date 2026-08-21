@@ -13,9 +13,9 @@ OWNER_SCOPED_TABLES = {
     "conversation_messages": "user_id",
     "share_links": "user_id",
     "ai_usage": "user_id",
-    "travel_notes": "author_id",
     "travel_note_images": "owner_id",
 }
+CONTROLLED_OWNER_UPDATE_TABLES = {"travel_notes": "author_id"}
 OWNER_DELETE_ONLY_TABLES = {"community_posts": "user_id"}
 OWNER_INSERT_DELETE_TABLES = {
     "travel_note_likes": "user_id",
@@ -35,6 +35,7 @@ SERVICE_ROLE_TABLES = (
 )
 PRIVATE_TABLES = (
     tuple(OWNER_SCOPED_TABLES)
+    + tuple(CONTROLLED_OWNER_UPDATE_TABLES)
     + tuple(OWNER_DELETE_ONLY_TABLES)
     + tuple(OWNER_INSERT_DELETE_TABLES)
     + tuple(OWNER_INSERT_ONLY_TABLES)
@@ -522,6 +523,20 @@ def _assert_private_rls_contract(migration: str) -> None:
             assert not re.search(r"\bfor\s+update\b", policy)
             assert not re.search(r"\bwith\s+check\b", policy)
 
+    for table, owner_column in CONTROLLED_OWNER_UPDATE_TABLES.items():
+        table_policies = [body for policy_table, body in policies if policy_table == table]
+        assert table_policies
+        allowed_patterns = (
+            rf"\bfor\s+select\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+            rf"\bfor\s+insert\b[\s\S]*\bwith\s+check\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+            rf"\bfor\s+update\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s+and\s+status\s+in\s+\('draft',\s*'rejected'\)\s+and\s+deleted_at\s+is\s+null\s*\)[\s\S]*\bwith\s+check\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s+and\s+deleted_at\s+is\s+null\s*\)",
+        )
+        assert len(table_policies) == len(allowed_patterns)
+        for policy in table_policies:
+            assert any(re.fullmatch(pattern, policy) for pattern in allowed_patterns)
+            assert not re.search(r"\bfor\s+all\b", policy)
+            assert not re.search(r"\bfor\s+delete\b", policy)
+
     for table, owner_column in OWNER_INSERT_DELETE_TABLES.items():
         table_policies = [body for policy_table, body in policies if policy_table == table]
         assert table_policies
@@ -659,6 +674,12 @@ def test_policy_parser_handles_comments_quoted_identifiers_and_statement_boundar
             'with check (auth.uid() = user_id);'
         ),
         (
+            'create policy "authors manage own travel notes" '
+            'on public.travel_notes for all '
+            'using (auth.uid() = author_id) '
+            'with check (auth.uid() = author_id);'
+        ),
+        (
             'create policy weak_unicode on u&"public".u&"trips" '
             'for select using (true);'
         ),
@@ -717,6 +738,23 @@ def test_profiles_creator_metadata_columns_are_private_audited_extensions():
     assert "alter column creator_slug set default public.generate_creator_slug()" in migration
     assert "alter column creator_slug set not null" in migration
     assert "create unique index if not exists profiles_creator_slug_key" in migration
+
+
+def test_travel_notes_table_uses_controlled_owner_update_policies():
+    migration = _migration()
+
+    assert (
+        "grant select, insert, update on table public.travel_notes to authenticated"
+        in migration
+    )
+    assert not re.search(
+        r"grant\s+[^;]*\bdelete\b[^;]*on\s+table\s+public\.travel_notes[^;]*to\s+authenticated",
+        migration,
+    )
+    assert 'create policy "authors view own travel notes"' in migration
+    assert 'create policy "authors create own draft travel notes"' in migration
+    assert 'create policy "authors edit own draft or rejected travel notes"' in migration
+    assert 'create policy "authors manage own travel notes"' not in migration
 
 
 @pytest.mark.parametrize("child_table", ["conversation_messages", "share_links"])
