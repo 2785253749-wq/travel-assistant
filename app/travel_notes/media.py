@@ -22,6 +22,10 @@ _UUID_PATTERN = re.compile(
 )
 _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 _PATH_PATTERN = re.compile(r"(?:[0-9a-f-]{8,}/)+(?:[^\s/]+)", re.IGNORECASE)
+_OBJECT_PATH_FRAGMENT_PATTERN = re.compile(
+    r"(?:^|[\s:(])(?:[a-z0-9._-]+/)+[a-z0-9._-]+(?:\.[a-z0-9._-]+)?(?:$|[\s),:])",
+    re.IGNORECASE,
+)
 
 
 class CommunityMediaError(RuntimeError):
@@ -440,6 +444,9 @@ def sanitize_cleanup_error(error: Exception) -> str:
     else:
         message = str(error).strip()
         if message:
+            if _contains_sensitive_cleanup_fragment(message):
+                parts.append("cleanup operation failed")
+                return ": ".join(parts)
             sanitized = _URL_PATTERN.sub("[redacted-url]", message)
             sanitized = _UUID_PATTERN.sub("[redacted-id]", sanitized)
             sanitized = _PATH_PATTERN.sub("[redacted-path]", sanitized)
@@ -506,3 +513,11 @@ def _optional_text(value: object) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _contains_sensitive_cleanup_fragment(message: str) -> bool:
+    if _URL_PATTERN.search(message):
+        return True
+    if _PATH_PATTERN.search(message):
+        return True
+    return bool(_OBJECT_PATH_FRAGMENT_PATTERN.search(message))

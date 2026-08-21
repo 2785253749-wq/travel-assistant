@@ -174,12 +174,17 @@ def test_run_cleanup_batch_marks_successes_requeues_failures_and_skips_retry_exh
 def test_sanitize_cleanup_error_never_leaks_plain_storage_keys_or_short_paths():
     plain_key_error = RuntimeError("delete failed for avatar/plain-key.webp")
     short_path_error = RuntimeError("delete failed for ok.webp")
+    uuid_prefixed_path_error = RuntimeError(
+        "delete failed for 11111111-1111-1111-1111-111111111111/avatar/fail.webp"
+    )
 
     plain_key = sanitize_cleanup_error(plain_key_error)
     short_path = sanitize_cleanup_error(short_path_error)
+    uuid_prefixed_path = sanitize_cleanup_error(uuid_prefixed_path_error)
 
     assert plain_key == "RuntimeError: cleanup operation failed"
     assert short_path == "RuntimeError: cleanup operation failed"
+    assert uuid_prefixed_path == "RuntimeError: cleanup operation failed"
 
 
 def test_cleanup_batch_uses_typed_deletion_error_and_generic_last_error():
