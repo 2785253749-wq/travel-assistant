@@ -135,6 +135,33 @@ def test_submit_and_review_rpcs_enforce_fixed_search_path_and_role_checks():
     )
 
 
+def test_submit_and_review_rpcs_lock_rows_and_reject_stale_transitions():
+    sql = migration_011()
+    submit = function_block(sql, "submit_travel_note")
+    review_note = function_block(sql, "review_travel_note")
+
+    assert re.search(
+        r"from public\.travel_notes as note_row[\s\S]*?for update",
+        submit,
+    )
+    assert re.search(
+        r"update public\.travel_notes as note_row[\s\S]*?where note_row\.id = v_note\.id[\s\S]*?and note_row\.author_id = v_user_id[\s\S]*?and note_row\.status = v_note\.status[\s\S]*?and note_row\.deleted_at is null",
+        submit,
+    )
+    assert "travel note submission is stale" in submit
+    assert "if not found then" in submit
+
+    assert re.search(
+        r"from public\.travel_notes as note_row[\s\S]*?for update",
+        review_note,
+    )
+    assert re.search(
+        r"update public\.travel_notes as note_row[\s\S]*?where note_row\.id = v_note\.id[\s\S]*?and note_row\.status = 'pending_review'[\s\S]*?and note_row\.deleted_at is null",
+        review_note,
+    )
+    assert "travel note review is stale" in review_note
+
+
 def test_profiles_gain_random_creator_metadata_without_using_user_uuid():
     sql = migration_011()
     slug_generator = function_block(sql, "generate_creator_slug")

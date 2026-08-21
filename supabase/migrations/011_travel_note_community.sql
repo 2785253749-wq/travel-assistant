@@ -576,7 +576,8 @@ begin
   from public.travel_notes as note_row
   where note_row.id = p_note_id
     and note_row.author_id = v_user_id
-    and note_row.deleted_at is null;
+    and note_row.deleted_at is null
+  for update;
 
   if not found then
     raise exception 'travel note not found' using errcode = 'P0002';
@@ -624,7 +625,6 @@ begin
     v_snapshot := null;
   end if;
 
-  return query
   update public.travel_notes as note_row
   set status = 'pending_review',
       review_reason = null,
@@ -633,12 +633,21 @@ begin
       itinerary_snapshot = v_snapshot
   where note_row.id = v_note.id
     and note_row.author_id = v_user_id
-  returning
-    note_row.id,
-    note_row.status,
-    note_row.submitted_at,
-    note_row.published_at,
-    note_row.itinerary_snapshot;
+    and note_row.status = v_note.status
+    and note_row.deleted_at is null
+  returning note_row.* into v_note;
+
+  if not found then
+    raise exception 'travel note submission is stale' using errcode = 'P0001';
+  end if;
+
+  return query
+  select
+    v_note.id,
+    v_note.status,
+    v_note.submitted_at,
+    v_note.published_at,
+    v_note.itinerary_snapshot;
 end;
 $$;
 
@@ -666,6 +675,7 @@ declare
   v_note public.travel_notes;
   v_reason text := nullif(btrim(reason), '');
   v_decision text := lower(btrim(decision));
+  v_reviewed_at timestamptz;
 begin
   if v_moderator_id is null then
     raise exception 'authentication required' using errcode = '42501';
@@ -686,7 +696,8 @@ begin
   from public.travel_notes as note_row
   where note_row.id = p_note_id
     and note_row.status = 'pending_review'
-    and note_row.deleted_at is null;
+    and note_row.deleted_at is null
+  for update;
 
   if not found then
     raise exception 'travel note not found' using errcode = 'P0002';
@@ -696,6 +707,59 @@ begin
     and (v_reason is null or char_length(v_reason) not between 1 and 500)
   then
     raise exception 'rejection reason is required' using errcode = 'P0001';
+  end if;
+
+  v_reviewed_at := now();
+
+  if v_decision = 'approved' then
+    update public.travel_notes as note_row
+    set status = 'approved',
+        review_reason = null,
+        published_at = v_reviewed_at
+    where note_row.id = v_note.id
+      and note_row.status = 'pending_review'
+      and note_row.deleted_at is null
+    returning note_row.* into v_note;
+
+    if not found then
+      raise exception 'travel note review is stale' using errcode = 'P0001';
+    end if;
+
+    insert into public.moderation_decisions (
+      target_type,
+      target_id,
+      moderator_id,
+      decision,
+      reason
+    )
+    values (
+      'note',
+      v_note.id,
+      v_moderator_id,
+      v_decision,
+      null
+    );
+
+    return query
+    select
+      v_note.id,
+      v_note.status,
+      v_note.review_reason,
+      v_note.published_at,
+      v_reviewed_at;
+  end if;
+
+  update public.travel_notes as note_row
+  set status = 'rejected',
+      review_reason = v_reason,
+      published_at = null
+  where note_row.id = v_note.id
+    and note_row.status = 'pending_review'
+    and note_row.deleted_at is null
+  returning note_row.* into v_note;
+
+  if not found then
+    raise exception 'travel note review is stale' using errcode = 'P0001';
   end if;
 
   insert into public.moderation_decisions (
@@ -710,36 +774,16 @@ begin
     v_note.id,
     v_moderator_id,
     v_decision,
-    case when v_decision = 'rejected' then v_reason else null end
+    v_reason
   );
 
-  if v_decision = 'approved' then
-    return query
-    update public.travel_notes as note_row
-    set status = 'approved',
-        review_reason = null,
-        published_at = now()
-    where note_row.id = v_note.id
-    returning
-      note_row.id,
-      note_row.status,
-      note_row.review_reason,
-      note_row.published_at,
-      now() as reviewed_at;
-  end if;
-
   return query
-  update public.travel_notes as note_row
-  set status = 'rejected',
-      review_reason = v_reason,
-      published_at = null
-  where note_row.id = v_note.id
-  returning
-    note_row.id,
-    note_row.status,
-    note_row.review_reason,
-    note_row.published_at,
-    now() as reviewed_at;
+  select
+    v_note.id,
+    v_note.status,
+    v_note.review_reason,
+    v_note.published_at,
+    v_reviewed_at;
 end;
 $$;
 
