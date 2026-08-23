@@ -40,7 +40,7 @@
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"),
     explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"), communityPage: $("community-page"),
-    profilePage: $("profile-page"), communityCreateFab: $("community-create-fab"), adminPage: $("admin-community-page"), adminNavButton: $("admin-nav-button"),
+    profilePage: $("profile-page"), communityCreateFab: $("community-create-fab"), communityPublishPanel: $("community-publish-panel"), communityPublishHeading: $("community-publish-heading"), adminPage: $("admin-community-page"), adminNavButton: $("admin-nav-button"),
     navigation: [$("explore-nav-button"), $("trips-nav-button"), $("community-nav-button"), $("profile-nav-button"), $("admin-nav-button")],
     viewHeadings: { explore: $("explore-title"), trips: $("trips-page-title"), community: $("community-page-title"), profile: $("profile-page-title"), admin: $("admin-community-title") },
     exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
@@ -169,6 +169,18 @@
     if (elements.adminNavButton) elements.adminNavButton.hidden = !show;
     if (elements.adminPageLink) elements.adminPageLink.hidden = !show;
   }
+  function openCommunityPublishPanel() {
+    if (state.activeView !== "community") return;
+    if (!state.session) {
+      openAuthDialog({ returnTo: communityReturnTo() });
+      return;
+    }
+    elements.communityPublishPanel.hidden = false;
+    renderCommunityPublish();
+    if (elements.communityPublishHeading && typeof elements.communityPublishHeading.focus === "function") {
+      elements.communityPublishHeading.focus();
+    }
+  }
   async function switchView(view, { focusHeading = false } = {}) {
     if (!VIEWS.has(view)) return;
     if (view === "profile" && !state.session) {
@@ -190,6 +202,7 @@
       if (element) element.hidden = name !== view;
     }
     if (elements.communityCreateFab) elements.communityCreateFab.hidden = view !== "community";
+    if (elements.communityPublishPanel && view !== "community") elements.communityPublishPanel.hidden = true;
     for (const button of elements.navigation) {
       if (!button) continue;
       const active = button.dataset.view === view;
@@ -2027,6 +2040,7 @@
   });
   elements.authDialogClose.addEventListener("click", closeAuthDialog);
   elements.authDialogRoleSwitch.addEventListener("click", () => setAuthLoginMode(!authLoginAsAdmin));
+  elements.communityCreateFab.addEventListener("click", openCommunityPublishPanel);
   elements.authDialog.addEventListener("click", (event) => {
     if (event.target === elements.authDialog) closeAuthDialog();
   });

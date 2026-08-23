@@ -122,6 +122,21 @@ test("embedded publish action only appears in Community and includes its label",
   assert.equal(fab.hidden, true);
 });
 
+test("community publish action opens auth for visitors and the publish panel for signed-in users", async () => {
+  const visitor = createHarness();
+  await settle();
+  await visitor.elements.get("community-nav-button").dispatch("click");
+  await visitor.elements.get("community-create-fab").dispatch("click");
+  assert.equal(visitor.elements.get("auth-dialog").open, true);
+  assert.equal(visitor.elements.get("community-publish-panel").hidden, true);
+
+  const member = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }) });
+  await settle();
+  await member.elements.get("community-nav-button").dispatch("click");
+  await member.elements.get("community-create-fab").dispatch("click");
+  assert.equal(member.elements.get("community-publish-panel").hidden, false);
+});
+
 test("profile return stays inside the shell without an authentication redirect", async () => {
   const harness = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }) });
   await settle();
@@ -191,6 +206,13 @@ test("community create action stays left of the AI assistant toggle", () => {
   assert.match(standaloneStyles, /\.community-create-fab[\s\S]*?left:\s*1\.25rem/);
   assert.match(styles, /\.assistant-toggle\s*\{[^}]*right:\s*1\.25rem[^}]*bottom:\s*1\.25rem/);
 });
+test("community theme preserves explore recommendation card geometry", () => {
+  const styles = fs.readFileSync(path.join(__dirname, "../../app/static/styles.css"), "utf8");
+  assert.match(styles, /body\.community-themed-page button\.destination-card[\s\S]*?border-radius:\s*1rem/);
+  assert.match(styles, /body\.community-themed-page button\.destination-card[\s\S]*?background:\s*#fff/);
+  assert.match(styles, /body\.community-themed-page button\.destination-card[\s\S]*?white-space:\s*normal/);
+});
+
 test("Explore shell opts into the community visual theme", () => {
   const html = fs.readFileSync(path.join(__dirname, "../../app/static/index.html"), "utf8");
   const styles = fs.readFileSync(path.join(__dirname, "../../app/static/styles.css"), "utf8");
