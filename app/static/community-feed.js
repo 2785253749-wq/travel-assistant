@@ -11,10 +11,12 @@
     publicError,
     sameOriginPath,
     createBrowserClient,
+    hasAdminMarker,
   } = window.VoyageCommunityClient;
   const elements = {
     body: document.body,
     authLink: document.getElementById("community-auth-link"),
+    adminNav: document.getElementById("community-admin-nav"),
     createLink: document.getElementById("community-create-link"),
     empty: document.getElementById("community-empty"),
     error: document.getElementById("community-error"),
@@ -85,6 +87,7 @@
     state.sessionGeneration = client.getSessionGeneration();
     elements.body.dataset.communityAuth = state.signedIn ? "signed_in" : "signed_out";
     elements.authLink.hidden = state.signedIn;
+    if (elements.adminNav) elements.adminNav.hidden = !hasAdminMarker(client.getSession());
   }
 
   function normalizedPage(payload) {
@@ -133,6 +136,20 @@
   function renderCard(note) {
     const card = document.createElement("article");
     card.className = "community-card";
+    card.dataset.layout = "post";
+    card.dataset.postId = String(note && note.id);
+    card.setAttribute("tabindex", "0");
+    card.setAttribute("role", "link");
+    card.setAttribute("aria-label", `打开游记：${trimText(note && note.title) || "未命名游记"}`);
+    const openDetail = (event) => {
+      const target = event && event.target;
+      if (target && typeof target.closest === "function" && target.closest("a,button")) return;
+      navigate(detailPath(note && note.id));
+    };
+    card.addEventListener("click", openDetail);
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") openDetail(event);
+    });
 
     const mediaUrl = safeUrl(note && note.cover_image_url);
     if (mediaUrl) {

@@ -95,14 +95,12 @@ def profile_page(): return FileResponse(BASE / "static" / "profile.html")
 
 
 def _index_shell() -> FileResponse:
-    # Task 6 exposes the final community URLs early; Tasks 7-13 replace this
-    # temporary shell mapping with dedicated community page assets.
     return FileResponse(BASE / "static" / "index.html")
 
 
 @app.get("/community", include_in_schema=False)
 def community_page() -> FileResponse:
-    return FileResponse(BASE / "static" / "community.html")
+    return _index_shell()
 
 
 @app.get("/community/notes/new", include_in_schema=False)

@@ -26,6 +26,37 @@ test("signed-out profile page redirects to auth with a fixed same-origin return_
   assert.equal(harness.window.location.search, "?mode=signin&return_to=%2Fprofile");
 });
 
+test("profile page uses the community shell and exposes community and admin navigation", () => {
+  const harness = createHarness({ page: "profile" });
+
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const html = fs.readFileSync(path.join(__dirname, "../../app/static/profile.html"), "utf8");
+
+  assert.match(html, /<body class="community-themed-page"/);
+  assert.equal(harness.elements.get("profile-back-link").getAttribute("href"), "/community");
+  assert.match(html, />返回社区<\/a>/);
+  assert.equal(harness.elements.get("profile-admin-link").getAttribute("href"), "/admin/community");
+  assert.match(html, />管理员入口<\/a>/);
+});
+
+test("profile standalone hides the admin route for regular sessions", async () => {
+  const anonymous = createHarness({ page: "profile" });
+  await settle();
+  assert.equal(anonymous.elements.get("profile-admin-link").hidden, true);
+
+  const regular = createHarness({ page: "profile", auth: new FakeSupabaseAuth({ initialSession: SESSION }) });
+  await settle();
+  assert.equal(regular.elements.get("profile-admin-link").hidden, true);
+
+  const adminSession = {
+    ...SESSION,
+    user: { ...SESSION.user, app_metadata: { is_community_admin: true } },
+  };
+  const admin = createHarness({ page: "profile", auth: new FakeSupabaseAuth({ initialSession: adminSession }) });
+  await settle();
+  assert.equal(admin.elements.get("profile-admin-link").hidden, false);
+});
 test("profile page shows a retryable loading failure before populating the form", async () => {
   let requests = 0;
   const auth = new FakeSupabaseAuth({ initialSession: SESSION });

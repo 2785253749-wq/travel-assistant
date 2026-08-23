@@ -8,6 +8,7 @@ const SESSION = { access_token: "access-one", refresh_token: "refresh-one", expi
 const REFRESHED = { access_token: "access-two", refresh_token: "refresh-two", expires_at: 2000003600, user: { id: "user-a", email: "owner@example.test" } };
 const CURRENT_SESSION = { access_token: "access-current", refresh_token: "refresh-current", expires_at: 2000007200, user: { id: "user-a", email: "current@example.test" } };
 const OTHER_SESSION = { access_token: "access-other", refresh_token: "refresh-other", expires_at: 2000007200, user: { id: "user-b", email: "other@example.test" } };
+const ADMIN_SESSION = { ...SESSION, user: { ...SESSION.user, app_metadata: { role: "admin" } } };
 
 function observeHidden(element, label, events) {
   let value = element.hidden;
@@ -50,7 +51,7 @@ async function dispatchKey(element, key) {
   return defaultPrevented;
 }
 
-test("navigation switches Explore and Trips in place while Community links to its dedicated page", async () => {
+test("navigation switches Explore, Trips, and Community in place", async () => {
   const harness = createHarness();
   await settle();
 
@@ -66,13 +67,173 @@ test("navigation switches Explore and Trips in place while Community links to it
   assert.equal(community.hidden, true);
   assert.equal(tripsNav.getAttribute("aria-current"), "page");
 
-  assert.equal(communityNav.getAttribute("href"), "/community");
   await communityNav.dispatch("click");
   assert.equal(harness.window.location.pathname, "/community");
 });
 
+test("all five primary views switch inside one shell without assigning location", async () => {
+  const harness = createHarness({
+    auth: new FakeSupabaseAuth({ initialSession: ADMIN_SESSION }),
+    fetch: async (call) => call.url === "/api/community/posts"
+      ? jsonResponse(200, { items: [], next_cursor: null })
+      : jsonResponse(200, {}),
+  });
+  await settle();
+
+  const views = [
+    ["explore", "explore-page", "explore-nav-button"],
+    ["trips", "trips-page", "trips-nav-button"],
+    ["community", "community-page", "community-nav-button"],
+    ["profile", "profile-page", "profile-nav-button"],
+    ["admin", "admin-community-page", "admin-nav-button"],
+  ];
+
+  for (const [, pageId, navId] of views) {
+    await harness.elements.get(navId).dispatch("click");
+    assert.equal(harness.elements.get(pageId).hidden, false);
+    assert.equal(harness.elements.get(navId).getAttribute("aria-current"), "page");
+    for (const [, otherPageId] of views) {
+      if (otherPageId !== pageId) assert.equal(harness.elements.get(otherPageId).hidden, true);
+    }
+  }
+
+  assert.equal(harness.locationWrites.length, 0, "internal navigation must not assign window.location");
+  assert.deepEqual(harness.historyCalls.filter((call) => call.method === "pushState").map((call) => new URL(call.url).pathname), [
+    "/", "/", "/community", "/profile", "/admin/community",
+  ]);
+});
+
+test("embedded publish action only appears in Community and includes its label", async () => {
+  const harness = createHarness({
+    fetch: async (call) => call.url === "/api/community/posts"
+      ? jsonResponse(200, { items: [], next_cursor: null })
+      : jsonResponse(200, {}),
+  });
+  await settle();
+
+  const fab = harness.elements.get("community-create-fab");
+  assert.equal(fab.hidden, true);
+  const html = fs.readFileSync(path.join(__dirname, "../../app/static/index.html"), "utf8");
+  assert.match(html, /id="community-create-fab"[\s\S]*class="community-create-fab-label">\u53d1\u5e03<\/span>/);
+
+  await harness.elements.get("community-nav-button").dispatch("click");
+  assert.equal(fab.hidden, false);
+  await harness.elements.get("explore-nav-button").dispatch("click");
+  assert.equal(fab.hidden, true);
+});
+
+test("profile return stays inside the shell without an authentication redirect", async () => {
+  const harness = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }) });
+  await settle();
+  await harness.elements.get("profile-nav-button").dispatch("click");
+  await harness.elements.get("profile-back-link").dispatch("click");
+
+  assert.equal(harness.window.location.pathname, "/community");
+  assert.equal(harness.elements.get("community-page").hidden, false);
+  assert.equal(harness.locationWrites.length, 0);
+});
+test("popstate restores the view and current navigation item", async () => {
+  const harness = createHarness({ path: "/profile", auth: new FakeSupabaseAuth({ initialSession: SESSION }) });
+  await settle();
+
+  assert.equal(harness.elements.get("profile-page").hidden, false);
+  harness.window.history.pushState({}, "", "/#trips-page");
+  await harness.window.dispatch("popstate");
+
+  assert.equal(harness.elements.get("trips-page").hidden, false);
+  assert.equal(harness.elements.get("profile-page").hidden, true);
+  assert.equal(harness.elements.get("trips-nav-button").getAttribute("aria-current"), "page");
+  assert.equal(harness.elements.get("profile-nav-button").getAttribute("aria-current"), null);
+});
+
+test("remounting community does not repeat its initial request", async () => {
+  const harness = createHarness({
+    fetch: async (call) => call.url === "/api/community/posts"
+      ? jsonResponse(200, { items: [], next_cursor: null })
+      : jsonResponse(200, {}),
+  });
+  await settle();
+  await harness.elements.get("community-nav-button").dispatch("click");
+  await settle();
+  await harness.elements.get("explore-nav-button").dispatch("click");
+  await harness.elements.get("community-nav-button").dispatch("click");
+  await settle();
+
+  assert.equal(harness.fetchCalls.filter((call) => call.url === "/api/community/posts").length, 1);
+});
+test("embedded community keeps publishing behind a floating plus action", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../../app/static/index.html"), "utf8");
+  assert.match(html, /id="community-create-fab"/);
+  assert.match(html, /id="community-publish-panel"[^>]*hidden/);
+});
+
+test("embedded app hides the admin navigation for non-admin sessions", async () => {
+  const anonymous = createHarness();
+  await settle();
+  assert.equal(anonymous.elements.get("admin-nav-button").hidden, true);
+
+  const regular = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }) });
+  await settle();
+  assert.equal(regular.elements.get("admin-nav-button").hidden, true);
+
+  const adminSession = {
+    ...SESSION,
+    user: { ...SESSION.user, app_metadata: { is_community_admin: true } },
+  };
+  const admin = createHarness({ auth: new FakeSupabaseAuth({ initialSession: adminSession }) });
+  await settle();
+  assert.equal(admin.elements.get("admin-nav-button").hidden, false);
+});
+test("community create action stays left of the AI assistant toggle", () => {
+  const styles = fs.readFileSync(path.join(__dirname, "../../app/static/styles.css"), "utf8");
+  const standaloneStyles = fs.readFileSync(path.join(__dirname, "../../app/static/community.css"), "utf8");
+  assert.match(styles, /body\.community-themed-page \.community-create-fab[\s\S]*?left:\s*1\.5rem/);
+  assert.match(standaloneStyles, /\.community-create-fab[\s\S]*?left:\s*1\.25rem/);
+  assert.match(styles, /\.assistant-toggle\s*\{[^}]*right:\s*1\.25rem[^}]*bottom:\s*1\.25rem/);
+});
+test("Explore shell opts into the community visual theme", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../../app/static/index.html"), "utf8");
+  const styles = fs.readFileSync(path.join(__dirname, "../../app/static/styles.css"), "utf8");
+  const standaloneStyles = fs.readFileSync(path.join(__dirname, "../../app/static/community.css"), "utf8");
+
+  assert.match(html, /<body class="community-themed-page"/);
+  assert.match(styles, /--community-accent:\s*#0c7a6b/);
+  assert.match(styles, /body\.community-themed-page/);
+});
+
+test("direct community path opens the community view inside the unified shell", async () => {
+  const harness = createHarness({
+    path: "/community",
+    fetch: async (call) => call.url === "/api/community/posts"
+      ? jsonResponse(200, { items: [], next_cursor: null })
+      : jsonResponse(200, {}),
+  });
+  await settle();
+
+  assert.equal(harness.window.location.pathname, "/community");
+  assert.equal(harness.elements.get("community-page").hidden, false);
+  assert.equal(harness.elements.get("explore-page").hidden, true);
+  assert.equal(harness.elements.get("community-nav-button").getAttribute("aria-current"), "page");
+});
+
+test("community hash return path opens the community view on initialization", async () => {
+  const harness = createHarness({
+    hash: "#community-page",
+    fetch: async (call) => call.url === "/api/community/posts"
+      ? jsonResponse(200, { items: [], next_cursor: null })
+      : jsonResponse(200, {}),
+  });
+  await settle();
+
+  assert.equal(harness.elements.get("community-page").hidden, false);
+  assert.equal(harness.elements.get("explore-page").hidden, true);
+  assert.equal(harness.elements.get("community-nav-button").getAttribute("aria-current"), "page");
+  assert.match(harness.elements.get("community-feed-status").textContent, /还没有公开发布/);
+});
+
 test("inactive app pages stay hidden when their page classes define display", () => {
   const styles = fs.readFileSync(path.join(__dirname, "../../app/static/styles.css"), "utf8");
+  const standaloneStyles = fs.readFileSync(path.join(__dirname, "../../app/static/community.css"), "utf8");
 
   assert.match(styles, /\[hidden\]\s*\{\s*display:\s*none\s*!important\s*;\s*\}/);
 });
@@ -233,15 +394,15 @@ test("signed-out trips view shows a login prompt instead of requesting private t
   assert.equal(harness.fetchCalls.some((call) => call.url === "/api/trips"), false);
 });
 
-test("trips login prompt navigates to the dedicated auth page", async () => {
+test("trips login prompt opens the shared auth dialog", async () => {
   const harness = createHarness();
   await settle();
   await harness.elements.get("trips-nav-button").dispatch("click");
 
   await harness.elements.get("trips-login-button").dispatch("click");
 
-  assert.equal(harness.window.location.pathname, "/auth");
-  assert.equal(harness.window.location.search, "?mode=signin");
+  assert.equal(harness.elements.get("auth-dialog").open, true);
+  assert.equal(harness.window.location.pathname, "/");
 });
 
 test("signed-in trips view renders the empty and populated states", async () => {
@@ -1010,18 +1171,132 @@ test("brand exit from a public share clears reload state and initializes the nor
   assert.equal(reloaded.auth.listeners.length, 1);
 });
 
-test("account form navigates to the dedicated sign-in page", async () => {
+test("signed-out account trigger opens the inline auth dialog", async () => {
   const harness = createHarness({ fetch: async () => jsonResponse(200, []) });
   await settle();
 
   assert.equal(harness.elements.get("account-summary").hidden, true);
   assert.equal(harness.elements.get("auth-form").hidden, false);
-  assert.equal(harness.elements.get("profile-page-link").href, "/profile");
+  assert.equal(harness.elements.get("account-trigger-label").textContent, "登录");
+  assert.equal(harness.elements.get("auth-dialog").open, false);
+
+  await harness.elements.get("account-trigger").dispatch("click");
+
+  assert.equal(harness.elements.get("auth-dialog").open, true);
+  assert.equal(harness.window.location.pathname, "/");
+});
+
+test("modal login applies the session and closes after successful sign-in", async () => {
+  const auth = new FakeSupabaseAuth({ loginSession: SESSION });
+  const harness = createHarness({ auth, fetch: async () => jsonResponse(200, []) });
+  await settle();
+
+  await harness.elements.get("account-trigger").dispatch("click");
+  harness.elements.get("email").value = "owner@example.test";
+  harness.elements.get("password").value = "correct-horse-battery";
+  await harness.elements.get("auth-form").dispatch("submit");
+  await settle();
+
+  assert.equal(harness.elements.get("auth-dialog").open, false);
+  assert.equal(harness.elements.get("account-summary").hidden, false);
+  assert.equal(harness.elements.get("account-trigger-label").textContent, "O");
+});
+
+test("signed-out Trips login opens the shared auth dialog", async () => {
+  const harness = createHarness({ fetch: async () => jsonResponse(200, []) });
+  await settle();
+
+  await harness.elements.get("trips-nav-button").dispatch("click");
+  await harness.elements.get("trips-login-button").dispatch("click");
+
+  assert.equal(harness.elements.get("auth-dialog").open, true);
+  assert.equal(harness.window.location.pathname, "/");
+});
+
+test("signed-out Profile navigation opens the shared auth dialog without mounting a login page", async () => {
+  const harness = createHarness({ fetch: async () => jsonResponse(200, []) });
+  await settle();
+
+  await harness.elements.get("profile-nav-button").dispatch("click");
+
+  assert.equal(harness.elements.get("auth-dialog").open, true);
+  assert.equal(harness.window.location.pathname, "/");
+  assert.equal(harness.elements.get("profile-page").hidden, true);
+});
+
+test("shared auth dialog exposes a user-admin login switch", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../../app/static/index.html"), "utf8");
+  assert.match(html, /id="auth-dialog-role-switch"[^>]*role="switch"[^>]*aria-checked="false"/);
+  assert.match(html, /id="auth-dialog-role-label"[^>]*>用户登录<\/span>/);
+  assert.match(html, />管理员登录<\/button>/);
+});
+
+test("login role switch is neutral until administrator mode is selected", () => {
+  const css = fs.readFileSync(path.join(__dirname, "../../app/static/styles.css"), "utf8");
+  assert.match(css, /\.auth-role-switch\s*\{[\s\S]*?background:\s*var\(--surface\);/);
+  assert.doesNotMatch(css, /\.auth-role-switch:hover\s*,\s*\.auth-role-switch\[aria-checked="true"\]/);
+  assert.match(css, /\.auth-role-switch\[aria-checked="true"\]\s*\{[\s\S]*?background:\s*var\(--community-soft,\s*#e8f1ec\);/);
+  assert.match(css, /body\.community-themed-page button\.auth-role-switch:not\(\.secondary\):not\(\.danger\)\s*\{[\s\S]*?background:\s*var\(--surface\);/);
+  assert.match(css, /body\.community-themed-page button\.auth-role-switch:not\(\.secondary\):not\(\.danger\)\[aria-checked="true"\]\s*\{[\s\S]*?background:\s*var\(--community-soft,\s*#e8f1ec\);/);
+});
+
+test("administrator shortcut stays in the shared dialog and opens the admin view after sign-in", async () => {
+  const auth = new FakeSupabaseAuth({ loginSession: ADMIN_SESSION });
+  const harness = createHarness({
+    auth,
+    fetch: async (call) => call.url === "/api/community/posts"
+      ? jsonResponse(200, { items: [], next_cursor: null })
+      : jsonResponse(200, {}),
+  });
+  await settle();
+
+  await harness.elements.get("account-trigger").dispatch("click");
+  await harness.elements.get("auth-dialog-role-switch").dispatch("click");
+  assert.equal(harness.elements.get("auth-dialog-role-switch").getAttribute("aria-checked"), "true");
+  assert.equal(harness.elements.get("auth-dialog-role-label").textContent, "管理员登录");
+  assert.equal(harness.elements.get("auth-dialog").open, true);
+  assert.equal(harness.window.location.pathname, "/");
 
   await harness.elements.get("auth-form").dispatch("submit");
+  await settle();
 
-  assert.equal(harness.window.location.pathname, "/auth");
-  assert.equal(harness.window.location.search, "?mode=signin");
+  assert.equal(harness.window.location.pathname, "/admin/community");
+  assert.equal(harness.elements.get("admin-community-page").hidden, false);
+  assert.equal(harness.locationWrites.length, 0);
+});
+
+test("admin auth query opens the shared login dialog from the standalone auth page return", async () => {
+  const harness = createHarness({
+    search: "?auth=signin&return_to=%2Fadmin%2Fcommunity",
+    fetch: async () => jsonResponse(200, {}),
+  });
+  await settle();
+
+  assert.equal(harness.elements.get("auth-dialog").open, true);
+  assert.equal(harness.window.location.pathname, "/");
+  assert.equal(harness.window.location.search, "");
+});
+
+test("account shell keeps its login form inside a modal instead of the account popover", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../../app/static/index.html"), "utf8");
+  assert.match(html, /<dialog id="auth-dialog"/);
+  assert.ok(html.indexOf("auth-dialog") < html.indexOf("auth-form"));
+  assert.match(html, /id="account-trigger"[^>]*>[\s\S]*id="account-trigger-label"/);
+});
+
+test("signed-in account displays an avatar when user metadata provides one", async () => {
+  const harness = createHarness({
+    auth: new FakeSupabaseAuth({ initialSession: {
+      ...SESSION,
+      user: { ...SESSION.user, user_metadata: { avatar_url: "https://cdn.example.test/avatar.png" } },
+    } }),
+    fetch: async () => jsonResponse(200, []),
+  });
+  await settle();
+
+  assert.equal(harness.elements.get("account-trigger-avatar").hidden, false);
+  assert.equal(harness.elements.get("account-trigger-avatar").src, "https://cdn.example.test/avatar.png");
+  assert.equal(harness.elements.get("account-trigger-label").hidden, true);
 });
 
 test("signed-in account menu exposes the profile link and keeps logout available", async () => {
@@ -1031,6 +1306,8 @@ test("signed-in account menu exposes the profile link and keeps logout available
   assert.equal(harness.elements.get("auth-form").hidden, true);
   assert.equal(harness.elements.get("account-summary").hidden, false);
   assert.equal(harness.elements.get("account-email").textContent, "owner@example.test");
+  assert.equal(harness.elements.get("account-trigger-avatar").hidden, true);
+  assert.equal(harness.elements.get("account-trigger-label").textContent, "O");
   assert.equal(harness.elements.get("profile-page-link").href, "/profile");
   assert.ok(harness.elements.get("sign-out-button"));
 });

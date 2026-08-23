@@ -25,7 +25,7 @@
     form: document.getElementById("profile-form"),
     loading: document.getElementById("profile-loading"),
     error: document.getElementById("profile-error"),
-    retry: document.getElementById("profile-retry-button"),
+    retry: document.getElementById("profile-retry-button"), authPrompt: document.getElementById("profile-auth-prompt"), signIn: document.getElementById("profile-signin-button"),
     status: document.getElementById("profile-status"),
     errors: document.getElementById("profile-errors"),
     avatarImage: document.getElementById("profile-avatar-image"),
@@ -38,6 +38,8 @@
     updatedAt: document.getElementById("profile-updated-at"),
     save: document.getElementById("profile-save-button"),
     backLink: document.getElementById("profile-back-link"),
+    adminNav: document.getElementById("profile-admin-nav"),
+    adminLink: document.getElementById("profile-admin-link"),
   };
   const travelStyleInputs = TRAVEL_STYLE_FIELDS.map((field) => document.getElementById(field.id));
   let client = null;
@@ -48,7 +50,29 @@
   let avatarPreviewUrl = null;
   let pendingAvatarBlob = null;
   let savedAvatarUrl = null;
+  let embedded = false;
+  let mounted = false;
+  let authSubscription = null;
+  let backListener = null;
+  let signInListener = null;
 
+  function hasAdminMarker(candidateSession) {
+    const user = candidateSession && candidateSession.user;
+    const metadata = [user && user.app_metadata, user && user.user_metadata, user];
+    return metadata.some((source) => {
+      if (!source || typeof source !== "object") return false;
+      if (source.is_community_admin === true || source.is_admin === true) return true;
+      if (source.role === "admin" || source.role === "community_admin") return true;
+      return Array.isArray(source.roles)
+        && source.roles.some((role) => role === "admin" || role === "community_admin");
+    });
+  }
+
+  function syncAdminLink() {
+    const visible = hasAdminMarker(session);
+    if (elements.adminNav) elements.adminNav.hidden = !visible;
+    if (elements.adminLink) elements.adminLink.hidden = !visible;
+  }
   function setStatus(message, isError = false) {
     elements.status.textContent = message;
     elements.status.dataset.error = isError ? "true" : "false";
@@ -61,9 +85,10 @@
 
   function setView(state) {
     elements.body.dataset.profileState = state;
+    if (elements.authPrompt) elements.authPrompt.hidden = state !== "signed_out";
     elements.loading.hidden = state !== "loading";
     elements.error.hidden = state !== "error";
-    elements.form.hidden = state === "loading" || state === "error";
+    elements.form.hidden = state !== "ready" && state !== "saving";
   }
 
   function sameOriginReturnTo(value) {
@@ -84,9 +109,15 @@
     sessionGeneration += 1;
     profileLoadGeneration += 1;
     session = null;
+    syncAdminLink();
     setBusy(false);
     clearProfileForm();
     clearValidationErrors();
+    if (embedded) {
+      setView("signed_out");
+      setStatus("登录后即可维护个人信息。");
+      return;
+    }
     setView("loading");
     setStatus("正在跳转到登录页…");
     window.location.href = signInUrl();
@@ -432,6 +463,7 @@
 
     const identityChanged = nextUserId !== sessionUserId(session);
     session = nextSession;
+    syncAdminLink();
     if (!identityChanged) return;
 
     sessionGeneration += 1;
@@ -446,11 +478,18 @@
 
   async function initialize() {
     const params = new URLSearchParams(window.location.search);
-    elements.backLink.href = sameOriginReturnTo(params.get("return_to") || "/");
-    elements.backLink.addEventListener("click", (event) => {
+    elements.backLink.href = sameOriginReturnTo(params.get("return_to") || "/community");
+    backListener = (event) => {
       event.preventDefault();
+      if (embedded && window.VoyageRouter) {
+        const target = new URL(elements.backLink.href, window.location.origin);
+        const view = window.VoyageRouter.viewFromLocation(target);
+        window.VoyageRouter.navigate(view);
+        return;
+      }
       window.location.href = new URL(elements.backLink.href, window.location.origin).toString();
-    });
+    };
+    elements.backLink.addEventListener("click", backListener);
     const config = authConfig();
     if (!config || !window.supabase || typeof window.supabase.createClient !== "function") {
       setView("error");
@@ -460,7 +499,7 @@
     client = window.supabase.createClient(config.url, config.anonKey, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
     });
-    client.auth.onAuthStateChange((_event, nextSession) => {
+    authSubscription = client.auth.onAuthStateChange((_event, nextSession) => {
       void applyAuthSession(nextSession);
     });
     const initialSessionGeneration = sessionGeneration;
@@ -469,13 +508,50 @@
     await applyAuthSession(result && result.data ? result.data.session : null);
   }
 
-  elements.avatarInput.addEventListener("change", () => {
-    void onAvatarSelected();
-  });
-  elements.displayName.addEventListener("input", () => {
-    if (elements.avatarImage.hidden) renderAvatar();
-  });
-  elements.form.addEventListener("submit", saveProfile);
-  elements.retry.addEventListener("click", loadProfile);
-  initialize();
+  async function mount(options = {}) {
+    if (mounted) return;
+    mounted = true;
+    embedded = options.embedded === true;
+    elements.avatarInput.addEventListener("change", () => {
+      void onAvatarSelected();
+    });
+    elements.displayName.addEventListener("input", () => {
+      if (elements.avatarImage.hidden) renderAvatar();
+    });
+    elements.form.addEventListener("submit", saveProfile);
+    elements.retry.addEventListener("click", loadProfile);
+    if (elements.signIn) {
+      signInListener = () => {
+        window.location.href = signInUrl();
+      };
+      elements.signIn.addEventListener("click", signInListener);
+    }
+    await initialize();
+  }
+
+  async function unmount() {
+    if (!mounted) return;
+    mounted = false;
+    sessionGeneration += 1;
+    profileLoadGeneration += 1;
+    if (authSubscription && authSubscription.data && authSubscription.data.subscription
+      && typeof authSubscription.data.subscription.unsubscribe === "function") {
+      authSubscription.data.subscription.unsubscribe();
+    }
+    authSubscription = null;
+    if (backListener && elements.backLink && typeof elements.backLink.removeEventListener === "function") {
+      elements.backLink.removeEventListener("click", backListener);
+    }
+    if (signInListener && elements.signIn && typeof elements.signIn.removeEventListener === "function") {
+      elements.signIn.removeEventListener("click", signInListener);
+    }
+    backListener = null;
+    signInListener = null;
+    session = null;
+    client = null;
+    embedded = false;
+  }
+
+  window.VoyageProfileController = Object.freeze({ mount, unmount });
+  if (!document.body.dataset.appShell) void mount();
 })();

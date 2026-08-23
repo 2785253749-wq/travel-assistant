@@ -689,3 +689,67 @@ input:focus-visible {
     width: 100%;
   }
 }
+
+
+.community-route-nav {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  width: min(1200px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 1rem 0 0;
+}
+
+.community-route-nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.35rem;
+  padding: 0.45rem 0.85rem;
+  color: var(--community-muted);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.community-route-nav a:hover,
+.community-route-nav a[aria-current="page"] {
+  color: var(--community-accent-strong);
+  border-color: rgba(12, 122, 107, 0.16);
+  background: rgba(12, 122, 107, 0.1);
+}
+
+@media (max-width: 620px) {
+  .community-route-nav {
+    justify-content: flex-start;
+    width: min(100% - 1rem, 1200px);
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+}
+
+.community-create-fab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .45rem;
+  width: auto;
+  min-width: max-content;
+  height: 3rem;
+  padding: 0 1rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* Keep the standalone community publish action clear of the assistant. */
+.community-create-fab {
+  left: 1.25rem;
+  right: auto;
+}

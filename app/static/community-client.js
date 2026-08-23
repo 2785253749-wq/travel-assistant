@@ -44,10 +44,23 @@
     }
   }
 
+  function hasAdminMarkerHint(candidateSession) {
+    const user = candidateSession && candidateSession.user;
+    const metadata = [user && user.app_metadata, user && user.user_metadata, user];
+    return metadata.some((source) => {
+      if (!source || typeof source !== "object") return false;
+      if (source.is_community_admin === true || source.is_admin === true) return true;
+      if (source.role === "admin" || source.role === "community_admin") return true;
+      return Array.isArray(source.roles)
+        && source.roles.some((role) => role === "admin" || role === "community_admin");
+    });
+  }
   function createBrowserClient() {
     let authClient = null;
     let session = null;
     let sessionGeneration = 0;
+    let initialized = false;
+    let initializePromise = null;
     const listeners = [];
 
     function notify() {
@@ -61,28 +74,39 @@
     }
 
     async function initialize() {
-      const config = authConfig();
-      if (!config || !window.supabase || typeof window.supabase.createClient !== "function") {
-        applySession(null);
+      if (initialized) {
+        notify();
         return;
       }
-      authClient = window.supabase.createClient(config.url, config.anonKey, {
-        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
-      });
-      if (authClient.auth && typeof authClient.auth.onAuthStateChange === "function") {
-        authClient.auth.onAuthStateChange((_event, nextSession) => {
-          applySession(nextSession);
+      if (initializePromise) return initializePromise;
+      initializePromise = (async () => {
+        const config = authConfig();
+        if (!config || !window.supabase || typeof window.supabase.createClient !== "function") {
+          applySession(null);
+          initialized = true;
+          return;
+        }
+        authClient = window.supabase.createClient(config.url, config.anonKey, {
+          auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
         });
-      }
-      if (!authClient.auth || typeof authClient.auth.getSession !== "function") {
-        applySession(null);
-        return;
-      }
-      const result = await authClient.auth.getSession();
-      applySession(result && result.data ? result.data.session : null);
-    }
-
-    function buildSignInUrl(returnTo) {
+        if (authClient.auth && typeof authClient.auth.onAuthStateChange === "function") {
+          authClient.auth.onAuthStateChange((_event, nextSession) => {
+            applySession(nextSession);
+          });
+        }
+        if (!authClient.auth || typeof authClient.auth.getSession !== "function") {
+          applySession(null);
+          initialized = true;
+          return;
+        }
+        const result = await authClient.auth.getSession();
+        applySession(result && result.data ? result.data.session : null);
+        initialized = true;
+      })().finally(() => {
+        initializePromise = null;
+      });
+      return initializePromise;
+    }    function buildSignInUrl(returnTo) {
       const url = new URL("/auth", window.location.origin);
       url.searchParams.set("mode", "signin");
       url.searchParams.set("return_to", sameOriginPath(returnTo, "/community"));
@@ -124,6 +148,17 @@
       return payload;
     }
 
+    function hasAdminMarker(candidateSession) {
+      const user = candidateSession && candidateSession.user;
+      const metadata = [user && user.app_metadata, user && user.user_metadata, user];
+      return metadata.some((source) => {
+        if (!source || typeof source !== "object") return false;
+        if (source.is_community_admin === true || source.is_admin === true) return true;
+        if (source.role === "admin" || source.role === "community_admin") return true;
+        return Array.isArray(source.roles)
+          && source.roles.some((role) => role === "admin" || role === "community_admin");
+      });
+    }
     return {
       initialize,
       requestJson,
@@ -131,10 +166,15 @@
       buildSignInUrl,
       getSupabaseClient: () => authClient,
       getSession: () => session,
+      hasAdminMarker,
       isSignedIn: () => Boolean(session && typeof session.access_token === "string"),
       getSessionGeneration: () => sessionGeneration,
       onSessionChange(listener) {
         listeners.push(listener);
+        return () => {
+          const index = listeners.indexOf(listener);
+          if (index >= 0) listeners.splice(index, 1);
+        };
       },
     };
   }
@@ -147,5 +187,6 @@
     safeUrl,
     publicError,
     createBrowserClient,
+    hasAdminMarker: hasAdminMarkerHint,
   };
 })();
