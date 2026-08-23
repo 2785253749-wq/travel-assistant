@@ -586,7 +586,7 @@ body.community-themed-page .navigation-item.is-active::after { display: none; }
 }
 .community-route-nav a[aria-current="page"] { background: #dff3e7; }
 /* Keep the existing shell visual language; only the post list becomes image-first masonry. */
-body.community-themed-page #community-page .community-publish-panel {
+body.community-themed-page #community-page .community-publish-panel[hidden] {
   display: none;
 }
 
@@ -649,6 +649,29 @@ body.community-themed-page .community-create-fab {
 
 body.community-themed-page .community-create-fab:hover {
   background: var(--community-accent-strong);
+}
+
+/* Recommendation cards are buttons too; keep the community theme from turning them into pills. */
+body.community-themed-page button.destination-card:not(.secondary):not(.danger) {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  color: var(--ink);
+  background: #fff;
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
+}
+
+body.community-themed-page button.destination-card:not(.secondary):not(.danger):hover {
+  color: var(--ink);
+  background: #fff;
+  border-color: #8abcf4;
+  transform: translateY(-1px);
 }
 
 @media (max-width: 720px) {
