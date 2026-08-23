@@ -185,6 +185,7 @@ def test_repository_requires_service_role_configuration():
     with pytest.raises(RuntimeError, match="service-role"):
         KnowledgeRepository(
             settings=Settings(
+                _env_file=None,
                 supabase_url="https://project.supabase.co",
                 supabase_anon_key="anon-key-must-not-be-used",
             )

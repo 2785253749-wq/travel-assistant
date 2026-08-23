@@ -10,6 +10,9 @@
     password: document.getElementById("auth-page-password"),
     submit: document.getElementById("auth-page-submit"),
     alternate: document.getElementById("auth-page-alternate"),
+    back: document.getElementById("auth-page-back"),
+    roleLabel: document.getElementById("auth-page-role-label"),
+    roleSwitch: document.getElementById("auth-page-role-switch"),
     forgot: document.getElementById("auth-page-forgot"),
     status: document.getElementById("auth-page-status"),
   };
@@ -17,7 +20,11 @@
   let mode = params.get("mode") === "signup" ? "signup" : "signin";
   let busy = false;
   let client = null;
-  const redirectTarget = sanitizeReturnTo(params.get("return_to"));
+  const requestedReturnTo = sanitizeReturnTo(params.get("return_to"));
+  let adminLogin = requestedReturnTo === "/admin/community";
+  let redirectTarget = adminLogin ? "/admin/community" : requestedReturnTo;
+  const userRedirectTarget = adminLogin ? "/" : requestedReturnTo;
+  elements.back.href = redirectTarget;
 
   function setStatus(message, isError = false) {
     elements.status.textContent = message;
@@ -28,6 +35,15 @@
     busy = nextBusy;
     for (const control of elements.form.querySelectorAll("button,input")) control.disabled = nextBusy;
     elements.forgot.disabled = nextBusy;
+  }
+
+  function setLoginRole(nextAdmin) {
+    adminLogin = Boolean(nextAdmin);
+    redirectTarget = adminLogin ? "/admin/community" : userRedirectTarget;
+    elements.roleLabel.textContent = adminLogin ? "管理员登录" : "用户登录";
+    elements.roleSwitch.setAttribute("aria-checked", String(adminLogin));
+    elements.roleSwitch.setAttribute("aria-label", adminLogin ? "切换为用户登录" : "切换为管理员登录");
+    elements.back.href = redirectTarget;
   }
 
   function setMode(nextMode) {
@@ -124,6 +140,7 @@
 
   async function initialize() {
     setMode(mode);
+    setLoginRole(adminLogin);
     const config = authConfig();
     if (!config || !window.supabase || typeof window.supabase.createClient !== "function") {
       setStatus("当前部署尚未配置账户服务，请稍后再试。", true);
@@ -141,6 +158,7 @@
 
   elements.form.addEventListener("submit", submitAuth);
   elements.alternate.addEventListener("click", () => setMode(mode === "signup" ? "signin" : "signup"));
+  elements.roleSwitch.addEventListener("click", () => setLoginRole(!adminLogin));
   elements.forgot.addEventListener("click", resetPassword);
   initialize();
 })();

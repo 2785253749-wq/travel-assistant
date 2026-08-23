@@ -21,7 +21,12 @@ function extractElements(html) {
   const pattern = /<([a-z0-9]+)\b([^>]*\bid="([^"]+)"[^>]*)>/gi;
   for (const match of html.matchAll(pattern)) {
     const element = new FakeElement(match[1], match[3]);
-    element.hidden = /\bhidden\b/i.test(match[2]);
+    element.hidden = /\bhidden\b/i.test("editor back link returns to the embedded community shell", () => {
+  const html = fs.readFileSync(HTML_PATH, "utf8");
+  assert.match(html, /id="community-editor-back"[^>]*href="\/#community-page"/);
+  assert.doesNotMatch(html, /id="community-editor-back"[^>]*href="\/community"/);
+});
+test(match[2]);
     const className = /\bclass="([^"]+)"/i.exec(match[2]);
     if (className) element.className = className[1];
     const href = /\bhref="([^"]+)"/i.exec(match[2]);

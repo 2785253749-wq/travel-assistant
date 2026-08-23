@@ -7,13 +7,20 @@
   <title>个人信息 - Voyage</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body data-profile-state="loading">
+<body class="community-themed-page" data-profile-state="loading">
   <a class="skip-link" href="#profile-form">跳到个人信息表单</a>
 
   <header class="site-header">
     <div class="site-header-inner">
       <a class="voyage-brand" href="/" aria-label="返回 Voyage 探索首页">Voyage</a>
       <p class="auth-route-label">个人信息</p>
+      <nav class="community-route-nav" aria-label="主导航">
+        <a href="/">探索</a>
+        <a href="/#trips-page">我的行程</a>
+        <a href="/community">社区</a>
+        <a href="/profile" aria-current="page">个人信息</a>
+        <a id="profile-admin-nav" href="/admin/community" hidden>管理员入口</a>
+      </nav>
     </div>
   </header>
 
@@ -26,7 +33,10 @@
             <h1 id="profile-page-title" tabindex="-1">个人信息</h1>
             <p class="profile-page-description">在这里维护昵称、简介、常驻城市和旅行风格；邮箱仅用于当前账户展示。</p>
           </div>
-          <a id="profile-back-link" class="button-link secondary" href="/">返回</a>
+          <div class="profile-page-header-actions">
+            <a id="profile-back-link" class="button-link secondary" href="/community">返回社区</a>
+            <a id="profile-admin-link" class="button-link secondary" href="/admin/community" hidden>管理员入口</a>
+          </div>
         </div>
 
         <p id="profile-status" class="status-message" role="status" aria-live="polite">正在加载个人信息…</p>

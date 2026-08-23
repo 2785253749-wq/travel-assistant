@@ -74,6 +74,11 @@ class FakeElement {
     this.listeners.set(type, listeners);
   }
 
+  removeEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || [];
+    this.listeners.set(type, listeners.filter((candidate) => candidate !== listener));
+  }
+
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) || null; }
   removeAttribute(name) { this.attributes.delete(name); }
@@ -233,11 +238,17 @@ async function settle(rounds = 8) {
   for (let index = 0; index < rounds; index += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
-function createLocation(initialHref) {
+function createLocation(initialHref, writes = []) {
   let current = new URL(initialHref);
+  function set(next, track = true) {
+    const nextUrl = new URL(String(next), current.href);
+    if (track) writes.push(nextUrl.href);
+    current = nextUrl;
+  }
   return {
     get href() { return current.href; },
-    set href(next) { current = new URL(String(next), current.href); },
+    set href(next) { set(next); },
+    setWithoutTracking(next) { set(next, false); },
     get origin() { return current.origin; },
     get pathname() { return current.pathname; },
     get search() { return current.search; },
@@ -257,6 +268,10 @@ function createHarness(options = {}) {
       scripts: [
         path.join(root, "app", "static", "data", "explore-data.js"),
         path.join(root, "app", "static", "map-explorer.js"),
+        path.join(root, "app", "static", "app-router.js"),
+        path.join(root, "app", "static", "community-client.js"),
+        path.join(root, "app", "static", "profile.js"),
+        path.join(root, "app", "static", "admin-community.js"),
         path.join(root, "app", "static", "app.js"),
       ],
     },
@@ -303,6 +318,7 @@ function createHarness(options = {}) {
     source: fs.readFileSync(sourcePath, "utf8"),
   }));
   const { document, elements, created } = buildDocument(html);
+  if (page === "app") document.body.dataset.appShell = "true";
   const auth = options.auth || new FakeSupabaseAuth();
   const fetchCalls = [];
   const fetchImpl = options.fetch || (async () => jsonResponse(200, {}));
@@ -319,7 +335,8 @@ function createHarness(options = {}) {
   const confirmCalls = [];
   const confirmImpl = typeof options.confirm === "function" ? options.confirm : () => true;
   let uuid = 0;
-  const location = createLocation(`https://travel.example${options.path || pageConfig.defaultPath}${options.search || ""}${options.hash || ""}`);
+  const locationWrites = [];
+  const location = createLocation(`https://travel.example${options.path || pageConfig.defaultPath}${options.search || ""}${options.hash || ""}`, locationWrites);
   const historyCalls = [];
   const urlApi = Object.assign(URL, {
     createObjectURL(blob) {
@@ -335,10 +352,15 @@ function createHarness(options = {}) {
     document,
     location,
     history: {
+      pushState(state, title, url) {
+        const next = new URL(String(url), location.href);
+        historyCalls.push({ state, title, url: next.href, method: "pushState" });
+        location.setWithoutTracking(next.href);
+      },
       replaceState(state, title, url) {
         const next = new URL(String(url), location.href);
-        historyCalls.push({ state, title, url: next.href });
-        location.href = next.href;
+        historyCalls.push({ state, title, url: next.href, method: "replaceState" });
+        location.setWithoutTracking(next.href);
       },
     },
     crypto: { randomUUID() { uuid += 1; return `thread-${uuid}`; } },
@@ -400,6 +422,7 @@ function createHarness(options = {}) {
     created,
     fetchCalls,
     historyCalls,
+    locationWrites,
     window,
     settle,
     jsonResponse,

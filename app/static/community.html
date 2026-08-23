@@ -9,6 +9,13 @@
 </head>
 <body data-community-state="loading">
   <a id="community-skip-link" class="community-skip-link" href="#community-main">跳到内容</a>
+  <nav class="community-route-nav" aria-label="主导航">
+    <a href="/">探索</a>
+    <a href="/#trips-page">我的行程</a>
+    <a href="/community" aria-current="page">社区</a>
+    <a href="/profile">个人信息</a>
+    <a id="community-admin-nav" href="/admin/community" hidden>管理员入口</a>
+  </nav>
 
   <header id="community-header" class="community-header">
     <div class="community-header__brand">
@@ -66,7 +73,7 @@
     </div>
   </main>
 
-  <a id="community-create-link" class="community-create-link" href="/community/notes/new" aria-label="发布新的旅行游记"><span class="voyage-icon voyage-icon--add" aria-hidden="true"></span>发布游记</a>
+  <a id="community-create-link" class="community-create-link community-create-fab" href="/community/notes/new" aria-label="发布新的旅行游记"><span class="voyage-icon voyage-icon--add" aria-hidden="true"></span></a>
 
   <script src="/runtime-config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.8/dist/umd/supabase.min.js" defer crossorigin="anonymous"></script>

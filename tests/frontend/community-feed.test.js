@@ -292,6 +292,46 @@ test("feed renders approved notes as safe masonry cards for anonymous readers", 
   assert.equal(harness.elements.get("community-create-link").href, "/community/notes/new");
 });
 
+test("post cards use an image-first layout and only the post card opens details", async () => {
+  const note = communityNote();
+  const harness = createCommunityHarness({ fetch: async () => jsonResponse(200, feedPage([note])) });
+  await settle();
+
+  const card = descendants(harness.elements.get("community-grid")).find((node) => node.className.includes("community-card"));
+  assert.ok(card, "a post card should render");
+  assert.equal(card.dataset.layout, "post");
+  assert.equal(card.dataset.postId, note.id);
+  assert.equal(card.getAttribute("tabindex"), "0");
+  assert.equal(descendants(card).some((node) => node.tagName === "IMG"), true);
+
+  await card.dispatch("click");
+  assert.equal(harness.window.location.pathname, `/community/notes/${note.id}`);
+});
+
+test("community list exposes a floating plus action instead of the publish page", () => {
+  const html = fs.readFileSync(HTML_PATH, "utf8");
+  assert.match(html, /id="community-create-link"[^>]*community-create-fab/);
+  assert.match(html, /aria-label="发布新的旅行游记"/);
+  assert.doesNotMatch(html, />发布游记<\/a>/);
+});
+
+test("standalone community hides the admin route for regular sessions", async () => {
+  const anonymous = createCommunityHarness();
+  await settle();
+  assert.equal(anonymous.elements.get("community-admin-nav").hidden, true);
+
+  const regular = createCommunityHarness({ auth: new FakeSupabaseAuth({ initialSession: SIGNED_IN_SESSION }) });
+  await settle();
+  assert.equal(regular.elements.get("community-admin-nav").hidden, true);
+
+  const adminSession = {
+    ...SIGNED_IN_SESSION,
+    user: { ...SIGNED_IN_SESSION.user, app_metadata: { is_community_admin: true } },
+  };
+  const admin = createCommunityHarness({ auth: new FakeSupabaseAuth({ initialSession: adminSession }) });
+  await settle();
+  assert.equal(admin.elements.get("community-admin-nav").hidden, false);
+});
 test("category and search changes reset cursor state and issue filtered requests", async () => {
   const harness = createCommunityHarness({
     fetch: async (call, index) => {

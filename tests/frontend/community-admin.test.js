@@ -62,11 +62,23 @@ test("admin page exposes the three queues and safe rendering boundaries", () => 
   assert.match(script, /notes/);
   assert.match(script, /comments/);
   assert.match(script, /reports/);
-  assert.match(script, /location\.replace\(["']\/["']\)/);
+  assert.doesNotMatch(script, /location\.replace\(["']\/["']\)/);
   assert.doesNotMatch(script, /innerHTML\s*=/);
   assert.doesNotMatch(script, /storage_path/);
 });
 
+test("admin standalone keeps its route hidden until administrator access succeeds", async () => {
+  const forbidden = createHarness({
+    page: "community-admin",
+    fetch: async () => jsonResponse(403, { detail: { code: "COMMUNITY_ADMIN_REQUIRED" } }),
+  });
+  await settle();
+  assert.equal(forbidden.elements.get("admin-community-self-nav").hidden, true);
+
+  const allowed = createHarness({ page: "community-admin", auth: new FakeSupabaseAuth({ initialSession: SESSION }), fetch: baseFetch });
+  await settle();
+  assert.equal(allowed.elements.get("admin-community-self-nav").hidden, false);
+});
 test("admin loads notes, switches to comments, and sends the authenticated Task 12 paths", async () => {
   const auth = new FakeSupabaseAuth({ initialSession: SESSION });
   const harness = createHarness({ page: "community-admin", auth, fetch: baseFetch });
@@ -83,7 +95,7 @@ test("admin loads notes, switches to comments, and sends the authenticated Task 
   assert.equal(harness.elements.get("admin-community-empty").hidden, false);
 });
 
-test("403 clears the queue before returning to the home page, while signed-out users go to auth", async () => {
+test("403 clears the queue and stays in the administrator view with a permission message", async () => {
   const forbidden = createHarness({
     page: "community-admin",
     auth: new FakeSupabaseAuth({ initialSession: SESSION }),
@@ -91,12 +103,33 @@ test("403 clears the queue before returning to the home page, while signed-out u
   });
   await settle();
   assert.equal(forbidden.elements.get("admin-community-list").children.length, 0);
-  assert.equal(forbidden.window.location.pathname, "/");
+  assert.equal(forbidden.window.location.pathname, "/admin/community");
+  assert.match(forbidden.elements.get("admin-community-forbidden").textContent, /没有社区管理员权限/);
+  assert.equal(forbidden.elements.get("admin-community-forbidden").hidden, false);
+  assert.equal(forbidden.elements.get("admin-community-return-explore").getAttribute("href"), "/");
 
   const signedOut = createHarness({ page: "community-admin" });
   await settle();
-  assert.equal(signedOut.window.location.pathname, "/auth");
-  assert.equal(signedOut.window.location.search, "?return_to=%2Fadmin%2Fcommunity");
+  assert.equal(signedOut.window.location.pathname, "/admin/community");
+  assert.equal(signedOut.elements.get("admin-community-auth-required").hidden, false);
+  assert.match(signedOut.elements.get("admin-community-auth-required").textContent, /登录/);
+});
+
+test("401 clears a stale session before redirecting to administrator sign-in", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({
+    page: "community-admin",
+    auth,
+    fetch: async () => jsonResponse(401, { detail: { code: "AUTH_REQUIRED" } }),
+  });
+
+  await settle();
+
+  assert.equal(auth.signOutCalls, 1);
+  assert.equal(auth.session, null);
+  assert.equal(harness.window.location.pathname, "/admin/community");
+  assert.equal(harness.elements.get("admin-community-auth-required").hidden, false);
+  assert.match(harness.elements.get("admin-community-auth-required").textContent, /登录/);
 });
 
 test("reject dialog submits a reason and clears target state on close", async () => {
@@ -140,7 +173,7 @@ test("report cards close through the explicit Task 12 resolve endpoint", async (
     id: "report-1",
     target_type: "comment",
     target_id: "comment-1",
-    reason: "���ƹ��",
+    reason: "���ƹ��",
     status: "pending",
     created_at: "2026-08-22T09:00:00Z",
   };

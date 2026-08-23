@@ -20,6 +20,7 @@
     reviewCancel: get("admin-community-review-cancel"),
     reviewSubmit: get("admin-community-review-submit"),
     tabs: ["notes", "comments", "reports"].map((tab) => get("admin-community-tab-" + tab)),
+    panel: get("admin-community-panel"), authRequired: get("admin-community-auth-required"), forbidden: get("admin-community-forbidden"), signIn: get("admin-community-signin"), returnExplore: get("admin-community-return-explore"), selfNav: get("admin-community-self-nav"),
   };
   const client = createBrowserClient();
   const tabState = new Map(["notes", "comments", "reports"].map((tab) => [tab, {
@@ -31,15 +32,42 @@
   }]));
   let activeTab = "notes";
   let initialized = false;
+  let mounted = false;
+  let embedded = false;
+  let sessionUnsubscribe = null;
+  let listenersBound = false;
+  let access = "unknown";
 
+  function setSelfNavVisible(visible) {
+    if (el.selfNav) el.selfNav.hidden = !visible;
+  }
   function clear(node) {
     if (!node) return;
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
-  function redirectToSignIn() {
-    window.location.href = "/auth?return_to=%2Fadmin%2Fcommunity";
-  }
+  let redirectingToSignIn = false;
+
+  async function redirectToSignIn({ clearSession = false } = {}) {
+    if (redirectingToSignIn) return;
+    redirectingToSignIn = true;
+    if (clearSession) {
+      try {
+        const authClient = client.getSupabaseClient();
+        if (authClient && authClient.auth && typeof authClient.auth.signOut === "function") {
+          await authClient.auth.signOut();
+        }
+      } catch (_) {
+        // Local cleanup is still applied when the provider cannot sign out.
+      }
+    }
+    clearAllQueues();
+    setSelfNavVisible(false);
+    if (el.authRequired) { el.authRequired.hidden = false; el.authRequired.textContent = "管理员登录状态已失效，请重新登录后再试。"; }
+    if (el.forbidden) el.forbidden.hidden = true;
+    if (el.panel) el.panel.hidden = true;
+    if (el.status) el.status.textContent = "请登录后访问社区审核。";
+    redirectingToSignIn = false;  }
 
   function clearQueue() {
     clear(el.list);
@@ -49,10 +77,26 @@
     el.status.textContent = "";
   }
 
-  function goHomeOnForbidden() {
+  function clearAllQueues() {
+    for (const state of tabState.values()) {
+      state.items = [];
+      state.nextCursor = null;
+      state.loaded = false;
+      state.loading = false;
+      state.generation += 1;
+    }
     clearQueue();
-    el.page.hidden = true;
-    window.location.replace("/");
+  }
+
+  function showForbidden() {
+    access = "denied";
+    clearAllQueues();
+    setSelfNavVisible(false);
+    setSelfNavVisible(false);
+    if (el.authRequired) el.authRequired.hidden = true;
+    if (el.forbidden) { el.forbidden.hidden = false; el.forbidden.textContent = "当前账户没有社区管理员权限"; }
+    if (el.panel) el.panel.hidden = true;
+    if (el.status) el.status.textContent = "当前账户没有社区管理员权限";
   }
 
   function queueUrl(tab, cursor = null) {
@@ -181,10 +225,12 @@
 
   async function loadQueue(tab, append = false) {
     if (!client.isSignedIn()) {
-      clearQueue();
-      redirectToSignIn();
+      await redirectToSignIn();
       return;
     }
+    if (el.authRequired) el.authRequired.hidden = true;
+    if (el.forbidden) el.forbidden.hidden = true;
+    if (el.panel) el.panel.hidden = false;
     const state = tabState.get(tab);
     if (state.loading) return;
     state.loading = true;
@@ -204,17 +250,19 @@
       state.items = append ? state.items.concat(items) : items;
       state.nextCursor = typeof page.next_cursor === "string" && page.next_cursor ? page.next_cursor : null;
       state.loaded = true;
+      access = "granted";
+      setSelfNavVisible(true);
       renderQueue();
     } catch (error) {
       if (generation !== state.generation || tab !== activeTab) return;
       state.loaded = false;
       if (error && error.status === 403) {
-        goHomeOnForbidden();
+        showForbidden();
         return;
       }
       if (error && error.status === 401) {
         clearQueue();
-        redirectToSignIn();
+        await redirectToSignIn({ clearSession: true });
         return;
       }
       setError("审核队列加载失败，请重试。");
@@ -259,8 +307,11 @@
       closeReview();
       await loadQueue(tab);
     } catch (error) {
-      if (error && error.status === 403) return goHomeOnForbidden();
-      if (error && error.status === 401) return redirectToSignIn();
+      if (error && error.status === 403) { showForbidden(); return; }
+      if (error && error.status === 401) {
+        await redirectToSignIn({ clearSession: true });
+        return;
+      }
       el.reviewStatus.textContent = "审核操作失败，请稍后重试。";
     }
   }
@@ -288,8 +339,11 @@
       );
       await loadQueue("reports");
     } catch (error) {
-      if (error && error.status === 403) return goHomeOnForbidden();
-      if (error && error.status === 401) return redirectToSignIn();
+      if (error && error.status === 403) { showForbidden(); return; }
+      if (error && error.status === 401) {
+        await redirectToSignIn({ clearSession: true });
+        return;
+      }
       setError("Hide content failed. Please retry.");
     }
   }
@@ -303,33 +357,63 @@
       });
       await loadQueue("reports");
     } catch (error) {
-      if (error && error.status === 403) return goHomeOnForbidden();
-      if (error && error.status === 401) return redirectToSignIn();
+      if (error && error.status === 403) { showForbidden(); return; }
+      if (error && error.status === 401) {
+        await redirectToSignIn({ clearSession: true });
+        return;
+      }
       setError("举报处理失败，请稍后重试。");
     }
   }
 
-  client.onSessionChange(() => {
-    if (initialized && !client.isSignedIn()) {
-      clearQueue();
-      redirectToSignIn();
-    }
-  });
-  for (const tab of el.tabs) tab.addEventListener("click", () => setTab(tab.dataset.adminTab));
-  el.retry.addEventListener("click", () => void loadQueue(activeTab));
-  el.loadMore.addEventListener("click", () => void loadQueue(activeTab, true));
-  el.reviewCancel.addEventListener("click", closeReview);
-  el.dialog.addEventListener("close", closeReview);
-  el.reviewForm.addEventListener("submit", submitReview);
-  el.reviewSubmit.addEventListener("click", submitReview);
+  function bindListeners() {
+    if (listenersBound) return;
+    listenersBound = true;
+    sessionUnsubscribe = client.onSessionChange(() => {
+      if (initialized && !client.isSignedIn()) {
+        void redirectToSignIn();
+      }
+    });
+    for (const tab of el.tabs) tab.addEventListener("click", () => setTab(tab.dataset.adminTab));
+    el.retry.addEventListener("click", () => void loadQueue(activeTab));
+    el.loadMore.addEventListener("click", () => void loadQueue(activeTab, true));
+    el.reviewCancel.addEventListener("click", closeReview);
+    el.dialog.addEventListener("close", closeReview);
+    el.reviewForm.addEventListener("submit", submitReview);
+    el.reviewSubmit.addEventListener("click", submitReview);
+  }
 
-  void client.initialize().then(() => {
+  async function mount(options = {}) {
+    if (mounted) return;
+    mounted = true;
+    setSelfNavVisible(false);
+    embedded = options.embedded === true;
+    initialized = false;
+    access = "unknown";
+    redirectingToSignIn = false;
+    bindListeners();
+    clearAllQueues();
+    await client.initialize();
     initialized = true;
     if (!client.isSignedIn()) {
-      clearQueue();
-      redirectToSignIn();
+      await redirectToSignIn();
       return;
     }
-    void loadQueue(activeTab);
-  });
+    await loadQueue(activeTab);
+  }
+
+  async function unmount() {
+    if (!mounted) return;
+    mounted = false;
+    initialized = false;
+    access = "unknown";
+    setSelfNavVisible(false);
+    clearAllQueues();
+    if (sessionUnsubscribe) sessionUnsubscribe();
+    sessionUnsubscribe = null;
+    embedded = false;
+  }
+
+  window.VoyageAdminController = Object.freeze({ mount, unmount, hasAccess: () => access === "granted" });
+  if (!document.body.dataset.appShell) void mount();;
 })();
