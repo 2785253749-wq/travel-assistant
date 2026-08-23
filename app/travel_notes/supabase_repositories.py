@@ -637,6 +637,37 @@ class SupabasePublicTravelNoteRepository:
         except Exception as exc:  # pragma: no cover - exercised through fakes
             raise _map_travel_note_database_error(exc) from exc
 
+    def list_public_by_creator(
+        self,
+        creator_slug: str,
+        cursor: tuple[datetime, UUID] | None,
+        limit: int,
+    ) -> list[StoredTravelNote]:
+        params = {
+            "p_creator_slug": creator_slug,
+            "cursor_published_at": (
+                cursor[0].isoformat() if cursor is not None else None
+            ),
+            "cursor_id": str(cursor[1]) if cursor is not None else None,
+            "page_size": limit,
+        }
+        try:
+            with database_operation(
+                "travel_note.list_public_by_creator",
+                subject=creator_slug,
+            ):
+                response = self._client.rpc(
+                    "list_public_travel_notes_by_creator_internal",
+                    params,
+                ).execute()
+            return [
+                _stored_note_from_public_list_row(row) for row in _row_list(response.data)
+            ]
+        except AppError:
+            raise
+        except Exception as exc:  # pragma: no cover - exercised through fakes
+            raise _map_travel_note_database_error(exc) from exc
+
 
 class SupabaseTravelNoteMediaGateway:
     def __init__(

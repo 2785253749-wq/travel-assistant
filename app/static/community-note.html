@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>游记详情 · Voyage</title>
+  <link rel="stylesheet" href="/static/community.css">
+  <link rel="stylesheet" href="/static/iconfont.css">
+</head>
+<body data-community-state="loading">
+  <a class="community-skip-link" href="#community-note-main">跳到内容</a>
+  <header class="community-header community-note-header"><a class="community-back-link" href="/community"><span class="voyage-icon voyage-icon--back" aria-hidden="true"></span>返回社区</a><p class="community-eyebrow">Voyage Community</p><h1>游记详情</h1></header>
+  <main id="community-note-main" class="community-main" tabindex="-1">
+    <p id="community-note-status" class="community-status" role="status" aria-live="polite">正在加载游记…</p>
+    <section id="community-note-error" class="community-panel community-error" hidden><p id="community-note-error-message"></p><button id="community-note-retry" type="button" class="community-secondary"><span class="voyage-icon voyage-icon--retry" aria-hidden="true"></span>重试</button></section>
+    <article id="community-note-content" class="community-note" hidden>
+      <div class="community-note__gallery-shell">
+        <button id="community-note-gallery-prev" type="button" class="community-secondary" aria-label="上一张图片"><span class="voyage-icon voyage-icon--back" aria-hidden="true"></span></button>
+        <div id="community-note-gallery" class="community-note__gallery" aria-label="游记图片"></div>
+        <button id="community-note-gallery-next" type="button" class="community-secondary" aria-label="下一张图片"><span class="voyage-icon voyage-icon--forward" aria-hidden="true"></span></button>
+      </div>
+      <div class="community-note__body">
+        <p id="community-note-category" class="community-card__category"></p>
+        <h2 id="community-note-title"></h2>
+        <p id="community-note-location" class="community-card__location"></p>
+        <a id="community-note-author" class="community-card__author-link" href="#"></a>
+        <p id="community-note-text" class="community-note__text"></p>
+        <div class="community-note__actions" role="group" aria-label="游记互动">
+          <button id="community-note-like-button" type="button" class="community-note__action">
+            <span class="voyage-icon voyage-icon--like" aria-hidden="true"></span><span>点赞</span><span id="community-note-like-count">0</span>
+          </button>
+          <button id="community-note-bookmark-button" type="button" class="community-note__action">
+            <span class="voyage-icon voyage-icon--bookmark" aria-hidden="true"></span><span>收藏</span>
+          </button>
+          <button id="community-note-report-button" type="button" class="community-note__action">
+            <span class="voyage-icon voyage-icon--report" aria-hidden="true"></span><span>举报</span>
+          </button>
+        </div>
+        <p id="community-note-interaction-status" class="community-status" role="status" aria-live="polite"></p>
+        <section class="community-note__comments" aria-labelledby="community-note-comments-title">
+          <div class="community-note__comments-header">
+            <h3 id="community-note-comments-title">评论</h3>
+            <button id="community-note-comments-retry" type="button" class="community-secondary" hidden><span class="voyage-icon voyage-icon--retry" aria-hidden="true"></span>重试</button>
+          </div>
+          <p id="community-note-comments-status" class="community-status" role="status" aria-live="polite">正在加载评论…</p>
+          <div id="community-note-comments-list" class="community-note__comments-list"></div>
+          <form id="community-note-comment-form" class="community-note__comment-form" hidden>
+            <label for="community-note-comment-body">写下你的评论</label>
+            <textarea id="community-note-comment-body" rows="4" maxlength="500" required></textarea>
+            <button id="community-note-comment-submit" type="submit" class="community-note__comment-submit"><span class="voyage-icon voyage-icon--comment" aria-hidden="true"></span>发表评论</button>
+            <p id="community-note-comment-status" class="community-status" role="status" aria-live="polite"></p>
+          </form>
+          <button id="community-note-comment-signin" type="button" class="community-secondary" hidden>登录后评论</button>
+        </section>
+      </div>
+    </article>
+  </main>
+  <section id="community-note-report-dialog" class="community-note__report-dialog community-panel" role="dialog" aria-modal="true" aria-labelledby="community-note-report-title" hidden>
+    <h2 id="community-note-report-title">举报内容</h2>
+    <p id="community-note-report-target" class="community-status"></p>
+    <form id="community-note-report-form">
+      <label for="community-note-report-reason">举报原因</label>
+      <textarea id="community-note-report-reason" rows="4" maxlength="500" required></textarea>
+      <div class="community-note__report-actions">
+        <button id="community-note-report-cancel" type="button" class="community-secondary">取消</button>
+        <button id="community-note-report-submit" type="submit" class="community-note__report-submit">提交举报</button>
+      </div>
+      <p id="community-note-report-status" class="community-status" role="status" aria-live="polite"></p>
+    </form>
+  </section>
+  <script src="/runtime-config.js"></script><script src="/static/community-client.js"></script><script src="/static/community-note.js"></script>
+</body>
+</html>

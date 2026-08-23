@@ -45,6 +45,7 @@ class StoredTravelNote:
     author_avatar_path: str | None
     author_slug: str
     images: tuple[StoredTravelNoteImage, ...]
+    author_bio: str = ""
 
 
 class Clock(Protocol):
@@ -126,3 +127,10 @@ class PublicTravelNoteRepository(Protocol):
     ) -> list[StoredTravelNote]: ...
 
     def get_public(self, note_id: UUID) -> StoredTravelNote | None: ...
+
+    def list_public_by_creator(
+        self,
+        creator_slug: str,
+        cursor: tuple[datetime, UUID] | None,
+        limit: int,
+    ) -> list[StoredTravelNote]: ...

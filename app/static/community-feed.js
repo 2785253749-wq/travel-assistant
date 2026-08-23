@@ -45,6 +45,12 @@
     while (element.firstChild) element.removeChild(element.firstChild);
   }
 
+  function createIcon(name) {
+    const icon = document.createElement("span");
+    icon.className = `voyage-icon voyage-icon--${name}`;
+    icon.setAttribute("aria-hidden", "true");
+    return icon;
+  }
   function initials(name) {
     const normalized = trimText(name);
     if (!normalized) return "V";
@@ -164,7 +170,7 @@
 
     const excerpt = document.createElement("p");
     excerpt.className = "community-card__excerpt";
-    excerpt.textContent = trimText(note && note.excerpt) || "这篇游记还没有摘要。";
+    excerpt.textContent = trimText(note && (note.body_preview || note.excerpt)) || "这篇游记还没有摘要。";
     content.append(excerpt);
 
     const authorRow = document.createElement("div");
@@ -201,20 +207,72 @@
 
     const counts = document.createElement("p");
     counts.className = "community-card__counts";
-    counts.textContent = `点赞 ${Number(note && note.like_count) || 0} · 评论 ${Number(note && note.comment_count) || 0}`;
+    const likes = document.createElement("span");
+    const likeCount = document.createElement("span");
+    const comments = document.createElement("span");
+    comments.append(createIcon("comment"), `评论 ${Number(note && note.comment_count) || 0}`);
+    counts.append(likes, " · ", comments);
     footer.append(counts);
 
+    const likeState = {
+      known: false,
+      active: false,
+      pending: false,
+      count: Number(note && note.like_count) || 0,
+    };
     const likeButton = document.createElement("button");
     likeButton.type = "button";
     likeButton.className = "community-card__action";
-    likeButton.textContent = "点赞";
-    likeButton.addEventListener("click", () => {
+
+    function renderLike() {
+      likeCount.textContent = `点赞 ${likeState.count}`;
+      while (likes.firstChild) likes.removeChild(likes.firstChild);
+      likes.append(createIcon("like"), likeCount);
+      while (likeButton.firstChild) likeButton.removeChild(likeButton.firstChild);
+      likeButton.append(createIcon("like"), '点赞');
+      likeButton.disabled = likeState.pending;
+      likeButton.classList.toggle("is-active", likeState.active && (likeState.known || likeState.pending));
+      likeButton.classList.toggle("is-pending", likeState.pending);
+      if (likeState.known) likeButton.setAttribute("aria-pressed", String(likeState.active));
+      else likeButton.removeAttribute("aria-pressed");
+    }
+
+    async function mutateLike() {
       if (!state.signedIn) {
         client.redirectToSignIn(detailPath(note && note.id));
         return;
       }
-      navigate(detailPath(note && note.id));
-    });
+      if (likeState.pending) return;
+      const previous = { known: likeState.known, active: likeState.active, count: likeState.count };
+      const generation = client.getSessionGeneration();
+      const method = likeState.known && likeState.active ? "DELETE" : "PUT";
+      likeState.pending = true;
+      likeState.active = method === "PUT";
+      likeState.count = Math.max(0, likeState.count + (method === "PUT" ? 1 : -1));
+      renderLike();
+      try {
+        const response = await client.requestJson(
+          "/api/community/notes/" + encodeURIComponent(String(note && note.id)) + "/like",
+          { method, auth: true },
+        );
+        if (generation !== client.getSessionGeneration()) return;
+        likeState.known = true;
+        likeState.active = Boolean(response.liked);
+        likeState.count = Number(response.like_count) || 0;
+        likeState.pending = false;
+        renderLike();
+      } catch (error) {
+        if (generation !== client.getSessionGeneration()) return;
+        Object.assign(likeState, previous, { pending: false });
+        renderLike();
+        if (error && error.code === "AUTH_REQUIRED") {
+          client.redirectToSignIn(detailPath(note && note.id));
+        }
+      }
+    }
+
+    likeButton.addEventListener("click", () => { void mutateLike(); });
+    renderLike();
     footer.append(likeButton);
     content.append(footer);
     card.append(content);

@@ -1077,6 +1077,407 @@ $$;
 revoke all on function public.review_travel_note_comment(uuid, text, text) from public, anon, authenticated;
 grant execute on function public.review_travel_note_comment(uuid, text, text) to authenticated;
 
+
+create or replace function public.set_travel_note_like_internal(
+  p_note_id uuid,
+  p_enabled boolean
+)
+returns table (
+  note_id uuid,
+  liked boolean,
+  bookmarked boolean,
+  like_count integer,
+  comment_count integer
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_note public.travel_notes;
+begin
+  if v_user_id is null then
+    raise exception 'authentication required' using errcode = '42501';
+  end if;
+
+  select note_row.*
+  into v_note
+  from public.travel_notes as note_row
+  where note_row.id = p_note_id
+    and note_row.status = 'approved'
+    and note_row.deleted_at is null
+  for update;
+
+  if not found then
+    raise exception 'travel note not found' using errcode = 'P0002';
+  end if;
+
+  if p_enabled then
+    insert into public.travel_note_likes (user_id, note_id)
+    values (v_user_id, p_note_id)
+    on conflict (user_id, note_id) do nothing;
+  else
+    delete from public.travel_note_likes
+    where user_id = v_user_id and note_id = p_note_id;
+  end if;
+
+  perform set_config('travel_notes.allow_moderation_write', 'on', true);
+  update public.travel_notes as note_row
+  set like_count = (
+    select count(*)::integer
+    from public.travel_note_likes as like_row
+    where like_row.note_id = p_note_id
+  )
+  where note_row.id = p_note_id
+  returning note_row.* into v_note;
+
+  return query
+  select
+    v_note.id,
+    exists (
+      select 1
+      from public.travel_note_likes as like_row
+      where like_row.user_id = v_user_id and like_row.note_id = p_note_id
+    ),
+    exists (
+      select 1
+      from public.travel_note_bookmarks as bookmark_row
+      where bookmark_row.user_id = v_user_id and bookmark_row.note_id = p_note_id
+    ),
+    v_note.like_count,
+    v_note.comment_count;
+end;
+$$;
+
+create or replace function public.set_travel_note_bookmark_internal(
+  p_note_id uuid,
+  p_enabled boolean
+)
+returns table (
+  note_id uuid,
+  liked boolean,
+  bookmarked boolean,
+  like_count integer,
+  comment_count integer
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_note public.travel_notes;
+begin
+  if v_user_id is null then
+    raise exception 'authentication required' using errcode = '42501';
+  end if;
+
+  select note_row.*
+  into v_note
+  from public.travel_notes as note_row
+  where note_row.id = p_note_id
+    and note_row.status = 'approved'
+    and note_row.deleted_at is null
+  for update;
+
+  if not found then
+    raise exception 'travel note not found' using errcode = 'P0002';
+  end if;
+
+  if p_enabled then
+    insert into public.travel_note_bookmarks (user_id, note_id)
+    values (v_user_id, p_note_id)
+    on conflict (user_id, note_id) do nothing;
+  else
+    delete from public.travel_note_bookmarks
+    where user_id = v_user_id and note_id = p_note_id;
+  end if;
+
+  return query
+  select
+    v_note.id,
+    exists (
+      select 1
+      from public.travel_note_likes as like_row
+      where like_row.user_id = v_user_id and like_row.note_id = p_note_id
+    ),
+    exists (
+      select 1
+      from public.travel_note_bookmarks as bookmark_row
+      where bookmark_row.user_id = v_user_id and bookmark_row.note_id = p_note_id
+    ),
+    v_note.like_count,
+    v_note.comment_count;
+end;
+$$;
+
+create or replace function public.get_travel_note_interaction_state_internal(
+  p_note_id uuid
+)
+returns table (
+  note_id uuid,
+  liked boolean,
+  bookmarked boolean,
+  like_count integer,
+  comment_count integer
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_note public.travel_notes;
+begin
+  if v_user_id is null then
+    raise exception 'authentication required' using errcode = '42501';
+  end if;
+
+  select note_row.*
+  into v_note
+  from public.travel_notes as note_row
+  where note_row.id = p_note_id
+    and note_row.status = 'approved'
+    and note_row.deleted_at is null;
+
+  if not found then
+    raise exception 'travel note not found' using errcode = 'P0002';
+  end if;
+
+  return query
+  select
+    v_note.id,
+    exists (
+      select 1
+      from public.travel_note_likes as like_row
+      where like_row.user_id = v_user_id and like_row.note_id = p_note_id
+    ),
+    exists (
+      select 1
+      from public.travel_note_bookmarks as bookmark_row
+      where bookmark_row.user_id = v_user_id and bookmark_row.note_id = p_note_id
+    ),
+    v_note.like_count,
+    v_note.comment_count;
+end;
+$$;
+
+create or replace function public.create_travel_note_comment_internal(
+  p_note_id uuid,
+  p_body text
+)
+returns table (
+  id uuid,
+  note_id uuid,
+  author_display_name text,
+  body text,
+  status text,
+  published_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_body text := btrim(p_body);
+  v_comment public.travel_note_comments;
+begin
+  if v_user_id is null then
+    raise exception 'authentication required' using errcode = '42501';
+  end if;
+  if char_length(v_body) not between 1 and 500 then
+    raise exception 'comment body must be between 1 and 500 characters' using errcode = 'P0001';
+  end if;
+  perform 1
+  from public.travel_notes as note_row
+  where note_row.id = p_note_id
+    and note_row.status = 'approved'
+    and note_row.deleted_at is null;
+  if not found then
+    raise exception 'travel note not found' using errcode = 'P0002';
+  end if;
+
+  insert into public.travel_note_comments (note_id, author_id, body)
+  values (p_note_id, v_user_id, v_body)
+  returning * into v_comment;
+
+  return query
+  select
+    v_comment.id,
+    v_comment.note_id,
+    coalesce(nullif(btrim(profile_row.display_name), ''), 'Voyage 旅行者'),
+    v_comment.body,
+    v_comment.status,
+    v_comment.published_at
+  from public.profiles as profile_row
+  where profile_row.user_id = v_comment.author_id;
+
+  if not found then
+    return query
+    select
+      v_comment.id,
+      v_comment.note_id,
+      'Voyage 旅行者'::text,
+      v_comment.body,
+      v_comment.status,
+      v_comment.published_at;
+  end if;
+end;
+$$;
+
+create or replace function public.list_public_travel_note_comments_internal(
+  p_note_id uuid,
+  p_cursor text default null,
+  p_page_size integer default 20,
+  p_viewer_id uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_items jsonb;
+begin
+  if p_page_size not between 1 and 50 then
+    raise exception 'comment page size must be between 1 and 50' using errcode = 'P0001';
+  end if;
+  perform 1
+  from public.travel_notes as note_row
+  where note_row.id = p_note_id
+    and note_row.status = 'approved'
+    and note_row.deleted_at is null;
+  if not found then
+    raise exception 'travel note not found' using errcode = 'P0002';
+  end if;
+
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', comment_row.id,
+        'note_id', comment_row.note_id,
+        'author_display_name',
+          coalesce(nullif(btrim(profile_row.display_name), ''), 'Voyage 旅行者'),
+        'body', comment_row.body,
+        'status', comment_row.status,
+        'published_at', comment_row.published_at
+      )
+      order by comment_row.published_at desc, comment_row.id desc
+    ),
+    '[]'::jsonb
+  )
+  into v_items
+  from public.travel_note_comments as comment_row
+  left join public.profiles as profile_row
+    on profile_row.user_id = comment_row.author_id
+  where comment_row.note_id = p_note_id
+    and (
+      comment_row.status = 'approved'
+      or (comment_row.status = 'pending_review' and p_viewer_id is not null and comment_row.author_id = p_viewer_id)
+    )
+    and comment_row.deleted_at is null;
+
+  return jsonb_build_object(
+    'items', v_items,
+    'next_cursor', null
+  );
+end;
+$$;
+
+create or replace function public.create_travel_note_report_internal(
+  p_note_id uuid,
+  p_target_type text,
+  p_target_id uuid,
+  p_reason text
+)
+returns table (
+  id uuid,
+  target_type text,
+  target_id uuid,
+  status text
+)
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_target_type text := lower(btrim(p_target_type));
+  v_reason text := btrim(p_reason);
+  v_report public.travel_note_reports;
+begin
+  if v_user_id is null then
+    raise exception 'authentication required' using errcode = '42501';
+  end if;
+  if char_length(v_reason) not between 1 and 500 then
+    raise exception 'report reason must be between 1 and 500 characters' using errcode = 'P0001';
+  end if;
+  perform 1
+  from public.travel_notes as note_row
+  where note_row.id = p_note_id
+    and note_row.status = 'approved'
+    and note_row.deleted_at is null;
+  if not found then
+    raise exception 'travel note not found' using errcode = 'P0002';
+  end if;
+
+  if v_target_type = 'note' then
+    if p_target_id <> p_note_id then
+      raise exception 'reported note does not match path note' using errcode = 'P0002';
+    end if;
+  elsif v_target_type = 'comment' then
+    perform 1
+    from public.travel_note_comments as comment_row
+    where comment_row.id = p_target_id
+      and comment_row.note_id = p_note_id
+      and comment_row.deleted_at is null;
+    if not found then
+      raise exception 'travel note comment not found' using errcode = 'P0002';
+    end if;
+  else
+    raise exception 'invalid report target type' using errcode = 'P0001';
+  end if;
+
+  insert into public.travel_note_reports (
+    reporter_id, target_type, target_id, reason
+  )
+  values (v_user_id, v_target_type, p_target_id, v_reason)
+  on conflict (reporter_id, target_type, target_id)
+  do update set reason = excluded.reason
+  returning * into v_report;
+
+  return query
+  select v_report.id, v_report.target_type, v_report.target_id, v_report.status;
+end;
+$$;
+
+revoke all on function public.set_travel_note_like_internal(uuid, boolean)
+  from public, anon, authenticated;
+grant execute on function public.set_travel_note_like_internal(uuid, boolean)
+  to authenticated;
+revoke all on function public.set_travel_note_bookmark_internal(uuid, boolean)
+  from public, anon, authenticated;
+grant execute on function public.set_travel_note_bookmark_internal(uuid, boolean)
+  to authenticated;
+revoke all on function public.get_travel_note_interaction_state_internal(uuid)
+  from public, anon, authenticated;
+grant execute on function public.get_travel_note_interaction_state_internal(uuid)
+  to authenticated;
+revoke all on function public.create_travel_note_comment_internal(uuid, text)
+  from public, anon, authenticated;
+grant execute on function public.create_travel_note_comment_internal(uuid, text)
+  to authenticated;
+revoke all on function public.list_public_travel_note_comments_internal(uuid, text, integer, uuid)
+  from public, anon, authenticated;
+grant execute on function public.list_public_travel_note_comments_internal(uuid, text, integer, uuid)
+  to service_role;
+revoke all on function public.create_travel_note_report_internal(uuid, text, uuid, text)
+  from public, anon, authenticated;
+grant execute on function public.create_travel_note_report_internal(uuid, text, uuid, text)
+  to authenticated;
+
 insert into storage.buckets (id, name, public)
 values ('community-media', 'community-media', false)
 on conflict (id) do update
@@ -1114,3 +1515,72 @@ using (
   bucket_id = 'community-media'
   and (storage.foldername(name))[1] = auth.uid()::text
 );
+
+create or replace function public.list_public_travel_notes_by_creator_internal(
+  p_creator_slug text,
+  cursor_published_at timestamptz default null,
+  cursor_id uuid default null,
+  page_size integer default 20
+)
+returns table (
+  id uuid,
+  creator_slug text,
+  author_display_name text,
+  author_avatar_path text,
+  title text,
+  location_name text,
+  category text,
+  cover_storage_path text,
+  published_at timestamptz,
+  like_count integer,
+  comment_count integer
+)
+language sql
+security definer
+set search_path = pg_catalog, public
+as $$
+  select
+    note_row.id,
+    profile_row.creator_slug,
+    coalesce(nullif(btrim(profile_row.display_name), ''), 'Voyage 旅行者'),
+    profile_row.avatar_path,
+    note_row.title,
+    note_row.location_name,
+    note_row.category,
+    cover_image.storage_path,
+    note_row.published_at,
+    note_row.like_count,
+    note_row.comment_count
+  from public.travel_notes as note_row
+  join public.profiles as profile_row
+    on profile_row.user_id = note_row.author_id
+  left join lateral (
+    select image_row.storage_path
+    from public.travel_note_images as image_row
+    where image_row.note_id = note_row.id
+    order by image_row.sort_order asc, image_row.id asc
+    limit 1
+  ) as cover_image on true
+  where note_row.status = 'approved'
+    and note_row.deleted_at is null
+    and note_row.published_at is not null
+    and profile_row.creator_slug = nullif(btrim(p_creator_slug), '')
+    and cover_image.storage_path is not null
+    and (
+      cursor_published_at is null
+      or note_row.published_at < cursor_published_at
+      or (
+        note_row.published_at = cursor_published_at
+        and note_row.id < cursor_id
+      )
+    )
+  order by note_row.published_at desc, note_row.id desc
+  limit least(greatest(coalesce(page_size, 20), 1), 51);
+$$;
+
+revoke all on function public.list_public_travel_notes_by_creator_internal(
+  text, timestamptz, uuid, integer
+) from public, anon, authenticated;
+grant execute on function public.list_public_travel_notes_by_creator_internal(
+  text, timestamptz, uuid, integer
+) to service_role;

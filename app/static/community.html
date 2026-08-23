@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Voyage 社区</title>
   <link rel="stylesheet" href="/static/community.css">
+  <link rel="stylesheet" href="/static/iconfont.css">
 </head>
 <body data-community-state="loading">
   <a id="community-skip-link" class="community-skip-link" href="#community-main">跳到内容</a>
@@ -26,7 +27,7 @@
           maxlength="80"
           placeholder="例如：大理、城市漫步、海边日落"
         >
-        <button id="community-search-submit" type="submit">搜索</button>
+        <button id="community-search-submit" type="submit"><span class="voyage-icon voyage-icon--search" aria-hidden="true"></span>搜索</button>
       </div>
     </form>
 
@@ -60,12 +61,12 @@
     <section id="community-grid" class="community-grid" aria-label="社区瀑布流"></section>
 
     <div class="community-actions">
-      <button id="community-retry" type="button" class="community-secondary" hidden>重试</button>
+      <button id="community-retry" type="button" class="community-secondary" hidden><span class="voyage-icon voyage-icon--retry" aria-hidden="true"></span>重试</button>
       <button id="community-load-more" type="button" class="community-secondary" hidden>加载更多</button>
     </div>
   </main>
 
-  <a id="community-create-link" class="community-create-link" href="/community/notes/new" aria-label="发布新的旅行游记">发布游记</a>
+  <a id="community-create-link" class="community-create-link" href="/community/notes/new" aria-label="发布新的旅行游记"><span class="voyage-icon voyage-icon--add" aria-hidden="true"></span>发布游记</a>
 
   <script src="/runtime-config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.8/dist/umd/supabase.min.js" defer crossorigin="anonymous"></script>

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -31,6 +31,16 @@ ProfileListItem = Annotated[str, Field(max_length=500)]
 DisplayNote = Annotated[str, Field(max_length=500)]
 WarningText = Annotated[str, Field(max_length=500)]
 CHAT_REPLY_MAX_LENGTH = 4000
+PROFILE_DISPLAY_NAME_MAX_LENGTH = 40
+PROFILE_BIO_MAX_LENGTH = 160
+PROFILE_HOME_CITY_MAX_LENGTH = 40
+PROFILE_TRAVEL_STYLES_MAX_ITEMS = 5
+ALLOWED_TRAVEL_STYLES = ("美食", "人文", "自然", "亲子", "户外", "休闲")
+ProfileDisplayName = Annotated[str, Field(max_length=PROFILE_DISPLAY_NAME_MAX_LENGTH)]
+ProfileBio = Annotated[str, Field(max_length=PROFILE_BIO_MAX_LENGTH)]
+ProfileHomeCity = Annotated[str, Field(max_length=PROFILE_HOME_CITY_MAX_LENGTH)]
+TravelStyle = Literal["美食", "人文", "自然", "亲子", "户外", "休闲"]
+JsonObject = dict[str, Any]
 
 class TravelProfile(StrictSchema):
     origin: ProfileLocation | None = None

@@ -129,6 +129,7 @@
       requestJson,
       redirectToSignIn,
       buildSignInUrl,
+      getSupabaseClient: () => authClient,
       getSession: () => session,
       isSignedIn: () => Boolean(session && typeof session.access_token === "string"),
       getSessionGeneration: () => sessionGeneration,

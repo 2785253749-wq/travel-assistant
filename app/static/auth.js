@@ -13,9 +13,11 @@
     forgot: document.getElementById("auth-page-forgot"),
     status: document.getElementById("auth-page-status"),
   };
-  let mode = new URLSearchParams(window.location.search).get("mode") === "signup" ? "signup" : "signin";
+  const params = new URLSearchParams(window.location.search);
+  let mode = params.get("mode") === "signup" ? "signup" : "signin";
   let busy = false;
   let client = null;
+  const redirectTarget = sanitizeReturnTo(params.get("return_to"));
 
   function setStatus(message, isError = false) {
     elements.status.textContent = message;
@@ -42,8 +44,15 @@
     document.title = signup ? "注册 Voyage 账户" : "登录 Voyage";
   }
 
+  function sanitizeReturnTo(value) {
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return "/";
+    const target = new URL(value, window.location.origin);
+    if (target.origin !== window.location.origin || !target.pathname.startsWith("/")) return "/";
+    return `${target.pathname}${target.search}${target.hash}`;
+  }
+
   function redirectHome() {
-    window.location.href = "/";
+    window.location.href = redirectTarget;
   }
 
   function authConfig() {
