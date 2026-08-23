@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voyage 社区</title>
+  <link rel="stylesheet" href="/static/community.css">
+  <link rel="stylesheet" href="/static/iconfont.css">
+</head>
+<body data-community-state="loading">
+  <a id="community-skip-link" class="community-skip-link" href="#community-main">跳到内容</a>
+
+  <header id="community-header" class="community-header">
+    <div class="community-header__brand">
+      <p class="community-eyebrow">Voyage Community</p>
+      <h1 id="community-hero-title">旅行灵感发现</h1>
+      <p id="community-hero-copy">浏览通过审核的图文游记，按分类和关键词寻找下一次出发的灵感。</p>
+    </div>
+
+    <form id="community-search-form" class="community-search" role="search">
+      <label id="community-search-label" for="community-search-input">搜索标题或地点</label>
+      <div class="community-search__row">
+        <input
+          id="community-search-input"
+          name="q"
+          type="search"
+          maxlength="80"
+          placeholder="例如：大理、城市漫步、海边日落"
+        >
+        <button id="community-search-submit" type="submit"><span class="voyage-icon voyage-icon--search" aria-hidden="true"></span>搜索</button>
+      </div>
+    </form>
+
+    <a id="community-auth-link" class="community-auth-link" href="/auth?mode=signin&return_to=%2Fcommunity">登录后可发布与互动</a>
+  </header>
+
+  <main id="community-main" class="community-main" tabindex="-1">
+    <section class="community-controls" aria-labelledby="community-filter-label">
+      <h2 id="community-filter-label" class="community-section-title">分类筛选</h2>
+      <div id="community-filters" class="community-filters" role="toolbar" aria-label="社区分类">
+        <button id="community-filter-all" type="button" class="community-filter" data-category="全部" aria-pressed="true">全部</button>
+        <button id="community-filter-摄影控" type="button" class="community-filter" data-category="摄影控" aria-pressed="false">摄影控</button>
+        <button id="community-filter-美食地图" type="button" class="community-filter" data-category="美食地图" aria-pressed="false">美食地图</button>
+        <button id="community-filter-独自旅行" type="button" class="community-filter" data-category="独自旅行" aria-pressed="false">独自旅行</button>
+        <button id="community-filter-城市漫步" type="button" class="community-filter" data-category="城市漫步" aria-pressed="false">城市漫步</button>
+        <button id="community-filter-自然风光" type="button" class="community-filter" data-category="自然风光" aria-pressed="false">自然风光</button>
+        <button id="community-filter-亲子游" type="button" class="community-filter" data-category="亲子游" aria-pressed="false">亲子游</button>
+      </div>
+    </section>
+
+    <p id="community-status" class="community-status" role="status" aria-live="polite">正在加载社区内容…</p>
+
+    <section id="community-empty" class="community-panel community-empty" hidden aria-live="polite">
+      还没有公开游记，稍后再来看看新的灵感。
+    </section>
+
+    <section id="community-error" class="community-panel community-error" hidden aria-live="polite">
+      <p id="community-error-message">社区内容暂不可用，请稍后重试。</p>
+    </section>
+
+    <section id="community-grid" class="community-grid" aria-label="社区瀑布流"></section>
+
+    <div class="community-actions">
+      <button id="community-retry" type="button" class="community-secondary" hidden><span class="voyage-icon voyage-icon--retry" aria-hidden="true"></span>重试</button>
+      <button id="community-load-more" type="button" class="community-secondary" hidden>加载更多</button>
+    </div>
+  </main>
+
+  <a id="community-create-link" class="community-create-link" href="/community/notes/new" aria-label="发布新的旅行游记"><span class="voyage-icon voyage-icon--add" aria-hidden="true"></span>发布游记</a>
+
+  <script src="/runtime-config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.8/dist/umd/supabase.min.js" defer crossorigin="anonymous"></script>
+  <script src="/static/community-client.js" defer></script>
+  <script src="/static/community-feed.js" defer></script>
+</body>
+</html>

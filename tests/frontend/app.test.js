@@ -50,7 +50,7 @@ async function dispatchKey(element, key) {
   return defaultPrevented;
 }
 
-test("navigation switches between explore, trips, and community without a reload", async () => {
+test("navigation switches Explore and Trips in place while Community links to its dedicated page", async () => {
   const harness = createHarness();
   await settle();
 
@@ -66,10 +66,9 @@ test("navigation switches between explore, trips, and community without a reload
   assert.equal(community.hidden, true);
   assert.equal(tripsNav.getAttribute("aria-current"), "page");
 
+  assert.equal(communityNav.getAttribute("href"), "/community");
   await communityNav.dispatch("click");
-  assert.equal(trips.hidden, true);
-  assert.equal(community.hidden, false);
-  assert.equal(harness.elements.get("explore-nav-button").getAttribute("aria-current"), null);
+  assert.equal(harness.window.location.pathname, "/community");
 });
 
 test("inactive app pages stay hidden when their page classes define display", () => {
@@ -94,7 +93,7 @@ test("user navigation focuses each programmatically focusable view heading", asy
   assert.equal(tripsTitle.focused, true);
 
   await harness.elements.get("community-nav-button").dispatch("click");
-  assert.equal(communityTitle.focused, true);
+  assert.equal(harness.window.location.pathname, "/community");
 
   await harness.elements.get("explore-nav-button").dispatch("click");
   assert.equal(exploreTitle.focused, true);
@@ -171,7 +170,7 @@ test("provider notice is visible only while the Explore view is active", async (
   assert.equal(notice.hidden, false);
 
   await harness.elements.get("community-nav-button").dispatch("click");
-  assert.equal(notice.hidden, true);
+  assert.equal(harness.window.location.pathname, "/community");
 });
 
 test("opening a saved trip moves its generated content into the Explore view", async () => {
@@ -1015,22 +1014,25 @@ test("account form navigates to the dedicated sign-in page", async () => {
   const harness = createHarness({ fetch: async () => jsonResponse(200, []) });
   await settle();
 
+  assert.equal(harness.elements.get("account-summary").hidden, true);
+  assert.equal(harness.elements.get("auth-form").hidden, false);
+  assert.equal(harness.elements.get("profile-page-link").href, "/profile");
+
   await harness.elements.get("auth-form").dispatch("submit");
 
   assert.equal(harness.window.location.pathname, "/auth");
   assert.equal(harness.window.location.search, "?mode=signin");
 });
 
-test("account page link navigates to the dedicated sign-in page", async () => {
-  const harness = createHarness({ fetch: async () => jsonResponse(200, []) });
+test("signed-in account menu exposes the profile link and keeps logout available", async () => {
+  const harness = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }), fetch: async () => jsonResponse(200, []) });
   await settle();
 
-  assert.ok(harness.elements.get("account-page-link"));
-  await harness.elements.get("account-page-link").dispatch("click");
-  await settle();
-
-  assert.equal(harness.window.location.pathname, "/auth");
-  assert.equal(harness.window.location.search, "?mode=signin");
+  assert.equal(harness.elements.get("auth-form").hidden, true);
+  assert.equal(harness.elements.get("account-summary").hidden, false);
+  assert.equal(harness.elements.get("account-email").textContent, "owner@example.test");
+  assert.equal(harness.elements.get("profile-page-link").href, "/profile");
+  assert.ok(harness.elements.get("sign-out-button"));
 });
 
 test("registration shortcut opens the dedicated account page in signup mode", async () => {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import hashlib
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -12,7 +13,12 @@ from app.agent.graph import (
 )
 from app.application.chat import ConfirmationStore, TravelChatApplication
 from app.application.weather import UnavailableWeatherService, WeatherService
-from app.api.auth import CurrentUser
+from app.api.auth import CurrentUser, OptionalCurrentUser
+from app.community.repositories import (
+    create_public_community_repository,
+    create_user_scoped_community_repository,
+)
+from app.community.service import CommunityModule, InMemoryCommunityRepository
 from app.core.config import Settings, get_settings
 from app.core.usage import InMemoryUsageRepository, UsageGuard, UsageRepository
 from app.infrastructure.repositories import (
@@ -20,6 +26,11 @@ from app.infrastructure.repositories import (
     create_public_share_repository,
     create_user_scoped_supabase_repository,
 )
+from app.profile.repositories import (
+    InMemoryProfileRepository,
+    create_user_scoped_profile_repository,
+)
+from app.profile.service import ProfileModule
 from app.infrastructure.usage import SupabaseUsageRepository
 from app.infrastructure.weather import SupabaseWeatherQuotaRepository
 from app.providers.aggregate import ProviderEvidenceAggregator
@@ -33,6 +44,33 @@ from app.rag.service import (
     UnavailableKnowledgeAnswerService,
 )
 from app.schemas import TravelProfile
+from app.travel_notes.in_memory import (
+    InMemoryTravelNoteRepository,
+)
+from app.travel_notes.media import (
+    CommunityMediaGateway,
+    InMemoryCommunityMediaCleanupQueue,
+    NoopCommunityMediaCleanupQueue,
+    SupabaseCommunityMediaCleanupQueue,
+)
+from app.travel_notes.service import TravelNoteModule
+from app.travel_notes.interactions import (
+    InMemoryInteractionRepository,
+    TravelNoteInteractionModule,
+    create_public_interaction_repository,
+    create_user_scoped_interaction_repository,
+)
+from app.travel_notes.moderation import (
+    InMemoryModerationRepository,
+    TravelNoteModerationModule,
+)
+from app.travel_notes.moderation_supabase import create_user_scoped_moderation_repository
+from app.travel_notes.supabase_repositories import (
+    create_internal_supabase_client,
+    create_travel_note_media_gateway,
+    create_public_travel_note_repository,
+    create_user_scoped_travel_note_repository,
+)
 from app.trips.service import TripService
 
 
@@ -46,9 +84,10 @@ class KnowledgeRepositoryGateway(SearchRepository, EmbeddingQuota, Protocol):
 
 def _uses_supabase() -> bool:
     settings = get_settings()
-    return settings.app_env == "production" or (
-        settings.supabase_url is not None and settings.supabase_anon_key is not None
-    )
+    # Development and test environments must stay on isolated in-memory wiring.
+    # Merely having a developer's .env credentials must not route a test JWT to
+    # PostgREST or expose production state to local journeys.
+    return settings.app_env == "production"
 
 
 @lru_cache(maxsize=1)
@@ -67,6 +106,16 @@ def _supabase_public_credentials() -> tuple[str, str]:
     )
 
 
+def _supabase_internal_credentials() -> tuple[str, str]:
+    settings = get_settings()
+    if settings.supabase_url is None or settings.supabase_service_key is None:
+        raise RuntimeError("Supabase internal storage is not configured")
+    return (
+        str(settings.supabase_url),
+        settings.supabase_service_key.get_secret_value(),
+    )
+
+
 def get_trip_service(user: CurrentUser) -> TripService:
     if not _uses_supabase():
         return TripService(get_development_repository())
@@ -78,6 +127,67 @@ def get_trip_service(user: CurrentUser) -> TripService:
     )
 
 
+@lru_cache(maxsize=1)
+def get_development_profile_repository() -> InMemoryProfileRepository:
+    return InMemoryProfileRepository()
+
+
+@lru_cache(maxsize=1)
+def get_development_profile_module() -> ProfileModule:
+    return ProfileModule(
+        get_development_profile_repository(),
+        media_gateway=get_development_community_media_gateway(),
+        cleanup_queue=get_development_community_media_cleanup_queue(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_development_community_media_gateway() -> CommunityMediaGateway:
+    return CommunityMediaGateway(
+        type(
+            "_InMemoryStorage",
+            (),
+            {
+                "from_": lambda self, _bucket: type(
+                    "_InMemoryBucket",
+                    (),
+                    {
+                        "create_signed_urls": (
+                            lambda _self, paths, _expires_in: [
+                                {
+                                    "signedURL": (
+                                        "https://signed.example.test/object-"
+                                        + hashlib.sha256(str(path).encode("utf-8")).hexdigest()
+                                    )
+                                }
+                                for path in paths
+                            ]
+                        )
+                    },
+                )()
+            },
+        )()
+    )
+
+
+@lru_cache(maxsize=1)
+def get_development_community_media_cleanup_queue():
+    return InMemoryCommunityMediaCleanupQueue()
+
+
+def get_profile_module(user: CurrentUser) -> ProfileModule:
+    if not _uses_supabase():
+        return get_development_profile_module()
+    if not user.access_token:
+        raise RuntimeError("A verified bearer token is required for Supabase profile access")
+    url, anon_key = _supabase_public_credentials()
+    return ProfileModule(
+        create_user_scoped_profile_repository(url, anon_key, user.access_token),
+        media_gateway=get_community_media_gateway(),
+        cleanup_queue=get_community_media_cleanup_queue(),
+    )
+
+
 def get_public_trip_service() -> TripService:
     if not _uses_supabase():
         return TripService(get_development_repository())
@@ -86,6 +196,287 @@ def get_public_trip_service() -> TripService:
         InMemoryTripRepository(), create_public_share_repository(url, anon_key)
     )
 
+
+@lru_cache(maxsize=1)
+def get_development_community_repository() -> InMemoryCommunityRepository:
+    return InMemoryCommunityRepository(
+        trip_repository=get_development_repository(),
+        profile_repository=get_development_profile_repository(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_development_community_module() -> CommunityModule:
+    repository = get_development_community_repository()
+    return CommunityModule(repository, repository)
+
+
+@lru_cache(maxsize=1)
+def get_public_community_repository():
+    if not _uses_supabase():
+        return get_development_community_repository()
+    url, anon_key = _supabase_public_credentials()
+    return create_public_community_repository(url, anon_key)
+
+
+class _AnonymousCommunityRepository:
+    def publish(self, user_id: UUID, trip_id: UUID, summary: str):
+        raise RuntimeError("Anonymous community publication is unavailable")
+
+    def withdraw(self, user_id: UUID, post_id: UUID) -> bool:
+        raise RuntimeError("Anonymous community withdrawal is unavailable")
+
+    def list_owned_post_ids(self, user_id: UUID, post_ids: list[UUID]) -> set[UUID]:
+        del user_id, post_ids
+        return set()
+
+
+def get_community_module(user: CurrentUser) -> CommunityModule:
+    if not _uses_supabase():
+        return get_development_community_module()
+    if not user.access_token:
+        raise RuntimeError("A verified bearer token is required for Supabase community access")
+    url, anon_key = _supabase_public_credentials()
+    return CommunityModule(
+        create_user_scoped_community_repository(url, anon_key, user.access_token),
+        get_public_community_repository(),
+    )
+
+
+def get_optional_community_module(user: OptionalCurrentUser) -> CommunityModule:
+    if not _uses_supabase():
+        return get_development_community_module()
+    url, anon_key = _supabase_public_credentials()
+    private_repository = (
+        create_user_scoped_community_repository(url, anon_key, user.access_token)
+        if user is not None and user.access_token
+        else _AnonymousCommunityRepository()
+    )
+    return CommunityModule(
+        private_repository,
+        get_public_community_repository(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_development_travel_note_repository() -> InMemoryTravelNoteRepository:
+    return InMemoryTravelNoteRepository()
+
+
+@lru_cache(maxsize=1)
+def get_development_travel_note_module() -> TravelNoteModule:
+    repository = get_development_travel_note_repository()
+    return TravelNoteModule(
+        repository=repository,
+        public_repository=repository,
+        media_gateway=get_development_community_media_gateway(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_travel_note_internal_client():
+    if not _uses_supabase():
+        raise RuntimeError("Travel note internal storage is not configured")
+    url, service_key = _supabase_internal_credentials()
+    return create_internal_supabase_client(url, service_key)
+
+
+@lru_cache(maxsize=1)
+def get_public_travel_note_repository():
+    if not _uses_supabase():
+        return get_development_travel_note_repository()
+    url, service_key = _supabase_internal_credentials()
+    return create_public_travel_note_repository(
+        url, service_key, client=get_travel_note_internal_client()
+    )
+
+
+@lru_cache(maxsize=1)
+def get_travel_note_media_gateway():
+    if not _uses_supabase():
+        return get_development_community_media_gateway()
+    url, service_key = _supabase_internal_credentials()
+    return create_travel_note_media_gateway(
+        url,
+        service_key,
+        client=get_travel_note_internal_client(),
+    )
+
+
+def get_community_media_gateway():
+    if not _uses_supabase():
+        return get_development_community_media_gateway()
+    return CommunityMediaGateway(
+        get_travel_note_internal_client().storage
+    )
+
+
+@lru_cache(maxsize=1)
+def get_community_media_cleanup_queue():
+    if not _uses_supabase():
+        return get_development_community_media_cleanup_queue()
+    return SupabaseCommunityMediaCleanupQueue(
+        get_travel_note_internal_client()
+    )
+
+
+class _AnonymousTravelNoteRepository:
+    def create_draft(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note creation is unavailable")
+
+    def replace_draft(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note editing is unavailable")
+
+    def attach_image(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note media changes are unavailable")
+
+    def remove_image(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note media changes are unavailable")
+
+    def get_owned(self, user_id: UUID, note_id: UUID):
+        del user_id, note_id
+        return None
+
+    def get_note(self, note_id: UUID):
+        del note_id
+        return None
+
+    def submit(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note submission is unavailable")
+
+    def soft_delete(self, user_id: UUID, note_id: UUID, *, now):
+        del user_id, note_id, now
+        return False
+
+    def list_owned(self, user_id: UUID):
+        del user_id
+        return []
+
+    def get_source_trip_snapshot(self, user_id: UUID, trip_id: UUID):
+        del user_id, trip_id
+        return None
+
+    def approve(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note moderation is unavailable")
+
+    def reject(self, *args, **kwargs):
+        raise RuntimeError("Anonymous travel note moderation is unavailable")
+
+
+def get_travel_note_module(user: CurrentUser) -> TravelNoteModule:
+    if not _uses_supabase():
+        return get_development_travel_note_module()
+    if not user.access_token:
+        raise RuntimeError("A verified bearer token is required for travel note access")
+    url, anon_key = _supabase_public_credentials()
+    return TravelNoteModule(
+        repository=create_user_scoped_travel_note_repository(
+            url,
+            anon_key,
+            user.access_token,
+            internal_client=get_travel_note_internal_client(),
+        ),
+        public_repository=get_public_travel_note_repository(),
+        media_gateway=get_travel_note_media_gateway(),
+    )
+
+
+def get_optional_travel_note_module(user: OptionalCurrentUser) -> TravelNoteModule:
+    if not _uses_supabase():
+        return get_development_travel_note_module()
+    if user is not None and user.access_token:
+        url, anon_key = _supabase_public_credentials()
+        private_repository = create_user_scoped_travel_note_repository(
+            url,
+            anon_key,
+            user.access_token,
+            internal_client=get_travel_note_internal_client(),
+        )
+    else:
+        private_repository = _AnonymousTravelNoteRepository()
+    return TravelNoteModule(
+        repository=private_repository,
+        public_repository=get_public_travel_note_repository(),
+        media_gateway=get_travel_note_media_gateway(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_development_travel_note_interaction_module() -> TravelNoteInteractionModule:
+    repository = InMemoryInteractionRepository()
+    return TravelNoteInteractionModule(repository, repository)
+
+
+@lru_cache(maxsize=1)
+def get_public_travel_note_interaction_repository():
+    if not _uses_supabase():
+        return get_development_travel_note_interaction_module()._public_repository
+    url, service_key = _supabase_internal_credentials()
+    return create_public_interaction_repository(
+        url,
+        service_key,
+        client=get_travel_note_internal_client(),
+    )
+
+
+def get_travel_note_interaction_module(user: CurrentUser) -> TravelNoteInteractionModule:
+    if not _uses_supabase():
+        return get_development_travel_note_interaction_module()
+    if not user.access_token:
+        raise RuntimeError("A verified bearer token is required for travel note interactions")
+    url, anon_key = _supabase_public_credentials()
+    return TravelNoteInteractionModule(
+        create_user_scoped_interaction_repository(
+            url,
+            anon_key,
+            user.access_token,
+            public_client=get_travel_note_internal_client(),
+        ),
+        get_public_travel_note_interaction_repository(),
+    )
+
+
+def get_optional_travel_note_interaction_module(
+    user: OptionalCurrentUser,
+) -> TravelNoteInteractionModule:
+    if not _uses_supabase():
+        return get_development_travel_note_interaction_module()
+    public_repository = get_public_travel_note_interaction_repository()
+    if user is None or not user.access_token:
+        return TravelNoteInteractionModule(public_repository, public_repository)
+    url, anon_key = _supabase_public_credentials()
+    return TravelNoteInteractionModule(
+        create_user_scoped_interaction_repository(
+            url,
+            anon_key,
+            user.access_token,
+            public_client=get_travel_note_internal_client(),
+        ),
+        public_repository,
+    )
+
+
+
+@lru_cache(maxsize=1)
+def get_development_community_moderation_module() -> TravelNoteModerationModule:
+    return TravelNoteModerationModule(InMemoryModerationRepository())
+
+
+def get_community_moderation_module(user: CurrentUser) -> TravelNoteModerationModule:
+    if not _uses_supabase():
+        return get_development_community_moderation_module()
+    if not user.access_token:
+        raise RuntimeError("A verified bearer token is required for community moderation")
+    url, anon_key = _supabase_public_credentials()
+    return TravelNoteModerationModule(
+        create_user_scoped_moderation_repository(
+            url,
+            anon_key,
+            user.access_token,
+            media_gateway=get_travel_note_media_gateway(),
+            internal_client=get_travel_note_internal_client(),
+        )
+    )
 
 def get_usage_guard() -> UsageGuard:
     settings = get_settings()

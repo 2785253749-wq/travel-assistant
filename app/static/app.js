@@ -26,7 +26,7 @@
   const elements = {
     body: document.body, brand: $("voyage-brand"), navigationPanel: $("main-navigation"),
     authPanel: $("auth-panel"), authForm: $("auth-form"), email: $("email"), password: $("password"),
-    signIn: $("sign-in-button"), signUp: $("sign-up-button"), signOut: $("sign-out-button"), accountPageLink: $("account-page-link"),
+    signIn: $("sign-in-button"), signUp: $("sign-up-button"), signOut: $("sign-out-button"),
     account: $("account-summary"), accountEmail: $("account-email"), authFormPanel: $("auth-form"), accountMenu: $("account-menu"),
     authHelp: $("auth-help"), status: $("status-message"), providerNotice: $("provider-notice"),
     providerUpdatedAt: $("provider-updated-at"), chatPanel: $("chat-panel"), chatForm: $("chat-form"), message: $("message-input"),
@@ -68,9 +68,10 @@
     return `thread-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
-  function navigateToAuth(mode = "signin") {
+  function navigateToAuth(mode = "signin", options = {}) {
     const url = new URL("/auth", window.location.origin);
     url.searchParams.set("mode", mode === "signup" ? "signup" : "signin");
+    if (typeof options.returnTo === "string" && options.returnTo.startsWith("/")) url.searchParams.set("return_to", options.returnTo);
     window.location.href = url.toString();
   }
 
@@ -1317,7 +1318,13 @@
     if (publicShareActive || /^#share=([^&]+)$/.test(window.location.hash)) exitPublicShareMode();
     await initializeNormalApp({ focusHeading: true });
   });
-  for (const button of elements.navigation) button.addEventListener("click", () => switchView(button.dataset.view, { focusHeading: true }));
+  for (const button of elements.navigation) {
+    if (button.dataset.view === "community") {
+      button.addEventListener("click", () => { window.location.href = "/community"; });
+      continue;
+    }
+    button.addEventListener("click", () => switchView(button.dataset.view, { focusHeading: true }));
+  }
   elements.assistantToggle.addEventListener("click", () => {
     if (state.busy) return;
     const open = elements.assistantPanel.hidden;
@@ -1330,7 +1337,6 @@
   elements.edit.addEventListener("click", editProfile);
   elements.authForm.addEventListener("submit", (event) => { event.preventDefault(); navigateToAuth("signin"); });
   elements.signUp.addEventListener("click", () => navigateToAuth("signup"));
-  elements.accountPageLink.addEventListener("click", () => navigateToAuth("signin"));
   elements.signOut.addEventListener("click", signOut);
   elements.tripsLogin.addEventListener("click", () => navigateToAuth("signin"));
   elements.save.addEventListener("click", saveTrip);

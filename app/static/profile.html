@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>个人信息 - Voyage</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-profile-state="loading">
+  <a class="skip-link" href="#profile-form">跳到个人信息表单</a>
+
+  <header class="site-header">
+    <div class="site-header-inner">
+      <a class="voyage-brand" href="/" aria-label="返回 Voyage 探索首页">Voyage</a>
+      <p class="auth-route-label">个人信息</p>
+    </div>
+  </header>
+
+  <main class="auth-shell" id="main-content">
+    <section class="profile-page" aria-labelledby="profile-page-title">
+      <div class="profile-page-card">
+        <div class="profile-page-header">
+          <div>
+            <p class="eyebrow">Voyage 个人资料</p>
+            <h1 id="profile-page-title" tabindex="-1">个人信息</h1>
+            <p class="profile-page-description">在这里维护昵称、简介、常驻城市和旅行风格；邮箱仅用于当前账户展示。</p>
+          </div>
+          <a id="profile-back-link" class="button-link secondary" href="/">返回</a>
+        </div>
+
+        <p id="profile-status" class="status-message" role="status" aria-live="polite">正在加载个人信息…</p>
+
+        <div id="profile-loading" class="empty-state" role="status" aria-live="polite">
+          <p>正在加载个人信息，请稍候。</p>
+        </div>
+
+        <div id="profile-error" class="empty-state" hidden>
+          <p>个人信息加载失败，请重试。</p>
+          <div class="button-row">
+            <button id="profile-retry-button" type="button">重试</button>
+          </div>
+        </div>
+
+        <form id="profile-form" class="profile-form" hidden>
+          <div class="profile-avatar-section">
+            <p>个人头像</p>
+            <div id="profile-avatar-preview" class="empty-state" aria-live="polite">
+              <img id="profile-avatar-image" alt="个人头像预览" hidden>
+              <span id="profile-avatar-fallback">V</span>
+            </div>
+            <label for="profile-avatar-input">上传头像</label>
+            <input
+              id="profile-avatar-input"
+              name="avatar"
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+            >
+            <p class="help-text">支持 JPG、PNG 和 WebP；保存时会先压缩后再上传到私有媒体存储。</p>
+          </div>
+
+          <label for="profile-email">账户邮箱</label>
+          <input id="profile-email" name="email" type="email" readonly aria-describedby="profile-email-help">
+          <p id="profile-email-help" class="help-text">邮箱由账户服务提供，此页面不可修改。</p>
+
+          <label for="profile-display-name">昵称</label>
+          <input id="profile-display-name" name="display_name" type="text" maxlength="40" autocomplete="nickname">
+
+          <label for="profile-bio">简介</label>
+          <textarea id="profile-bio" name="bio" rows="4" maxlength="160"></textarea>
+
+          <label for="profile-home-city">常驻城市</label>
+          <input id="profile-home-city" name="home_city" type="text" maxlength="40" autocomplete="address-level2">
+
+          <fieldset class="profile-fieldset">
+            <legend>旅行风格</legend>
+            <div class="travel-style-grid">
+              <label class="travel-style-option" for="travel-style-food"><input id="travel-style-food" type="checkbox" value="美食">美食</label>
+              <label class="travel-style-option" for="travel-style-culture"><input id="travel-style-culture" type="checkbox" value="人文">人文</label>
+              <label class="travel-style-option" for="travel-style-nature"><input id="travel-style-nature" type="checkbox" value="自然">自然</label>
+              <label class="travel-style-option" for="travel-style-family"><input id="travel-style-family" type="checkbox" value="亲子">亲子</label>
+              <label class="travel-style-option" for="travel-style-outdoor"><input id="travel-style-outdoor" type="checkbox" value="户外">户外</label>
+              <label class="travel-style-option" for="travel-style-leisure"><input id="travel-style-leisure" type="checkbox" value="休闲">休闲</label>
+            </div>
+          </fieldset>
+
+          <div id="profile-errors" class="empty-state" hidden aria-live="polite"></div>
+
+          <div class="profile-form-footer">
+            <p id="profile-updated-at" class="help-text" aria-live="polite"></p>
+            <div class="button-row">
+              <button id="profile-save-button" type="submit">保存个人信息</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script src="/runtime-config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.8/dist/umd/supabase.min.js" crossorigin="anonymous"></script>
+  <script src="/static/profile.js"></script>
+</body>
+</html>
