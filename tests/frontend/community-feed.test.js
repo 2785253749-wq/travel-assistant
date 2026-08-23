@@ -456,7 +456,8 @@ test("error and empty states are retryable, and signed-out interactions redirect
   assert.equal(params.get("return_to"), "/community/notes/11111111-1111-1111-1111-111111111111");
 });
 
-test("signed-in readers keep create and interaction links inside the standalone community flow", async () => {
+test("signed-in readers keep create and direct-like interactions inside the standalone community flow", async () => {
+  // Direct card likes replaced the old interaction-link navigation contract.
   const harness = createCommunityHarness({
     auth: new FakeSupabaseAuth({ initialSession: SIGNED_IN_SESSION }),
     fetch: async () => jsonResponse(200, feedPage([communityNote()])),
@@ -469,6 +470,31 @@ test("signed-in readers keep create and interaction links inside the standalone 
   harness.window.location.href = "https://travel.example/community";
   const likeButton = buttonByText(harness.elements.get("community-grid"), "点赞");
   await likeButton.dispatch("click");
+  await settle();
 
-  assert.equal(harness.window.location.pathname, "/community/notes/11111111-1111-1111-1111-111111111111");
+  assert.equal(harness.window.location.pathname, "/community");
+  assert.ok(harness.fetchCalls.some((call) => (
+    call.url === "/api/community/notes/11111111-1111-1111-1111-111111111111/like"
+    && call.options.method === "PUT"
+  )));
+});
+
+
+test("card uses the public body preview and redirects when its like session expires", async () => {
+  const note = communityNote({ body_preview: "preview from the public API", excerpt: undefined });
+  const harness = createCommunityHarness({
+    auth: new FakeSupabaseAuth({ initialSession: SIGNED_IN_SESSION }),
+    fetch: async (call) => {
+      if (call.url === "/api/community/notes?limit=20") return jsonResponse(200, feedPage([note]));
+      if (call.url.endsWith("/like")) return jsonResponse(401, { detail: { code: "AUTH_REQUIRED" } });
+      return jsonResponse(200, {});
+    },
+  });
+  await settle();
+  assert.match(harness.elements.get("community-grid").textContent, /preview from the public API/);
+  const likeButton = buttonByText(harness.elements.get("community-grid"), "点赞");
+  await likeButton.dispatch("click");
+  await settle();
+  assert.equal(harness.window.location.pathname, "/auth");
+  assert.equal(new URLSearchParams(harness.window.location.search).get("return_to"), "/community/notes/11111111-1111-1111-1111-111111111111");
 });

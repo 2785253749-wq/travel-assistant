@@ -1,4 +1,5 @@
 from html.parser import HTMLParser
+from uuid import uuid4
 
 
 class _Regions(HTMLParser):
@@ -88,10 +89,11 @@ def test_runtime_config_exposes_configured_amap_direct_mode_credentials(client, 
 
 
 def test_runtime_config_uses_null_when_amap_browser_key_is_not_configured(
-    client, monkeypatch
+    client, monkeypatch, tmp_path
 ):
     from app.core.config import get_settings
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AMAP_JS_KEY", raising=False)
     monkeypatch.delenv("AMAP_SECURITY_JS_CODE", raising=False)
     get_settings.cache_clear()
@@ -102,3 +104,22 @@ def test_runtime_config_uses_null_when_amap_browser_key_is_not_configured(
     assert '"amapSecurityJsCode":null' in response.text
 
     get_settings.cache_clear()
+
+
+def test_travel_community_routes_serve_dedicated_page_shells(client):
+    """Task 11 replaced the temporary index shell with dedicated community pages."""
+    community_note_id = uuid4()
+    routes = {
+        "/community": "community-main",
+        "/community/notes/new": "community-editor-main",
+        f"/community/notes/{community_note_id}": "community-note-main",
+        "/community/mine": "community-mine-main",
+        "/community/creators/voyage-alice": "community-creator-main",
+        f"/community/notes/{community_note_id}/edit": "community-editor-main",
+    }
+
+    for route, main_id in routes.items():
+        response = client.get(route)
+        assert response.status_code == 200
+        assert f'id="{main_id}"' in response.text
+        assert "/static/community-client.js" in response.text
