@@ -78,6 +78,8 @@ class FakeElement {
     for (const listener of this.listeners.get(type) || []) await listener(event);
   }
 
+  requestSubmit() { return this.dispatch("submit"); }
+
   focus() { this.focused = true; }
   select() { this.selected = true; }
   showModal() { this.open = true; }

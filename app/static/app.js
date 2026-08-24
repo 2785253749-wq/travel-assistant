@@ -1511,6 +1511,11 @@
   }
 
   elements.chatForm.addEventListener("submit", sendMessage);
+  elements.message.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    if (!state.busy) elements.chatForm.requestSubmit();
+  });
   elements.brand.addEventListener("click", async (event) => {
     event.preventDefault();
     if (publicShareActive || /^#share=([^&]+)$/.test(window.location.hash)) exitPublicShareMode();
