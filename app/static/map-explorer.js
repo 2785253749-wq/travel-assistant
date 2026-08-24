@@ -295,7 +295,103 @@
     };
   }
 
-  const exported = { EXPLORE_TRIAL, createMapExplorer, loadAmap };
+  function createFootprintMap(root, {
+    amapKey = null,
+    securityJsCode = null,
+    fallbackRoot = null,
+    entries = [],
+  } = {}) {
+    if (!root) throw new Error("footprint map root is required");
+    let destroyed = false;
+    let amap = null;
+    let map = null;
+    let markers = [];
+    let currentEntries = Array.isArray(entries) ? entries : [];
+    const canvas = document.createElement("div");
+    canvas.className = "amap-footprint-canvas";
+    canvas.setAttribute("aria-label", "我的足迹地图");
+    root.append(canvas);
+
+    function clearMarkers() {
+      const currentMarkers = markers;
+      markers = [];
+      currentMarkers.forEach((marker) => {
+        try {
+          if (typeof marker.setMap === "function") marker.setMap(null);
+        } catch (_) { /* best effort cleanup */ }
+      });
+    }
+
+    function showFallback() {
+      root.hidden = true;
+      root.dataset.mapMode = "offline";
+      if (fallbackRoot) fallbackRoot.hidden = false;
+    }
+
+    function showOnline() {
+      root.hidden = false;
+      root.dataset.mapMode = "amap";
+      if (fallbackRoot) fallbackRoot.hidden = true;
+    }
+
+    function renderMarkers() {
+      clearMarkers();
+      currentEntries.filter((entry) => Array.isArray(entry.coordinates)
+        && entry.coordinates.length === 2 && entry.coordinates.every(Number.isFinite)).forEach((entry) => {
+        const marker = new amap.Marker({ position: entry.coordinates, title: entry.name || "旅行足迹" });
+        markers.push(marker);
+        marker.setMap(map);
+      });
+    }
+
+    function fallbackOnlineMap() {
+      clearMarkers();
+      if (map && typeof map.destroy === "function") {
+        try { map.destroy(); } catch (_) { /* best effort cleanup */ }
+      }
+      map = null;
+      amap = null;
+      showFallback();
+    }
+
+    function initializeOnline(loaded) {
+      if (destroyed || !loaded) return;
+      amap = loaded;
+      try {
+        showOnline();
+        map = new amap.Map(canvas, { zoom: 4, center: [104.2, 35.9], viewMode: "2D" });
+        renderMarkers();
+      } catch (_) {
+        fallbackOnlineMap();
+      }
+    }
+
+    showFallback();
+    const amapLoading = loadAmap(amapKey, securityJsCode);
+    amapLoading.then(initializeOnline).catch(() => fallbackOnlineMap());
+
+    return {
+      update(nextEntries) {
+        currentEntries = Array.isArray(nextEntries) ? nextEntries : [];
+        if (!map || !amap || destroyed) return;
+        try { renderMarkers(); } catch (_) { fallbackOnlineMap(); }
+      },
+      destroy() {
+        destroyed = true;
+        amapLoading.cancel();
+        clearMarkers();
+        if (map && typeof map.destroy === "function") {
+          try { map.destroy(); } catch (_) { /* best effort cleanup */ }
+        }
+        map = null;
+        clear(root);
+        root.hidden = true;
+        if (fallbackRoot) fallbackRoot.hidden = false;
+      },
+    };
+  }
+
+  const exported = { EXPLORE_TRIAL, createMapExplorer, createFootprintMap, loadAmap };
   if (typeof module !== "undefined" && module.exports) module.exports = exported;
   if (globalScope) globalScope.TravelMapExplorer = exported;
 }(typeof window === "undefined" ? globalThis : window));

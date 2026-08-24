@@ -409,3 +409,51 @@ test("persistent breadcrumb and back buttons remain above the AMap canvas", with
   await back.dispatch("click");
   assert.equal(root.dataset.mapLevel, "nation");
 }));
+
+test("footprint map uses the existing AMap adapter and renders saved coordinates", withBrowser(async () => {
+  const { createFootprintMap } = require("../../app/static/map-explorer.js");
+  const maps = [];
+  const markers = [];
+  class Map {
+    constructor(host, options) { this.host = host; this.options = options; maps.push(this); }
+    destroy() { this.destroyed = true; }
+  }
+  class Marker {
+    constructor(options) { this.options = options; markers.push(this); }
+    setMap(map) { this.map = map; }
+  }
+  global.window.AMap = { Map, Marker };
+  const root = new FakeElement("section");
+  const fallback = new FakeElement("div");
+  const footprintMap = createFootprintMap(root, {
+    amapKey: "safe-key",
+    securityJsCode: "test-security-code",
+    fallbackRoot: fallback,
+    entries: [{ id: "xiamen", name: "厦门", coordinates: [118.09, 24.48] }],
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(root.dataset.mapMode, "amap");
+  assert.equal(root.hidden, false);
+  assert.equal(fallback.hidden, true);
+  assert.equal(maps.length, 1);
+  assert.deepEqual(maps[0].options.center, [104.2, 35.9]);
+  assert.deepEqual(markers.map((marker) => marker.options.position), [[118.09, 24.48]]);
+
+  footprintMap.destroy();
+  assert.equal(maps[0].destroyed, true);
+  assert.equal(root.textContent, "");
+}));
+
+test("footprint map keeps the static panel when AMap credentials are unavailable", withBrowser(async () => {
+  const { createFootprintMap } = require("../../app/static/map-explorer.js");
+  const root = new FakeElement("section");
+  const fallback = new FakeElement("div");
+  const footprintMap = createFootprintMap(root, { fallbackRoot: fallback, entries: [] });
+
+  assert.equal(root.dataset.mapMode, "offline");
+  assert.equal(root.hidden, true);
+  assert.equal(fallback.hidden, false);
+  footprintMap.destroy();
+}));
