@@ -69,6 +69,42 @@ test("navigation switches between explore and trips without a reload", async () 
   assert.equal(harness.elements.get("explore-nav-button").getAttribute("aria-current"), "page");
 });
 
+test("navigation opens the private footprints view beside Trips", async () => {
+  const harness = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }) });
+  await settle();
+
+  const footprintsNav = harness.elements.get("footprints-nav-button");
+  const footprints = harness.elements.get("footprints-page");
+
+  assert.ok(footprintsNav, "footprints navigation is present");
+  assert.ok(footprints, "footprints view is present");
+  await footprintsNav.dispatch("click");
+
+  assert.equal(harness.elements.get("explore-page").hidden, true);
+  assert.equal(harness.elements.get("trips-page").hidden, true);
+  assert.equal(footprints.hidden, false);
+  assert.equal(footprintsNav.getAttribute("aria-current"), "page");
+  assert.ok(harness.elements.get("footprints-page-title"), "footprints view has a heading");
+});
+
+test("signed-in users can add an explored place to their footprints", async () => {
+  const harness = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }) });
+  await settle();
+
+  await findByText(harness.elements.get("explore-shortcuts"), "厦门").dispatch("click");
+  await settle();
+  await harness.elements.get("recommendation-grid").children[0].dispatch("click");
+
+  const addFootprint = findByText(harness.elements.get("explore-place-card"), "加入我的足迹");
+  assert.ok(addFootprint, "selected place exposes an add-footprint action");
+  await addFootprint.dispatch("click");
+  await harness.elements.get("footprints-nav-button").dispatch("click");
+
+  assert.equal(harness.elements.get("footprint-province-count").textContent, "1");
+  assert.equal(harness.elements.get("footprint-city-count").textContent, "1");
+  assert.equal(harness.elements.get("footprint-list").children.length, 1);
+});
+
 test("legacy app shell no longer exposes the removed community view", () => {
   const html = fs.readFileSync(path.join(__dirname, "../../app/static/index.html"), "utf8");
   const source = fs.readFileSync(path.join(__dirname, "../../app/static/app.js"), "utf8");

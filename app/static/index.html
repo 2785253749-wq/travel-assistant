@@ -16,6 +16,7 @@
       <nav id="main-navigation" class="main-navigation" aria-label="主导航">
         <button id="explore-nav-button" class="navigation-item is-active" data-view="explore" aria-current="page" type="button">探索</button>
         <button id="trips-nav-button" class="navigation-item" data-view="trips" type="button">我的行程</button>
+        <button id="footprints-nav-button" class="navigation-item" data-view="footprints" type="button">我的足迹</button>
       </nav>
       <div class="header-search">
         <label class="visually-hidden" for="destination-search">搜索目的地</label>
@@ -98,6 +99,49 @@
         </div>
         <ul id="trip-history-list" class="history-list" aria-live="polite"></ul>
       </aside>
+    </section>
+
+    <section id="footprints-page" class="workspace footprints-page" hidden aria-labelledby="footprints-page-title">
+      <div class="section-heading footprints-heading">
+        <div>
+          <p class="eyebrow">TRAVEL FOOTPRINTS</p>
+          <h1 id="footprints-page-title" tabindex="-1">我的足迹</h1>
+          <p>记录去过的城市和景点，足迹只对当前账户可见。</p>
+        </div>
+        <div id="footprints-summary" class="footprints-summary" aria-label="足迹统计">
+          <span><strong id="footprint-province-count">0</strong> 个省份</span>
+          <span><strong id="footprint-city-count">0</strong> 个城市</span>
+        </div>
+      </div>
+      <div id="footprints-auth-prompt" class="empty-state" hidden>
+        <p>登录后即可保存和查看你的旅行足迹。</p>
+        <button id="footprints-login-button" type="button">去登录</button>
+      </div>
+      <div id="footprints-content" class="footprints-layout" hidden>
+        <section class="footprint-map-card" aria-labelledby="footprint-map-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">MY MAP</p>
+              <h2 id="footprint-map-title">足迹地图</h2>
+            </div>
+            <span class="help-text">点击探索中的城市或景点后，可加入足迹</span>
+          </div>
+          <div id="footprint-map" class="footprint-map" aria-label="我的旅行足迹地图">
+            <div id="footprint-map-grid" class="footprint-map-grid"></div>
+            <p id="footprint-map-empty" class="footprint-map-empty">还没有足迹，先去探索一个目的地吧。</p>
+          </div>
+        </section>
+        <aside class="footprint-list-card" aria-labelledby="footprint-list-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">SAVED PLACES</p>
+              <h2 id="footprint-list-title">去过的地方</h2>
+            </div>
+          </div>
+          <ul id="footprint-list" class="footprint-list" aria-live="polite"></ul>
+          <p id="footprint-list-empty" class="empty-state footprint-list-empty">还没有添加地点。</p>
+        </aside>
+      </div>
     </section>
 
     <aside id="assistant-panel" class="assistant-panel" aria-labelledby="chat-heading" hidden>
