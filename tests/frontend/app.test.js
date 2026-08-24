@@ -50,26 +50,30 @@ async function dispatchKey(element, key) {
   return defaultPrevented;
 }
 
-test("navigation switches between explore, trips, and community without a reload", async () => {
+test("navigation switches between explore and trips without a reload", async () => {
   const harness = createHarness();
   await settle();
 
   const tripsNav = harness.elements.get("trips-nav-button");
-  const communityNav = harness.elements.get("community-nav-button");
   const explore = harness.elements.get("explore-page");
   const trips = harness.elements.get("trips-page");
-  const community = harness.elements.get("community-page");
 
   await tripsNav.dispatch("click");
   assert.equal(explore.hidden, true);
   assert.equal(trips.hidden, false);
-  assert.equal(community.hidden, true);
   assert.equal(tripsNav.getAttribute("aria-current"), "page");
 
-  await communityNav.dispatch("click");
+  await harness.elements.get("explore-nav-button").dispatch("click");
   assert.equal(trips.hidden, true);
-  assert.equal(community.hidden, false);
-  assert.equal(harness.elements.get("explore-nav-button").getAttribute("aria-current"), null);
+  assert.equal(explore.hidden, false);
+  assert.equal(harness.elements.get("explore-nav-button").getAttribute("aria-current"), "page");
+});
+
+test("legacy app shell no longer exposes the removed community view", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../../app/static/index.html"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "../../app/static/app.js"), "utf8");
+  assert.doesNotMatch(html, /community-nav-button|community-page/);
+  assert.doesNotMatch(source, /community/);
 });
 
 test("inactive app pages stay hidden when their page classes define display", () => {
@@ -84,17 +88,13 @@ test("user navigation focuses each programmatically focusable view heading", asy
 
   const exploreTitle = harness.elements.get("explore-title");
   const tripsTitle = harness.elements.get("trips-page-title");
-  const communityTitle = harness.elements.get("community-page-title");
   assert.equal(exploreTitle.focused, undefined, "initialization does not steal focus");
-  for (const heading of [exploreTitle, tripsTitle, communityTitle]) {
+  for (const heading of [exploreTitle, tripsTitle]) {
     assert.equal(heading.getAttribute("tabindex"), "-1");
   }
 
   await harness.elements.get("trips-nav-button").dispatch("click");
   assert.equal(tripsTitle.focused, true);
-
-  await harness.elements.get("community-nav-button").dispatch("click");
-  assert.equal(communityTitle.focused, true);
 
   await harness.elements.get("explore-nav-button").dispatch("click");
   assert.equal(exploreTitle.focused, true);
@@ -170,8 +170,6 @@ test("provider notice is visible only while the Explore view is active", async (
   await harness.elements.get("explore-nav-button").dispatch("click");
   assert.equal(notice.hidden, false);
 
-  await harness.elements.get("community-nav-button").dispatch("click");
-  assert.equal(notice.hidden, true);
 });
 
 test("opening a saved trip moves its generated content into the Explore view", async () => {

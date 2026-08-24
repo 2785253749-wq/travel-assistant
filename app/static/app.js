@@ -2,7 +2,7 @@
   "use strict";
 
   const STATES = new Set(["signed_out", "collecting", "confirming", "planning", "planned", "error"]);
-  const VIEWS = new Set(["explore", "trips", "community"]);
+  const VIEWS = new Set(["explore", "trips"]);
   const PROFILE_LABELS = {
     origin: "出发地", destination: "目的地", start_date: "出发日期", end_date: "返回日期",
     travelers: "出行人数", budget_cny: "总预算（元）", preferences: "偏好", constraints: "限制",
@@ -32,9 +32,9 @@
     providerUpdatedAt: $("provider-updated-at"), chatPanel: $("chat-panel"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"),
-    explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"), communityPage: $("community-page"),
-    navigation: [$("explore-nav-button"), $("trips-nav-button"), $("community-nav-button")],
-    viewHeadings: { explore: $("explore-title"), trips: $("trips-page-title"), community: $("community-page-title") },
+    explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"),
+    navigation: [$("explore-nav-button"), $("trips-nav-button")],
+    viewHeadings: { explore: $("explore-title"), trips: $("trips-page-title") },
     exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
     mapBreadcrumb: $("map-breadcrumb"), mapTitle: $("map-title"), exploreShortcuts: $("explore-shortcuts"),
     recommendationsTitle: $("recommendations-title"), recommendationCount: $("recommendation-count"),
@@ -110,7 +110,7 @@
     if (!VIEWS.has(view)) return;
     if (state.activeView !== view) invalidateTripsLoads();
     state.activeView = view;
-    for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage], ["community", elements.communityPage]]) {
+    for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage]]) {
       element.hidden = name !== view;
     }
     for (const button of elements.navigation) {
@@ -1237,7 +1237,6 @@
     setPublicShareMode(true);
     elements.explorePage.hidden = true;
     elements.tripsPage.hidden = true;
-    elements.communityPage.hidden = true;
     elements.history.hidden = true;
     setBusy(true, "正在打开只读分享…");
     try {
