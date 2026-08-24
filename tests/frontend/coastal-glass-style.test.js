@@ -57,6 +57,8 @@ test("assistant keeps the outer shell fixed and scrolls only its messages", () =
   const styles = read("app/static/styles.css");
 
   assert.match(styles, /\.assistant-panel\s*\{[\s\S]*display:\s*flex[\s\S]*overflow:\s*hidden/);
+  assert.match(styles, /\.assistant-panel\s*\{[\s\S]*height:\s*min\(/);
   assert.match(styles, /\.chat-panel\s*\{[\s\S]*min-height:\s*0/);
-  assert.match(styles, /\.chat-messages\s*\{[\s\S]*overflow-y:\s*auto/);
+  assert.match(styles, /\.chat-messages\s*\{[\s\S]*min-height:\s*0[\s\S]*overflow-y:\s*auto/);
+  assert.match(styles, /\.chat-form\s*\{[\s\S]*flex:\s*0 0 auto/);
 });

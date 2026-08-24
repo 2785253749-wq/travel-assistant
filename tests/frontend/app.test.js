@@ -43,9 +43,15 @@ async function dispatchPointer(element, type, properties) {
   for (const listener of element.listeners.get(type) || []) await listener(event);
 }
 
-async function dispatchKey(element, key) {
+async function dispatchKey(element, key, properties = {}) {
   let defaultPrevented = false;
-  const event = { key, target: element, currentTarget: element, preventDefault() { defaultPrevented = true; } };
+  const event = {
+    key,
+    target: element,
+    currentTarget: element,
+    ...properties,
+    preventDefault() { defaultPrevented = true; },
+  };
   for (const listener of element.listeners.get("keydown") || []) await listener(event);
   return defaultPrevented;
 }
@@ -220,6 +226,34 @@ test("provider notice is visible only while the Explore view is active", async (
   await harness.elements.get("explore-nav-button").dispatch("click");
   assert.equal(notice.hidden, false);
 
+});
+
+test("assistant sends on Enter and keeps Shift+Enter for a newline", async () => {
+  let chatRequests = 0;
+  const harness = createHarness({
+    fetch: async (call) => {
+      if (call.url === "/api/chat") {
+        chatRequests += 1;
+        return jsonResponse(200, { reply: "收到", stage: "collecting", profile: {}, warnings: [] });
+      }
+      return jsonResponse(200, {});
+    },
+  });
+  await settle();
+
+  const input = harness.elements.get("message-input");
+  input.value = "按回车发送";
+  await dispatchKey(input, "Enter");
+  await settle();
+
+  assert.equal(chatRequests, 1);
+  assert.equal(input.value, "");
+
+  input.value = "保留换行";
+  assert.equal(await dispatchKey(input, "Enter", { shiftKey: true }), false);
+  await settle();
+  assert.equal(chatRequests, 1);
+  assert.equal(input.value, "保留换行");
 });
 
 test("opening a saved trip moves its generated content into the Explore view", async () => {
