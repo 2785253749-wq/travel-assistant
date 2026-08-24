@@ -1,17 +1,24 @@
 :root {
-  --ink: #172033;
-  --muted: #667085;
-  --paper: #ffffff;
-  --surface: #f6f8fc;
-  --surface-blue: #edf5ff;
-  --line: #e3e8f0;
-  --brand: #0878ff;
-  --brand-dark: #0755b5;
-  --warning: #735400;
-  --warning-bg: #fff3bf;
-  --danger: #a92525;
-  --focus: #ef681e;
-  --shadow: 0 18px 50px rgb(35 54 86 / 11%);
+  --coastal-sky: #eef8fb;
+  --coastal-seafoam: #cceee9;
+  --coastal-teal: #0f8f89;
+  --coastal-ocean: #168fc0;
+  --coastal-glass: rgb(255 255 255 / 78%);
+  --coastal-line: rgb(101 174 181 / 28%);
+  --coastal-shadow: 0 22px 55px rgb(31 107 123 / 14%);
+  --ink: #143a4b;
+  --muted: #5b7481;
+  --paper: rgb(255 255 255 / 84%);
+  --surface: rgb(241 250 250 / 82%);
+  --surface-blue: #e3f5f8;
+  --line: var(--coastal-line);
+  --brand: var(--coastal-teal);
+  --brand-dark: #08706f;
+  --warning: #79551c;
+  --warning-bg: #fff4d8;
+  --danger: #a74747;
+  --focus: #e87542;
+  --shadow: var(--coastal-shadow);
 }
 
 * { box-sizing: border-box; }
@@ -234,4 +241,311 @@ dialog::backdrop { background: rgb(0 0 0 / 45%); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+}
+
+/* Coastal glass system: shared by Explore, Trips, Auth, and Profile. */
+body {
+  background: var(--coastal-sky);
+  background-image:
+    radial-gradient(circle at 8% 8%, rgb(255 255 255 / 94%), transparent 34rem),
+    radial-gradient(circle at 92% 12%, rgb(204 238 233 / 60%), transparent 30rem),
+    linear-gradient(135deg, #f7fcfc 0%, var(--coastal-sky) 48%, #f4faf7 100%);
+  color: var(--ink);
+}
+
+button {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--coastal-teal);
+  box-shadow: 0 10px 24px rgb(15 143 137 / 18%);
+  transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+}
+
+button:hover {
+  background: #08706f;
+  box-shadow: 0 12px 28px rgb(15 143 137 / 26%);
+  transform: translateY(-1px);
+}
+
+button.secondary,
+.button-link.secondary,
+.assistant-reset-position,
+.assistant-close {
+  border-color: var(--coastal-line);
+  color: var(--brand-dark);
+  background: var(--coastal-seafoam);
+  box-shadow: none;
+}
+
+button.secondary:hover,
+.button-link.secondary:hover,
+.assistant-reset-position:hover,
+.assistant-close:hover {
+  color: #fff;
+  background: var(--coastal-teal);
+}
+
+input,
+textarea {
+  border-color: var(--coastal-line);
+  border-radius: 1rem;
+  background: rgb(255 255 255 / 74%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 80%);
+}
+
+.site-header {
+  border-bottom-color: var(--coastal-line);
+  background: var(--coastal-glass);
+  box-shadow: 0 8px 28px rgb(46 132 143 / 8%);
+}
+
+.voyage-brand,
+.eyebrow {
+  color: var(--coastal-teal);
+}
+
+.main-navigation {
+  gap: .45rem;
+}
+
+.navigation-item {
+  min-height: 2.85rem;
+  margin: .9rem 0;
+  padding: .55rem 1rem;
+  border-radius: 999px;
+  color: var(--ink);
+}
+
+.navigation-item:hover,
+.navigation-item.is-active {
+  color: var(--brand-dark);
+  background: var(--coastal-seafoam);
+}
+
+.navigation-item.is-active::after {
+  display: none;
+}
+
+.header-search {
+  border: 1px solid var(--coastal-line);
+  background: rgb(233 247 247 / 76%);
+}
+
+.account-entry {
+  background: var(--coastal-teal);
+  box-shadow: 0 10px 24px rgb(15 143 137 / 18%);
+}
+
+.account-avatar {
+  background: linear-gradient(135deg, var(--coastal-teal), var(--coastal-ocean));
+  box-shadow: 0 8px 18px rgb(15 143 137 / 20%);
+}
+
+.app-shell,
+.auth-shell {
+  margin-top: 1.7rem;
+}
+
+#explore-page,
+#trips-page,
+.auth-page,
+.profile-page {
+  border-color: var(--coastal-line);
+  border-radius: 2rem;
+  background: var(--coastal-glass);
+  box-shadow: 0 14px 34px rgb(31 107 123 / 10%);
+}
+
+#explore-page,
+#trips-page {
+  padding: clamp(1.3rem, 3vw, 2.6rem);
+}
+
+.explore-heading {
+  margin-bottom: 1.7rem;
+}
+
+.explore-heading h1 {
+  color: #123b50;
+  font-size: clamp(2.3rem, 5vw, 4rem);
+}
+
+.explore-status {
+  border: 1px solid var(--coastal-line);
+  color: var(--brand-dark);
+  background: rgb(226 246 244 / 78%);
+}
+
+.map-card,
+.recommendations,
+.trip-history,
+.profile-card,
+.trip-view {
+  border-color: var(--coastal-line);
+  border-radius: 1.45rem;
+  background: rgb(255 255 255 / 70%);
+  box-shadow: 0 12px 32px rgb(44 126 137 / 10%);
+}
+
+.map-toolbar,
+.recommendations-heading {
+  border-bottom-color: var(--coastal-line);
+}
+
+.map-chip {
+  border-color: rgb(15 143 137 / 28%);
+  color: var(--brand-dark);
+  background: rgb(229 248 246 / 82%);
+}
+
+.map-chip:hover {
+  background: var(--coastal-teal);
+}
+
+.map-stage {
+  background: linear-gradient(145deg, #effaf9, #d9f1f5 58%, #e9f7f2);
+}
+
+.offline-map-layer > p,
+.map-navigation-overlay {
+  border-color: var(--coastal-line);
+  background: rgb(255 255 255 / 78%);
+  box-shadow: 0 8px 24px rgb(47 128 138 / 14%);
+  backdrop-filter: blur(12px);
+}
+
+.amap-explorer-canvas {
+  background: #d9f0f4;
+}
+
+.destination-card {
+  border-color: var(--coastal-line);
+  border-radius: 1.2rem;
+  background: rgb(255 255 255 / 78%);
+  box-shadow: 0 10px 24px rgb(44 126 137 / 10%);
+}
+
+.destination-card:hover {
+  border-color: rgb(15 143 137 / 42%);
+  background: rgb(255 255 255 / 92%);
+}
+
+.destination-visual,
+.selected-place-visual {
+  background: linear-gradient(145deg, #2daed0, #6bcfc0 58%, #e9d68b);
+}
+
+.destination-visual-yunnan,
+.destination-visual-dali,
+.place-visual-lake,
+.place-visual-mountain {
+  background: linear-gradient(145deg, #3aaab5, #7ccfc0 55%, #8aaec4);
+}
+
+.selected-place-card,
+.city-weather-card,
+.empty-state {
+  border-color: var(--coastal-line);
+  color: var(--ink);
+  background: rgb(225 246 244 / 72%);
+}
+
+.auth-page,
+.profile-page {
+  min-height: calc(100vh - 8rem);
+  padding: clamp(1.2rem, 5vw, 4rem);
+}
+
+.auth-page-card,
+.profile-page-card {
+  border-color: var(--coastal-line);
+  border-radius: 1.7rem;
+  background: rgb(255 255 255 / 82%);
+  box-shadow: 0 14px 34px rgb(31 107 123 / 10%);
+}
+
+.auth-page-card .eyebrow,
+.profile-page-card .eyebrow {
+  color: var(--coastal-teal);
+}
+
+.auth-page-back,
+.profile-page-header .button-link {
+  border: 1px solid var(--coastal-line);
+  border-radius: 999px;
+}
+
+.profile-avatar-preview {
+  border-color: var(--coastal-line);
+  background: linear-gradient(135deg, var(--coastal-teal), var(--coastal-ocean));
+  box-shadow: 0 12px 26px rgb(15 143 137 / 18%);
+}
+
+.password-form {
+  border-top-color: var(--coastal-line);
+}
+
+.history-list li,
+.day-card,
+.budget-card,
+.source-list,
+.search-links {
+  border-color: var(--coastal-line);
+  background: rgb(237 249 248 / 78%);
+}
+
+.itinerary-weather {
+  color: var(--brand-dark);
+  background: var(--coastal-seafoam);
+}
+
+.assistant-toggle {
+  right: 1.5rem;
+  bottom: 1.5rem;
+  background: var(--coastal-teal);
+  box-shadow: 0 14px 28px rgb(15 143 137 / 28%);
+}
+
+.assistant-panel {
+  border-color: var(--coastal-line);
+  border-radius: 1.5rem;
+  background: var(--coastal-glass);
+  box-shadow: var(--coastal-shadow);
+  backdrop-filter: blur(18px);
+}
+
+.assistant-panel-header {
+  border-bottom-color: var(--coastal-line);
+}
+
+.assistant-online {
+  color: var(--coastal-teal);
+}
+
+.message.assistant {
+  background: var(--coastal-seafoam);
+}
+
+.message.user {
+  background: var(--coastal-teal);
+}
+
+dialog {
+  border-color: var(--coastal-line);
+  border-radius: 1.5rem;
+  background: var(--coastal-glass);
+  box-shadow: var(--coastal-shadow);
+  backdrop-filter: blur(18px);
+}
+
+@media (max-width: 900px) {
+  .navigation-item {
+    min-height: 2.7rem;
+    margin: .75rem 0;
+  }
+
+  .assistant-toggle {
+    right: 1rem;
+    bottom: 1rem;
+  }
 }
