@@ -12,7 +12,7 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypedDict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -275,6 +275,9 @@ class ModelTravelExtractor:
 class RuleTravelExtractor:
     """Conservatively extracts explicit profile fields without any model call."""
 
+    def __init__(self, reference_date: date | None = None):
+        self.reference_date = reference_date or date.today()
+
     _TRAVELER_PREFIX = (
         r"(?:(?:[1-9]\d?|[\u4e00-\u4e5d\u4e24\u5341]+)\s*(?:\u4e2a)?\s*"
         r"(?:\u4eba|travellers?|travelers?)\s*)?"
@@ -288,6 +291,14 @@ class RuleTravelExtractor:
     _DATE = re.compile(
         r"(?<!\d)(20\d{2})\s*(?:[-./\u5e74])\s*(0?[1-9]|1[0-2])\s*"
         r"(?:[-./\u6708])\s*([12]\d|3[01]|0?[1-9])\s*\u65e5?"
+    )
+    _SHORT_DATE = re.compile(
+        r"(?<![\d./\u5e74-])(0?[1-9]|1[0-2])\s*(?:[-./\u6708])\s*"
+        r"([12]\d|3[01]|0?[1-9])\s*\u65e5?"
+    )
+    _CHINESE_DATE = re.compile(
+        r"(?<![\d\u4e00-\u9fff])([\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+)\s*\u6708\s*"
+        r"([\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+)\s*\u65e5?"
     )
     _TRAVELERS = re.compile(
         r"(?<!\d)([1-9]\d?|[\u4e00-\u4e5d\u4e24\u5341]+)\s*(?:\u4e2a)?\s*"
@@ -312,15 +323,68 @@ class RuleTravelExtractor:
         re.IGNORECASE,
     )
 
+    @staticmethod
+    def _chinese_number(value: str) -> int | None:
+        digits = {
+            "一": 1,
+            "两": 2,
+            "二": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+            "十": 10,
+        }
+        if value in digits:
+            return digits[value]
+        if value.startswith("十"):
+            return 10 + digits.get(value[1:], 0) if value[1:] else 10
+        if value.startswith("二十") or value.startswith("三十"):
+            tens = 20 if value.startswith("二十") else 30
+            suffix = value[2:]
+            return tens + digits.get(suffix, 0) if suffix else tens
+        return None
+
+    def _normalized_dates(self, message: str) -> list[str]:
+        candidates: list[tuple[int, str]] = []
+        for match in self._DATE.finditer(message):
+            year, month, day = map(int, match.groups())
+            try:
+                normalized = date(year, month, day).isoformat()
+            except ValueError:
+                continue
+            candidates.append((match.start(), normalized))
+
+        for match in self._SHORT_DATE.finditer(message):
+            month, day = map(int, match.groups())
+            try:
+                normalized = date(self.reference_date.year, month, day).isoformat()
+            except ValueError:
+                continue
+            candidates.append((match.start(), normalized))
+
+        for match in self._CHINESE_DATE.finditer(message):
+            month = self._chinese_number(match.group(1))
+            day = self._chinese_number(match.group(2))
+            if month is None or day is None:
+                continue
+            try:
+                normalized = date(self.reference_date.year, month, day).isoformat()
+            except ValueError:
+                continue
+            candidates.append((match.start(), normalized))
+
+        return [normalized for _, normalized in sorted(candidates)]
+
     def extract(self, message: str, profile: TravelProfile) -> TravelProfile:
         updates: dict[str, Any] = {}
         route = self._ROUTE.search(message)
         if route:
             updates.update(origin=route.group(1).strip(), destination=route.group(2).strip())
-        dates = [
-            f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
-            for match in self._DATE.finditer(message)
-        ]
+        dates = self._normalized_dates(message)
         if dates:
             updates["start_date"] = dates[0]
         if len(dates) > 1:

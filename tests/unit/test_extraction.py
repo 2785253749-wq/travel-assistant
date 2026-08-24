@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 from pydantic import ValidationError
 
@@ -34,6 +36,23 @@ def test_rule_extractor_normalizes_common_route_and_date_formats(message, start_
     assert profile.destination == "厦门"
     assert profile.start_date == start_date
     assert profile.end_date == end_date
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "8.26出发，8.27返回",
+        "八月二十六出发，八月二十七返回",
+    ],
+)
+def test_rule_extractor_normalizes_yearless_chinese_dates(message):
+    profile = RuleTravelExtractor(reference_date=date(2026, 8, 24)).extract(
+        message,
+        TravelProfile(),
+    )
+
+    assert profile.start_date == "2026-08-26"
+    assert profile.end_date == "2026-08-27"
 
 
 @pytest.mark.parametrize("traveler_prefix", ["2人", "两人"])
