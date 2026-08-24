@@ -14,6 +14,11 @@ from app.core.logging import configure_logging, operational_context, request_con
 from app.api.auth import CurrentUser
 from app.api.trips import router as trips_router
 from app.api.chat import router as chat_router
+from app.api.community import router as community_router
+from app.api.profile import router as profile_router
+from app.api.travel_notes import router as travel_notes_router
+from app.api.community_interactions import router as community_interactions_router
+from app.api.community_moderation import router as community_moderation_router
 from app.api.weather import router as weather_router
 
 BASE = Path(__file__).resolve().parent
@@ -122,4 +127,9 @@ def api_me(user: CurrentUser):
 
 app.include_router(trips_router)
 app.include_router(chat_router)
+app.include_router(community_router)
+app.include_router(travel_notes_router)
+app.include_router(community_interactions_router)
+app.include_router(community_moderation_router)
+app.include_router(profile_router)
 app.include_router(weather_router)
