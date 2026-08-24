@@ -23,27 +23,21 @@
         <input id="destination-search" type="search" placeholder="搜索目的地…" readonly>
       </div>
       <section id="auth-panel" class="auth-panel" aria-label="账户">
-        <details id="account-menu" class="account-menu">
-          <summary aria-label="打开账户菜单">账户</summary>
-          <div class="account-popover">
-            <form id="auth-form">
-              <label for="email">邮箱</label>
-              <input id="email" name="email" type="email" autocomplete="email" inputmode="email">
-              <label for="password">密码</label>
-              <input id="password" name="password" type="password" autocomplete="current-password" minlength="8">
-              <div class="button-row">
-                <button id="sign-in-button" type="submit">登录</button>
-                <button id="sign-up-button" type="button" class="secondary">注册</button>
-                <button id="account-page-link" type="button" class="secondary">进入账户页</button>
-              </div>
-            </form>
-            <div id="account-summary" hidden>
-              <p id="account-email"></p>
-              <button id="sign-out-button" type="button" class="secondary">退出登录</button>
-            </div>
-            <p id="auth-help" class="help-text">未登录可临时规划；登录后可保存和管理行程。</p>
-          </div>
-        </details>
+        <a id="account-entry" class="account-entry" href="/auth?mode=signin&amp;return_to=/" aria-label="登录">登录</a>
+        <div id="account-summary" class="account-summary" hidden>
+          <a id="account-profile-link" class="account-profile-link" href="/profile" aria-label="打开个人信息">
+            <span id="account-avatar" class="account-avatar" aria-hidden="true"><span id="account-avatar-text">V</span><img id="account-avatar-image" alt="" hidden></span>
+            <span id="account-email" class="visually-hidden"></span>
+          </a>
+          <button id="sign-out-button" type="button" class="secondary account-sign-out">退出</button>
+        </div>
+        <form id="auth-form" class="legacy-auth-form" hidden aria-hidden="true">
+          <input id="email" name="email" type="email" autocomplete="email">
+          <input id="password" name="password" type="password" autocomplete="current-password">
+          <button id="sign-in-button" type="submit">登录</button>
+          <button id="sign-up-button" type="button">注册</button>
+          <button id="account-page-link" type="button">进入账户页</button>
+        </form>
       </section>
     </div>
   </header>

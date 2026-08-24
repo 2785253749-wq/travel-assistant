@@ -3,6 +3,7 @@
 
   const elements = {
     body: document.body,
+    back: document.getElementById("auth-page-back"),
     title: document.getElementById("auth-page-title"),
     description: document.getElementById("auth-page-description"),
     form: document.getElementById("auth-page-form"),
@@ -16,6 +17,7 @@
   let mode = new URLSearchParams(window.location.search).get("mode") === "signup" ? "signup" : "signin";
   let busy = false;
   let client = null;
+  const returnTo = sameOriginReturnTo(new URLSearchParams(window.location.search).get("return_to"));
 
   function setStatus(message, isError = false) {
     elements.status.textContent = message;
@@ -42,8 +44,15 @@
     document.title = signup ? "注册 Voyage 账户" : "登录 Voyage";
   }
 
-  function redirectHome() {
-    window.location.href = "/";
+  function sameOriginReturnTo(value) {
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return "/";
+    const target = new URL(value, window.location.origin);
+    if (target.origin !== window.location.origin || !target.pathname.startsWith("/")) return "/";
+    return `${target.pathname}${target.search}${target.hash}`;
+  }
+
+  function redirectToReturn() {
+    window.location.href = returnTo;
   }
 
   function authConfig() {
@@ -78,7 +87,7 @@
         elements.password.value = "";
         return;
       }
-      redirectHome();
+      redirectToReturn();
     } catch (_) {
       setStatus(mode === "signup" ? "注册失败，请检查邮箱格式和密码要求。" : "登录失败，请检查邮箱和密码。", true);
     } finally {
@@ -124,14 +133,15 @@
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
     });
     client.auth.onAuthStateChange((_event, session) => {
-      if (session) redirectHome();
+      if (session) redirectToReturn();
     });
     const { data, error } = await client.auth.getSession();
-    if (!error && data && data.session) redirectHome();
+    if (!error && data && data.session) redirectToReturn();
   }
 
   elements.form.addEventListener("submit", submitAuth);
   elements.alternate.addEventListener("click", () => setMode(mode === "signup" ? "signin" : "signup"));
   elements.forgot.addEventListener("click", resetPassword);
+  elements.back.href = returnTo;
   initialize();
 })();

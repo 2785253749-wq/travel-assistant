@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>个人信息 - Voyage</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-profile-state="loading">
+  <a class="skip-link" href="#profile-form">跳到个人信息表单</a>
+  <header class="site-header">
+    <div class="site-header-inner">
+      <a class="voyage-brand" href="/" aria-label="返回 Voyage 探索首页">Voyage</a>
+      <p class="auth-route-label">个人信息</p>
+    </div>
+  </header>
+
+  <main class="auth-shell" id="main-content">
+    <section class="profile-page" aria-labelledby="profile-page-title">
+      <div class="profile-page-card">
+        <div class="profile-page-header">
+          <div>
+            <p class="eyebrow">Voyage 账户</p>
+            <h1 id="profile-page-title" tabindex="-1">个人信息</h1>
+            <p class="profile-page-description">维护头像、姓名和手机号；邮箱由账户服务提供且不可在此修改。</p>
+          </div>
+          <a id="profile-back-link" class="button-link secondary" href="/">返回</a>
+        </div>
+
+        <p id="profile-status" class="status-message" role="status" aria-live="polite">正在加载个人信息…</p>
+        <div id="profile-auth-prompt" class="empty-state" hidden>
+          <p>登录后即可查看和修改个人信息。</p>
+          <a id="profile-signin-link" class="button-link" href="/auth?mode=signin&amp;return_to=%2Fprofile">去登录</a>
+        </div>
+
+        <form id="profile-form" class="profile-form" hidden>
+          <div class="profile-avatar-section">
+            <label for="profile-avatar-input">头像</label>
+            <div id="profile-avatar-preview" class="profile-avatar-preview" aria-live="polite">
+              <img id="profile-avatar-image" alt="个人头像预览" hidden>
+              <span id="profile-avatar-fallback">V</span>
+            </div>
+            <input id="profile-avatar-input" name="avatar" type="file" accept="image/jpeg,image/png,image/webp">
+            <p class="help-text">支持 JPG、PNG 和 WebP，单张不超过 2 MB。</p>
+          </div>
+
+          <label for="profile-email">邮箱</label>
+          <input id="profile-email" name="email" type="email" readonly>
+
+          <label for="profile-display-name">姓名</label>
+          <input id="profile-display-name" name="display_name" type="text" maxlength="40" autocomplete="name" required>
+
+          <label for="profile-phone">手机号</label>
+          <input id="profile-phone" name="phone" type="tel" maxlength="20" autocomplete="tel" inputmode="tel">
+
+          <div class="button-row profile-form-actions">
+            <button id="profile-save-button" type="submit">保存个人信息</button>
+            <button id="profile-sign-out-button" type="button" class="secondary">退出登录</button>
+          </div>
+        </form>
+
+        <form id="password-form" class="password-form" hidden>
+          <h2>修改密码</h2>
+          <label for="profile-password">新密码</label>
+          <input id="profile-password" name="password" type="password" minlength="8" autocomplete="new-password" required>
+          <label for="profile-password-confirm">确认新密码</label>
+          <input id="profile-password-confirm" name="password_confirm" type="password" minlength="8" autocomplete="new-password" required>
+          <button id="profile-password-button" type="submit">修改密码</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script src="/runtime-config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.8/dist/umd/supabase.min.js" crossorigin="anonymous"></script>
+  <script src="/static/profile.js"></script>
+</body>
+</html>
