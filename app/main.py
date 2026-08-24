@@ -85,6 +85,9 @@ def home(): return FileResponse(BASE / "static" / "index.html")
 @app.get("/auth", include_in_schema=False)
 def auth_page(): return FileResponse(BASE / "static" / "auth.html")
 
+@app.get("/profile", include_in_schema=False)
+def profile_page(): return FileResponse(BASE / "static" / "profile.html")
+
 @app.get("/health")
 def health(): return {"status":"ok"}
 
