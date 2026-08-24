@@ -27,8 +27,8 @@
     body: document.body, brand: $("voyage-brand"), navigationPanel: $("main-navigation"),
     authPanel: $("auth-panel"), authForm: $("auth-form"), email: $("email"), password: $("password"),
     signIn: $("sign-in-button"), signUp: $("sign-up-button"), signOut: $("sign-out-button"), accountPageLink: $("account-page-link"),
-    account: $("account-summary"), accountEmail: $("account-email"), authFormPanel: $("auth-form"), accountMenu: $("account-menu"),
-    authHelp: $("auth-help"), status: $("status-message"), providerNotice: $("provider-notice"),
+    account: $("account-summary"), accountEntry: $("account-entry"), accountAvatar: $("account-avatar"), accountAvatarText: $("account-avatar-text"), accountAvatarImage: $("account-avatar-image"), accountEmail: $("account-email"),
+    authFormPanel: $("auth-form"), status: $("status-message"), providerNotice: $("provider-notice"),
     providerUpdatedAt: $("provider-updated-at"), chatPanel: $("chat-panel"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"),
@@ -71,7 +71,26 @@
   function navigateToAuth(mode = "signin") {
     const url = new URL("/auth", window.location.origin);
     url.searchParams.set("mode", mode === "signup" ? "signup" : "signin");
+    url.searchParams.set("return_to", window.location.pathname === "/" ? `/${window.location.hash}` : window.location.pathname);
     window.location.href = url.toString();
+  }
+
+  function renderAccountAvatar(user = {}) {
+    const metadata = user.user_metadata && typeof user.user_metadata === "object" ? user.user_metadata : {};
+    const name = typeof metadata.display_name === "string" && metadata.display_name.trim()
+      ? metadata.display_name.trim() : (user.email || "Voyage");
+    const avatarUrl = typeof metadata.avatar_url === "string" ? metadata.avatar_url : "";
+    if (avatarUrl) {
+      elements.accountAvatarImage.src = avatarUrl;
+      elements.accountAvatarImage.hidden = false;
+      elements.accountAvatarText.hidden = true;
+    } else {
+      elements.accountAvatarImage.src = "";
+      elements.accountAvatarImage.hidden = true;
+      elements.accountAvatarText.hidden = false;
+      elements.accountAvatarText.textContent = name.slice(0, 1).toUpperCase();
+    }
+    elements.accountAvatar.title = user.email || "个人信息";
   }
 
   function setState(next) {
@@ -895,6 +914,7 @@
     clearAccountScopedState({ showWelcome: false });
     elements.authFormPanel.hidden = false;
     elements.account.hidden = true;
+    elements.accountEntry.hidden = false;
     if (state.activeView === "trips") renderTripsPage();
     setState("signed_out");
   }
@@ -947,6 +967,8 @@
     elements.accountEmail.textContent = state.user.email || "已登录账户";
     elements.authFormPanel.hidden = true;
     elements.account.hidden = false;
+    elements.accountEntry.hidden = true;
+    renderAccountAvatar(state.user);
     elements.history.hidden = state.activeView !== "trips";
     setState("collecting");
     if (identityChanged || options.resetConversation) setStatus("已切换登录会话，请重新确认行程资料。", false);

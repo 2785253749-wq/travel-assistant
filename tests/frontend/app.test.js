@@ -240,7 +240,7 @@ test("trips login prompt navigates to the dedicated auth page", async () => {
   await harness.elements.get("trips-login-button").dispatch("click");
 
   assert.equal(harness.window.location.pathname, "/auth");
-  assert.equal(harness.window.location.search, "?mode=signin");
+  assert.equal(harness.window.location.search, "?mode=signin&return_to=%2F");
 });
 
 test("signed-in trips view renders the empty and populated states", async () => {
@@ -1016,7 +1016,7 @@ test("account form navigates to the dedicated sign-in page", async () => {
   await harness.elements.get("auth-form").dispatch("submit");
 
   assert.equal(harness.window.location.pathname, "/auth");
-  assert.equal(harness.window.location.search, "?mode=signin");
+  assert.equal(harness.window.location.search, "?mode=signin&return_to=%2F");
 });
 
 test("account page link navigates to the dedicated sign-in page", async () => {
@@ -1028,7 +1028,7 @@ test("account page link navigates to the dedicated sign-in page", async () => {
   await settle();
 
   assert.equal(harness.window.location.pathname, "/auth");
-  assert.equal(harness.window.location.search, "?mode=signin");
+  assert.equal(harness.window.location.search, "?mode=signin&return_to=%2F");
 });
 
 test("registration shortcut opens the dedicated account page in signup mode", async () => {
@@ -1039,7 +1039,7 @@ test("registration shortcut opens the dedicated account page in signup mode", as
   await settle();
 
   assert.equal(harness.window.location.pathname, "/auth");
-  assert.equal(harness.window.location.search, "?mode=signup");
+  assert.equal(harness.window.location.search, "?mode=signup&return_to=%2F");
 });
 
 test("an anonymous chat response resolving after sign-in cannot update the authenticated conversation", async () => {
