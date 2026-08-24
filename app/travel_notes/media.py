@@ -168,9 +168,7 @@ class InMemoryCommunityMediaCleanupQueue:
             id=job_id,
             storage_path=storage_path,
             attempts=attempts,
-            # Hand-built in-memory jobs are deterministic fixtures. Enqueued
-            # production-like jobs always pass their actual enqueue timestamp.
-            available_at=available_at or datetime.min.replace(tzinfo=UTC),
+            available_at=available_at or datetime.now(UTC),
             status=status,
             note_id=note_id,
             image_id=image_id,
@@ -206,8 +204,7 @@ class InMemoryCommunityMediaCleanupQueue:
                 for job in self.jobs.values()
                 if job.status == "pending" and job.available_at <= now
             ),
-            # Dict insertion order preserves FIFO for equal availability times.
-            key=lambda job: job.available_at,
+            key=lambda job: (job.available_at, str(job.id)),
         )
         skipped = sum(1 for job in available_jobs if job.attempts >= max_attempts)
         claimed: list[CommunityMediaCleanupJob] = []

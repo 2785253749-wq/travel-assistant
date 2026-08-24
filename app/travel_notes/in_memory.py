@@ -243,7 +243,6 @@ class InMemoryTravelNoteRepository:
         cursor: tuple[datetime, UUID] | None,
         limit: int,
         *,
-        creator_slug: str | None = None,
         category: str | None,
         search_query: str | None,
     ) -> list[StoredTravelNote]:
@@ -254,8 +253,6 @@ class InMemoryTravelNoteRepository:
             and stored.deleted_at is None
             and stored.published_at is not None
         ]
-        if creator_slug is not None:
-            rows = [row for row in rows if row.author_slug == creator_slug]
         if category is not None:
             rows = [row for row in rows if row.category == category]
         if search_query is not None:
@@ -278,20 +275,6 @@ class InMemoryTravelNoteRepository:
             or (row.published_at == cursor_published_at and str(row.id) < str(cursor_id))
         ]
         return filtered[:limit]
-
-    def list_public_by_creator(
-        self,
-        creator_slug: str,
-        cursor: tuple[datetime, UUID] | None,
-        limit: int,
-    ) -> list[StoredTravelNote]:
-        return self.list_public(
-            cursor,
-            limit,
-            creator_slug=creator_slug,
-            category=None,
-            search_query=None,
-        )
 
     def get_public(self, note_id: UUID) -> StoredTravelNote | None:
         stored = self._notes.get(note_id)

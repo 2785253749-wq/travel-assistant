@@ -7,7 +7,7 @@
   <title>登录 Voyage</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body class="community-themed-page" data-auth-mode="signin">
+<body data-auth-mode="signin">
   <a class="skip-link" href="#auth-page-form">跳到登录表单</a>
   <header class="site-header">
     <div class="site-header-inner">
@@ -19,40 +19,20 @@
   <main class="auth-shell" id="main-content">
     <section class="auth-page auth-page-standalone" aria-labelledby="auth-page-title">
       <div class="auth-page-card">
-        <div class="auth-page-header">
-          <div>
-            <p class="eyebrow">Voyage 账户</p>
-            <h1 id="auth-page-title" tabindex="-1">登录 Voyage</h1>
-            <p id="auth-page-description">登录后可以保存、打开和管理你的私有行程。</p>
-          </div>
-          <a id="auth-page-back" class="auth-page-back button-link secondary" href="/" aria-label="返回探索">返回</a>
-        </div>
+        <p class="eyebrow">Voyage 账户</p>
+        <h1 id="auth-page-title" tabindex="-1">登录 Voyage</h1>
+        <p id="auth-page-description">登录后可以保存、打开和管理你的私有行程。</p>
         <form id="auth-page-form">
           <label for="auth-page-email">邮箱</label>
           <input id="auth-page-email" name="email" type="email" autocomplete="email" inputmode="email" required>
           <label for="auth-page-password">密码</label>
           <input id="auth-page-password" name="password" type="password" autocomplete="current-password" minlength="8" required>
-          <div id="auth-page-actions" class="auth-page-actions">
-            <div class="button-row">
-              <button id="auth-page-submit" type="submit">登录</button>
-              <button id="auth-page-alternate" type="button" class="secondary">注册账户</button>
-            </div>
-            <div class="auth-page-forgot-row">
-              <button id="auth-page-forgot" type="button" class="link-button">忘记密码？</button>
-            </div>
-          </div>
-          <div class="auth-page-role-row">
-            <span id="auth-page-role-label" class="auth-role-switch-label">用户登录</span>
-            <button
-              id="auth-page-role-switch"
-              class="auth-role-switch"
-              type="button"
-              role="switch"
-              aria-checked="false"
-              aria-label="切换为管理员登录"
-            >管理员登录</button>
+          <div class="button-row">
+            <button id="auth-page-submit" type="submit">登录</button>
+            <button id="auth-page-alternate" type="button" class="secondary">注册账户</button>
           </div>
         </form>
+        <button id="auth-page-forgot" type="button" class="link-button">忘记密码？</button>
         <p id="auth-page-status" class="status-message" role="status" aria-live="polite"></p>
         <p class="help-text">未登录也可以临时规划；登录后才能保存和管理行程。</p>
       </div>

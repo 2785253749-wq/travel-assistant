@@ -205,29 +205,6 @@ class TravelNotePage(StrictSchema):
     items: list[TravelNoteCard]
     next_cursor: str | None = None
 
-class TravelNoteCreator(StrictSchema):
-    creator_slug: str = Field(min_length=1, max_length=100)
-    display_name: str = Field(min_length=1, max_length=40)
-    bio: str = Field(default="", max_length=160)
-    avatar_url: str | None = Field(default=None, min_length=1, max_length=2048)
-
-    @field_validator(
-        "creator_slug",
-        "display_name",
-        "bio",
-        "avatar_url",
-        mode="before",
-    )
-    @classmethod
-    def _trim_creator_text(cls, value: object) -> object:
-        return _trim_text(value)
-
-
-class TravelNoteCreatorPage(StrictSchema):
-    creator: TravelNoteCreator
-    items: list[TravelNoteCard]
-    next_cursor: str | None = None
-
 
 class TravelNoteComment(StrictSchema):
     id: UUID

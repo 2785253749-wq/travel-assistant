@@ -6,9 +6,8 @@
   <meta name="color-scheme" content="light">
   <title>Voyage 旅行助手</title>
   <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/admin-community.css">
 </head>
-<body class="community-themed-page" data-app-shell="true" data-app-state="signed_out">
+<body data-app-state="signed_out">
   <a id="skip-link" class="skip-link" href="#main-content">跳到主要内容</a>
 
   <header class="site-header">
@@ -17,9 +16,6 @@
       <nav id="main-navigation" class="main-navigation" aria-label="主导航">
         <button id="explore-nav-button" class="navigation-item is-active" data-view="explore" aria-current="page" type="button">探索</button>
         <button id="trips-nav-button" class="navigation-item" data-view="trips" type="button">我的行程</button>
-        <button id="community-nav-button" class="navigation-item" data-view="community" type="button">社区</button>
-        <button id="profile-nav-button" class="navigation-item" data-view="profile" type="button">个人信息</button>
-        <button id="admin-nav-button" class="navigation-item" data-view="admin" type="button" hidden>管理员入口</button>
       </nav>
       <div class="header-search">
         <label class="visually-hidden" for="destination-search">搜索目的地</label>
@@ -28,63 +24,29 @@
       </div>
       <section id="auth-panel" class="auth-panel" aria-label="账户">
         <details id="account-menu" class="account-menu">
-          <summary id="account-trigger" aria-label="登录">
-            <img id="account-trigger-avatar" class="account-trigger-avatar" alt="账户头像" hidden>
-            <span id="account-trigger-label">登录</span>
-          </summary>
+          <summary aria-label="打开账户菜单">账户</summary>
           <div class="account-popover">
-            <div id="account-summary" hidden>
-              <div class="account-identity">
-                <img id="account-avatar" class="account-avatar" alt="账户头像" hidden>
-                <span id="account-avatar-fallback" class="account-avatar-fallback" aria-hidden="true"></span>
-                <p id="account-email"></p>
-              </div>
+            <form id="auth-form">
+              <label for="email">邮箱</label>
+              <input id="email" name="email" type="email" autocomplete="email" inputmode="email">
+              <label for="password">密码</label>
+              <input id="password" name="password" type="password" autocomplete="current-password" minlength="8">
               <div class="button-row">
-                <a id="profile-page-link" class="button-link secondary" href="/profile">个人信息</a>
-                <a id="admin-page-link" class="button-link secondary" href="/admin/community" hidden>管理员入口</a>
-                <button id="sign-out-button" type="button" class="secondary">退出登录</button>
+                <button id="sign-in-button" type="submit">登录</button>
+                <button id="sign-up-button" type="button" class="secondary">注册</button>
+                <button id="account-page-link" type="button" class="secondary">进入账户页</button>
               </div>
+            </form>
+            <div id="account-summary" hidden>
+              <p id="account-email"></p>
+              <button id="sign-out-button" type="button" class="secondary">退出登录</button>
             </div>
+            <p id="auth-help" class="help-text">未登录可临时规划；登录后可保存和管理行程。</p>
           </div>
         </details>
       </section>
     </div>
   </header>
-
-  <dialog id="auth-dialog" class="auth-dialog" aria-labelledby="auth-dialog-title">
-    <div class="auth-dialog-card">
-      <div class="auth-dialog-header">
-        <div>
-          <p class="eyebrow">Voyage 账户</p>
-          <h2 id="auth-dialog-title">登录账户</h2>
-        </div>
-        <button id="auth-dialog-close" class="auth-dialog-close" type="button" aria-label="关闭登录窗口">×</button>
-      </div>
-      <form id="auth-form">
-        <label for="email">邮箱</label>
-        <input id="email" name="email" type="email" autocomplete="email" inputmode="email">
-        <label for="password">密码</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" minlength="8">
-        <div class="button-row">
-          <button id="sign-in-button" type="submit">登录</button>
-          <button id="sign-up-button" type="button" class="secondary">注册</button>
-        </div>
-        <div class="auth-role-switch-row">
-          <span id="auth-dialog-role-label" class="auth-role-switch-label">用户登录</span>
-          <button
-            id="auth-dialog-role-switch"
-            class="auth-role-switch"
-            type="button"
-            role="switch"
-            aria-checked="false"
-            aria-label="切换为管理员登录"
-          >管理员登录</button>
-        </div>
-      </form>
-      <p id="auth-dialog-status" class="status-message" role="status" aria-live="polite"></p>
-      <p class="help-text">登录后可保存和管理你的私有行程。</p>
-    </div>
-  </dialog>
 
   <main id="main-content" class="app-shell" tabindex="-1">
     <section id="explore-page" class="explore-page" aria-labelledby="explore-title">
@@ -144,200 +106,6 @@
       </aside>
     </section>
 
-    <section id="community-page" class="community-page" hidden aria-labelledby="community-page-title">
-      <div class="community-hero">
-        <div>
-          <p class="eyebrow">公开旅程快照</p>
-          <h1 id="community-page-title" tabindex="-1">社区</h1>
-          <p>匿名访客可以浏览 Voyage 社区；登录后可从自己的已规划行程发布公开快照。</p>
-        </div>
-        <p class="community-hero-note">公开内容仅展示标题、目的地、摘要、作者昵称和脱敏后的行程快照。</p>
-      </div>
-
-      <div class="community-layout">
-        <aside id="community-publish-panel" class="community-publish-panel" aria-labelledby="community-publish-heading" hidden>
-          <div class="section-heading">
-            <div>
-              <h2 id="community-publish-heading" tabindex="-1">发布行程</h2>
-              <p>选择一条已规划行程，填写公开摘要后发布到社区。</p>
-            </div>
-          </div>
-          <button id="community-signin-button" type="button" class="empty-state" hidden>
-            <span>登录后即可发布自己的公开旅程快照。</span>
-            <span class="community-inline-action">登录后发布</span>
-          </button>
-          <form id="community-publish-form" class="community-publish-form" hidden>
-            <label for="community-trip-select">选择已规划行程</label>
-            <select id="community-trip-select" name="trip_id"></select>
-            <p id="community-publish-empty" class="help-text" aria-live="polite"></p>
-            <button id="community-publish-retry" type="button" class="secondary" hidden>重试加载行程</button>
-
-            <label for="community-summary">公开摘要</label>
-            <textarea
-              id="community-summary"
-              name="summary"
-              rows="4"
-              minlength="1"
-              maxlength="300"
-              placeholder="例如：慢节奏海边散步、沙茶面和轮渡夜景。"
-            ></textarea>
-            <p id="community-summary-help" class="help-text" aria-live="polite">0 / 300</p>
-            <p id="community-publish-feedback" class="help-text" role="status" aria-live="polite"></p>
-
-            <div class="button-row">
-              <button id="community-publish-button" type="submit">发布到社区</button>
-            </div>
-          </form>
-        </aside>
-
-        <section class="community-feed-panel" aria-labelledby="community-feed-heading">
-          <div class="section-heading">
-            <div>
-              <h2 id="community-feed-heading">最新发布</h2>
-              <p>浏览社区成员公开分享的行程快照。</p>
-            </div>
-          </div>
-          <div id="community-feed-status" class="empty-state" aria-live="polite"></div>
-          <div id="community-feed-list" class="community-feed-list" aria-live="polite"></div>
-          <div class="button-row community-feed-actions">
-            <button id="community-retry-button" type="button" class="secondary" hidden>重试</button>
-            <button id="community-load-more-button" type="button" class="secondary" hidden>加载更多</button>
-          </div>
-        </section>
-
-        <aside id="community-detail-panel" class="community-detail-panel" aria-labelledby="community-detail-title" hidden>
-          <div class="section-heading community-detail-heading">
-            <div>
-              <h2 id="community-detail-title">发布详情</h2>
-              <p>只渲染公开字段，不展示账户邮箱或私有规划数据。</p>
-            </div>
-            <button id="community-detail-back" type="button" class="secondary" hidden>返回列表</button>
-          </div>
-          <div id="community-detail-empty" class="empty-state">选择一条发布查看公开快照。</div>
-          <div id="community-detail-loading" class="empty-state" hidden>正在加载发布详情…</div>
-          <div id="community-detail-error" class="empty-state" hidden>社区详情加载失败，请重试。</div>
-          <article id="community-detail-card" class="community-detail-card" hidden>
-            <p id="community-detail-author" class="eyebrow"></p>
-            <h3 id="community-detail-post-title"></h3>
-            <p id="community-detail-meta" class="community-card-meta"></p>
-            <p id="community-detail-summary" class="community-detail-summary"></p>
-            <div class="button-row" id="community-detail-actions">
-              <button id="community-withdraw-button" type="button" class="danger" hidden>撤下</button>
-            </div>
-            <div id="community-detail-itinerary"></div>
-          </article>
-        </aside>
-      </div>
-    </section>
-
-    <button id="community-create-fab" class="community-create-fab" type="button" aria-label="发布新的旅行游记"><span class="voyage-icon voyage-icon--add" aria-hidden="true"></span><span class="community-create-fab-label">发布</span></button>
-
-    <section id="profile-page" class="workspace profile-page-shell" hidden aria-labelledby="profile-page-title">
-      <div class="profile-page-card">
-        <div class="profile-page-header">
-          <div>
-            <p class="eyebrow">Voyage 个人资料</p>
-            <h1 id="profile-page-title" tabindex="-1">个人信息</h1>
-            <p class="profile-page-description">维护昵称、简介、常驻城市和旅行风格。</p>
-          </div>
-          <div class="profile-page-header-actions">
-            <button id="profile-back-link" class="secondary" type="button">返回来源</button>
-          </div>
-        </div>
-        <p id="profile-status" class="status-message" role="status" aria-live="polite">正在加载个人信息…</p>
-        <div id="profile-auth-prompt" class="empty-state" hidden>
-          <p>登录后即可维护个人信息。</p>
-          <button id="profile-signin-button" type="button">去登录</button>
-        </div>
-        <div id="profile-loading" class="empty-state" role="status" aria-live="polite">
-          <p>正在加载个人信息，请稍候。</p>
-        </div>
-        <div id="profile-error" class="empty-state" hidden>
-          <p>个人信息加载失败，请重试。</p>
-          <div class="button-row"><button id="profile-retry-button" type="button">重试</button></div>
-        </div>
-        <form id="profile-form" class="profile-form" hidden>
-          <div class="profile-avatar-section">
-            <p>个人头像</p>
-            <div id="profile-avatar-preview" class="empty-state" aria-live="polite">
-              <img id="profile-avatar-image" alt="个人头像预览" hidden>
-              <span id="profile-avatar-fallback">V</span>
-            </div>
-            <label for="profile-avatar-input">上传头像</label>
-            <input id="profile-avatar-input" name="avatar" type="file" accept="image/jpeg,image/png,image/webp">
-            <p class="help-text">支持 JPG、PNG 和 WebP。</p>
-          </div>
-          <label for="profile-email">账户邮箱</label>
-          <input id="profile-email" name="email" type="email" readonly aria-describedby="profile-email-help">
-          <p id="profile-email-help" class="help-text">邮箱由账户服务提供，此页面不可修改。</p>
-          <label for="profile-display-name">昵称</label>
-          <input id="profile-display-name" name="display_name" type="text" maxlength="40" autocomplete="nickname">
-          <label for="profile-bio">简介</label>
-          <textarea id="profile-bio" name="bio" rows="4" maxlength="160"></textarea>
-          <label for="profile-home-city">常驻城市</label>
-          <input id="profile-home-city" name="home_city" type="text" maxlength="40" autocomplete="address-level2">
-          <fieldset class="profile-fieldset">
-            <legend>旅行风格</legend>
-            <div class="travel-style-grid">
-              <label class="travel-style-option" for="travel-style-food"><input id="travel-style-food" type="checkbox" value="美食">美食</label>
-              <label class="travel-style-option" for="travel-style-culture"><input id="travel-style-culture" type="checkbox" value="人文">人文</label>
-              <label class="travel-style-option" for="travel-style-nature"><input id="travel-style-nature" type="checkbox" value="自然">自然</label>
-              <label class="travel-style-option" for="travel-style-family"><input id="travel-style-family" type="checkbox" value="亲子">亲子</label>
-              <label class="travel-style-option" for="travel-style-outdoor"><input id="travel-style-outdoor" type="checkbox" value="户外">户外</label>
-              <label class="travel-style-option" for="travel-style-leisure"><input id="travel-style-leisure" type="checkbox" value="休闲">休闲</label>
-            </div>
-          </fieldset>
-          <div id="profile-errors" class="empty-state" hidden aria-live="polite"></div>
-          <div class="profile-form-footer">
-            <p id="profile-updated-at" class="help-text" aria-live="polite"></p>
-            <div class="button-row"><button id="profile-save-button" type="submit">保存个人信息</button></div>
-          </div>
-        </form>
-      </div>
-    </section>
-
-    <section id="admin-community-page" class="admin-community admin-shell" hidden aria-labelledby="admin-community-title">
-      <div class="admin-community-heading">
-        <p class="admin-community-eyebrow">ADMIN MODERATION</p>
-        <h1 id="admin-community-title" tabindex="-1">社区审核</h1>
-        <p>处理待审核游记、评论和用户举报。</p>
-      </div>
-      <div id="admin-community-auth-required" class="empty-state" hidden>
-        <p>管理员登录状态已失效，请重新登录后再试。</p>
-        <a id="admin-community-signin" class="button-link" href="/auth?return_to=%2Fadmin%2Fcommunity">去登录</a>
-      </div>
-      <div id="admin-community-forbidden" class="empty-state" hidden>
-        <p>当前账户没有社区管理员权限</p>
-        <a id="admin-community-return-explore" class="button-link secondary" href="/">返回探索</a>
-      </div>
-      <nav class="admin-community-tabs" role="tablist" aria-label="审核队列">
-        <button id="admin-community-tab-notes" type="button" role="tab" aria-selected="true" data-admin-tab="notes">游记</button>
-        <button id="admin-community-tab-comments" type="button" role="tab" aria-selected="false" data-admin-tab="comments">评论</button>
-        <button id="admin-community-tab-reports" type="button" role="tab" aria-selected="false" data-admin-tab="reports">举报</button>
-      </nav>
-      <section id="admin-community-panel" class="admin-community-panel" role="tabpanel" aria-live="polite">
-        <p id="admin-community-status" class="admin-community-status">正在检查管理员权限…</p>
-        <div id="admin-community-list" class="admin-community-list"></div>
-        <p id="admin-community-empty" class="admin-community-empty" hidden>当前队列为空。</p>
-        <div class="admin-community-actions">
-          <button id="admin-community-retry" class="admin-community-button" type="button" hidden>重试</button>
-          <button id="admin-community-load-more" class="admin-community-button" type="button" hidden>加载更多</button>
-        </div>
-      </section>
-      <dialog id="admin-community-review-dialog" class="admin-community-dialog" aria-labelledby="admin-community-dialog-title" hidden>
-        <form id="admin-community-review-form" method="dialog">
-          <h2 id="admin-community-dialog-title">驳回审核内容</h2>
-          <p id="admin-community-dialog-target"></p>
-          <label for="admin-community-review-reason">驳回原因</label>
-          <textarea id="admin-community-review-reason" maxlength="500" required></textarea>
-          <p id="admin-community-review-status" class="admin-community-status"></p>
-          <div class="admin-community-dialog-actions">
-            <button id="admin-community-review-cancel" type="button">取消</button>
-            <button id="admin-community-review-submit" class="admin-community-button" type="submit">确认驳回</button>
-          </div>
-        </form>
-      </dialog>
-    </section>
     <aside id="assistant-panel" class="assistant-panel" aria-labelledby="chat-heading" hidden>
       <section id="chat-panel" class="chat-panel" aria-labelledby="chat-heading">
         <div class="assistant-panel-header">
@@ -427,10 +195,6 @@
   <script src="/static/data/explore-data.js" defer></script>
   <script src="/static/map-explorer.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.8/dist/umd/supabase.min.js" defer crossorigin="anonymous"></script>
-  <script src="/static/app-router.js" defer></script>
-  <script src="/static/community-client.js" defer></script>
-  <script src="/static/profile.js" defer></script>
-  <script src="/static/admin-community.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

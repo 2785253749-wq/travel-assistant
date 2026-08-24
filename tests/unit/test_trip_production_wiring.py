@@ -27,14 +27,7 @@ def test_trip_domain_service_has_no_fastapi_config_or_infrastructure_dependencie
 
 
 def _clear_service_state(service_module):
-    for name in (
-        "get_trip_service",
-        "get_public_trip_service",
-        "get_development_repository",
-        "get_development_profile_module",
-        "get_development_community_module",
-        "get_public_community_repository",
-    ):
+    for name in ("get_trip_service", "get_public_trip_service", "get_development_repository"):
         dependency = getattr(service_module, name, None)
         if dependency is not None and hasattr(dependency, "cache_clear"):
             dependency.cache_clear()
@@ -93,73 +86,6 @@ def test_same_verified_token_does_not_reuse_jwt_scoped_client(monkeypatch):
 
     assert first is not second
     assert repositories == []
-    get_settings.cache_clear()
-    _clear_service_state(service_module)
-
-
-def test_in_memory_profile_and_community_modules_reuse_cached_development_wiring(
-    monkeypatch,
-):
-    monkeypatch.delenv("APP_ENV", raising=False)
-    monkeypatch.delenv("SUPABASE_URL", raising=False)
-    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
-    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-    get_settings.cache_clear()
-    from app import composition as service_module
-
-    _clear_service_state(service_module)
-    user = AuthenticatedUser(
-        id=USER_A, email="alice@example.com", access_token="development-token"
-    )
-
-    first_profile = service_module.get_profile_module(user)
-    second_profile = service_module.get_profile_module(user)
-    first_community = service_module.get_community_module(user)
-    second_community = service_module.get_community_module(user)
-    anonymous_community = service_module.get_optional_community_module(None)
-
-    assert first_profile is second_profile
-    assert first_community is second_community
-    assert anonymous_community is first_community
-    get_settings.cache_clear()
-    _clear_service_state(service_module)
-
-
-def test_anonymous_supabase_community_reads_reuse_cached_public_repository(
-    monkeypatch,
-):
-    monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-test-key")
-    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "unused-by-community")
-    monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", secrets.token_urlsafe(32))
-    get_settings.cache_clear()
-    from app import composition as service_module
-
-    public_repositories = []
-    monkeypatch.setattr(
-        service_module,
-        "create_public_community_repository",
-        lambda url, key: public_repositories.append((url, key, object()))
-        or public_repositories[-1][2],
-    )
-    monkeypatch.setattr(
-        service_module,
-        "create_user_scoped_community_repository",
-        lambda *_args: pytest.fail(
-            "anonymous community reads must not require a JWT-scoped repository"
-        ),
-    )
-    _clear_service_state(service_module)
-
-    first = service_module.get_optional_community_module(None)
-    second = service_module.get_optional_community_module(None)
-
-    assert len(public_repositories) == 1
-    assert public_repositories[0][:2] == ("https://example.supabase.co/", "anon-test-key")
-    assert first._public_repository is second._public_repository
     get_settings.cache_clear()
     _clear_service_state(service_module)
 

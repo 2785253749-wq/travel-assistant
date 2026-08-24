@@ -14,11 +14,6 @@ from app.core.logging import configure_logging, operational_context, request_con
 from app.api.auth import CurrentUser
 from app.api.trips import router as trips_router
 from app.api.chat import router as chat_router
-from app.api.community import router as community_router
-from app.api.profile import router as profile_router
-from app.api.travel_notes import router as travel_notes_router
-from app.api.community_interactions import router as community_interactions_router
-from app.api.community_moderation import router as community_moderation_router
 from app.api.weather import router as weather_router
 
 BASE = Path(__file__).resolve().parent
@@ -90,51 +85,6 @@ def home(): return FileResponse(BASE / "static" / "index.html")
 @app.get("/auth", include_in_schema=False)
 def auth_page(): return FileResponse(BASE / "static" / "auth.html")
 
-@app.get("/profile", include_in_schema=False)
-def profile_page(): return FileResponse(BASE / "static" / "profile.html")
-
-
-def _index_shell() -> FileResponse:
-    return FileResponse(BASE / "static" / "index.html")
-
-
-@app.get("/community", include_in_schema=False)
-def community_page() -> FileResponse:
-    return _index_shell()
-
-
-@app.get("/community/notes/new", include_in_schema=False)
-def community_note_new_page() -> FileResponse:
-    return FileResponse(BASE / "static" / "community-editor.html")
-
-
-@app.get("/community/mine", include_in_schema=False)
-def community_mine_page() -> FileResponse:
-    return FileResponse(BASE / "static" / "community-mine.html")
-
-
-@app.get("/community/creators/{creator_slug}", include_in_schema=False)
-def community_creator_page(creator_slug: str) -> FileResponse:
-    del creator_slug
-    return FileResponse(BASE / "static" / "community-creator.html")
-
-
-@app.get("/community/notes/{note_id}/edit", include_in_schema=False)
-def community_note_edit_page(note_id: str) -> FileResponse:
-    del note_id
-    return FileResponse(BASE / "static" / "community-editor.html")
-
-
-@app.get("/community/notes/{note_id}", include_in_schema=False)
-def community_note_page(note_id: str) -> FileResponse:
-    del note_id
-    return FileResponse(BASE / "static" / "community-note.html")
-
-
-@app.get("/admin/community", include_in_schema=False)
-def admin_community_page() -> FileResponse:
-    return FileResponse(BASE / "static" / "admin-community.html")
-
 @app.get("/health")
 def health(): return {"status":"ok"}
 
@@ -172,9 +122,4 @@ def api_me(user: CurrentUser):
 
 app.include_router(trips_router)
 app.include_router(chat_router)
-app.include_router(community_router)
-app.include_router(travel_notes_router)
-app.include_router(community_interactions_router)
-app.include_router(community_moderation_router)
-app.include_router(profile_router)
 app.include_router(weather_router)

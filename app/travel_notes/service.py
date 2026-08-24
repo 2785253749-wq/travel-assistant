@@ -8,8 +8,6 @@ from app.core.errors import AppError
 from app.travel_notes.models import (
     TravelNoteCard,
     TravelNoteCategory,
-    TravelNoteCreator,
-    TravelNoteCreatorPage,
     TravelNoteDetail,
     TravelNoteDraftInput,
     TravelNoteImageInput,
@@ -190,50 +188,6 @@ class TravelNoteModule:
         if stored is None:
             raise _not_found()
         return self._to_detail(stored)
-
-    def get_creator_page(
-        self,
-        creator_slug: str,
-        *,
-        cursor: str | None,
-        limit: int,
-    ) -> TravelNoteCreatorPage:
-        normalized_slug = creator_slug.strip()
-        if not 1 <= len(normalized_slug) <= 100 or "/" in normalized_slug:
-            raise _validation_failed()
-        if not 1 <= limit <= 50:
-            raise _validation_failed()
-        try:
-            decoded_cursor = decode_travel_note_cursor(cursor) if cursor is not None else None
-        except ValueError as exc:
-            raise _validation_failed() from exc
-
-        rows = self._public_repository.list_public_by_creator(
-            normalized_slug,
-            decoded_cursor,
-            limit + 1,
-        )
-        visible = rows[:limit]
-        if not visible:
-            raise _not_found()
-
-        next_cursor = None
-        if len(rows) > limit and visible[-1].published_at is not None:
-            last_visible = visible[-1]
-            next_cursor = encode_travel_note_cursor(last_visible.published_at, last_visible.id)
-
-        first = visible[0]
-        creator = TravelNoteCreator(
-            creator_slug=first.author_slug,
-            display_name=first.author_display_name,
-            bio=first.author_bio,
-            avatar_url=self._signed_optional_path(first.author_avatar_path),
-        )
-        return TravelNoteCreatorPage(
-            creator=creator,
-            items=[self._to_card(row) for row in visible],
-            next_cursor=next_cursor,
-        )
 
     def approve(self, reviewer_id: UUID, note_id: UUID) -> TravelNoteOwnerView:
         current = self._repository.get_note(note_id)
