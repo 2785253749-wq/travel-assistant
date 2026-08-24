@@ -45,7 +45,8 @@
     share: $("share-trip-button"), history: $("trip-history"), historyList: $("trip-history-list"),
     tripsAuthPrompt: $("trips-auth-prompt"), tripsLogin: $("trips-login-button"),
     footprintsAuthPrompt: $("footprints-auth-prompt"), footprintsLogin: $("footprints-login-button"),
-    footprintsContent: $("footprints-content"), footprintMapGrid: $("footprint-map-grid"), footprintMapEmpty: $("footprint-map-empty"),
+    footprintsContent: $("footprints-content"), footprintMap: $("footprint-map"), footprintAmap: $("footprint-amap"), footprintStatic: $("footprint-static"),
+    footprintMapGrid: $("footprint-map-grid"), footprintMapEmpty: $("footprint-map-empty"),
     footprintList: $("footprint-list"), footprintListEmpty: $("footprint-list-empty"),
     footprintProvinceCount: $("footprint-province-count"), footprintCityCount: $("footprint-city-count"),
     shareDialog: $("share-dialog"), shareLink: $("share-link"), shareExpiry: $("share-expiry"),
@@ -63,6 +64,7 @@
   let refreshRequest = null;
   let tripsLoadGeneration = 0;
   let mapExplorer = null;
+  let footprintMapExplorer = null;
   let cityWeatherCard = null;
   let exploreInitialized = false;
   let authInitializationPromise = null;
@@ -133,6 +135,7 @@
   async function switchView(view, { focusHeading = false } = {}) {
     if (!VIEWS.has(view)) return;
     if (state.activeView !== view) invalidateTripsLoads();
+    if (state.activeView === "footprints" && view !== "footprints") destroyFootprintsMap();
     state.activeView = view;
     for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage], ["footprints", elements.footprintsPage]]) {
       element.hidden = name !== view;
@@ -277,7 +280,12 @@
     if (!key || !window.localStorage) return [];
     try {
       const saved = JSON.parse(window.localStorage.getItem(key) || "[]");
-      return Array.isArray(saved) ? saved.filter((item) => item && typeof item.id === "string") : [];
+      return Array.isArray(saved)
+        ? saved.filter((item) => item && typeof item.id === "string").map((item) => ({
+          ...item,
+          coordinates: footprintCoordinates(item),
+        }))
+        : [];
     } catch (_) {
       return [];
     }
@@ -305,6 +313,15 @@
     return null;
   }
 
+  function footprintCoordinates(entry) {
+    if (Array.isArray(entry.coordinates) && entry.coordinates.length === 2
+      && entry.coordinates.every(Number.isFinite)) return [...entry.coordinates];
+    const context = footprintContext(entry.id);
+    if (!context) return [];
+    const item = context.kind === "city" ? context.city : context.place;
+    return Array.isArray(item.coordinates) ? [...item.coordinates] : [];
+  }
+
   function toggleFootprint(id) {
     if (!state.session) {
       navigateToAuth("signin");
@@ -325,6 +342,7 @@
         provinceName: context.province?.name || "",
         cityId: context.city?.id || context.city?.name || "",
         cityName: context.city?.name || item.name,
+        coordinates: Array.isArray(item.coordinates) ? [...item.coordinates] : [],
         visitedAt: new Date().toISOString(),
       }];
     }
@@ -334,11 +352,32 @@
     else if (state.selectedExploreCityId === id) renderCityWeather(id, item.name);
   }
 
+  function initializeFootprintsMap() {
+    if (footprintMapExplorer || !elements.footprintAmap) return;
+    const mapModule = window.TravelMapExplorer;
+    if (!mapModule || typeof mapModule.createFootprintMap !== "function") return;
+    footprintMapExplorer = mapModule.createFootprintMap(elements.footprintAmap, {
+      amapKey: window.TRAVEL_ASSISTANT_CONFIG?.amapJsKey || null,
+      securityJsCode: window.TRAVEL_ASSISTANT_CONFIG?.amapSecurityJsCode || null,
+      fallbackRoot: elements.footprintStatic,
+      entries: state.footprints,
+    });
+  }
+
+  function destroyFootprintsMap() {
+    if (!footprintMapExplorer) return;
+    footprintMapExplorer.destroy();
+    footprintMapExplorer = null;
+  }
+
   function renderFootprintsPage() {
     const signedIn = Boolean(state.session);
     elements.footprintsAuthPrompt.hidden = signedIn;
     elements.footprintsContent.hidden = !signedIn;
-    if (!signedIn) return;
+    if (!signedIn) {
+      destroyFootprintsMap();
+      return;
+    }
 
     const entries = state.footprints;
     const provinces = new Set(entries.map((entry) => entry.provinceId).filter(Boolean));
@@ -387,6 +426,8 @@
       item.append(copy, remove);
       elements.footprintList.append(item);
     }
+    initializeFootprintsMap();
+    footprintMapExplorer?.update(entries);
   }
 
   function renderSelectedPlace(item) {

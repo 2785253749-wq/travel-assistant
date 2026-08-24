@@ -105,6 +105,20 @@ test("signed-in users can add an explored place to their footprints", async () =
   assert.equal(harness.elements.get("footprint-list").children.length, 1);
 });
 
+test("footprints view mounts its map adapter and restores the static fallback on exit", async () => {
+  const harness = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }) });
+  await settle();
+
+  await harness.elements.get("footprints-nav-button").dispatch("click");
+  assert.equal(harness.elements.get("footprint-amap").dataset.mapMode, "offline");
+  assert.equal(harness.elements.get("footprint-amap").hidden, true);
+  assert.equal(harness.elements.get("footprint-static").hidden, false);
+
+  await harness.elements.get("explore-nav-button").dispatch("click");
+  assert.equal(harness.elements.get("footprint-amap").hidden, true);
+  assert.equal(harness.elements.get("footprint-static").hidden, false);
+});
+
 test("legacy app shell no longer exposes the removed community view", () => {
   const html = fs.readFileSync(path.join(__dirname, "../../app/static/index.html"), "utf8");
   const source = fs.readFileSync(path.join(__dirname, "../../app/static/app.js"), "utf8");
