@@ -47,6 +47,12 @@ FIELD_LABELS = {
     "end_date": "返回日期", "travelers": "出行人数", "budget_cny": "总预算",
 }
 
+_ROUTE_SOURCE = r"(?:从|由|from)"
+_ROUTE_SEPARATOR = r"(?:前往|去往|到达|抵达|到|去|往|to)"
+_DISTINCT_ROUTE_SEPARATOR = r"(?:前往|去往|到达|抵达|to)"
+_ROUTE_PLACE = r"(?:[A-Za-z][A-Za-z -]{0,29}|[\u4e00-\u9fff·]{1,30})"
+_ROUTE_PLACE_LAZY = r"(?:[A-Za-z][A-Za-z -]{0,29}?|[\u4e00-\u9fff·]{1,30}?)"
+
 
 class TravelState(TypedDict, total=False):
     user_message: str
@@ -176,13 +182,19 @@ class ModelIntentClassifier:
 class RuleIntentClassifier:
     """Credential-free pre-confirmation routing; paid models are planning-only."""
 
-    _COMPLETE_PLAN_ROUTE = re.compile(r"(?:从|from)\s*[^\s，,。]{1,30}?\s*(?:到|去|to)\s*[^\s，,。]{1,30}", re.IGNORECASE)
+    _COMPLETE_PLAN_ROUTE = re.compile(
+        rf"(?:{_ROUTE_SOURCE}\s*{_ROUTE_PLACE_LAZY}(?:出发)?\s*"
+        rf"{_ROUTE_SEPARATOR}\s*{_ROUTE_PLACE}|"
+        rf"(?<![\u4e00-\u9fffA-Za-z])(?!(?:怎么|如何|怎样|哪里|哪儿))"
+        rf"{_ROUTE_PLACE_LAZY}(?:出发)?\s*{_DISTINCT_ROUTE_SEPARATOR}\s*{_ROUTE_PLACE})",
+        re.IGNORECASE,
+    )
     _PLAN_DATE = re.compile(r"\b20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
     _PLAN_TRAVELERS = re.compile(r"(?<!\d)[1-9]\d?\s*(?:人|travellers?|travelers?)", re.IGNORECASE)
     _PLAN_BUDGET = re.compile(r"(?:预算|budget)\s*(?:为|是|约)?\s*[:：]?\s*\d{1,8}", re.IGNORECASE)
     _PLAN_CONTEXT = re.compile(
         r"(?:规划(?:一[份个]|\d+\s*天|行程)|制定行程|生成行程|出游|想安排|"
-        r"从[^，,。]{1,30}(?:出发)?\s*(?:到|去))",
+        rf"(?:从|由)[^，,。]{{1,30}}(?:出发)?\s*{_ROUTE_SEPARATOR})",
         re.IGNORECASE,
     )
 
@@ -284,8 +296,8 @@ class RuleTravelExtractor:
     )
     _ROUTE = re.compile(
         _TRAVELER_PREFIX
-        + r"(?:(?:\u4ece|from)\s*)?([^\s\uff0c,\u3002]{1,30}?)(?:\u51fa\u53d1)?\s*"
-        r"(?:\u5230|\u53bb|to)\s*([^\s\uff0c,\u30020-9]{1,30})",
+        + rf"(?:{_ROUTE_SOURCE}\s*)?({_ROUTE_PLACE_LAZY})(?:出发)?\s*"
+        rf"{_ROUTE_SEPARATOR}\s*({_ROUTE_PLACE})",
         re.IGNORECASE,
     )
     _DATE = re.compile(
@@ -320,6 +332,15 @@ class RuleTravelExtractor:
     }
     _BUDGET = re.compile(
         r"(?:\u9884\u7b97(?:\u6539\u4e3a|\u8c03\u6574\u4e3a|\u4e3a|\u662f|\u7ea6)?|budget(?:\s+(?:to|is))?)\s*[:\uff1a]?\s*(\d{1,8})",
+        re.IGNORECASE,
+    )
+    _DURATION = re.compile(
+        r"(?:[1-9]\d?|[一二两三四五六七八九十]+)\s*天",
+        re.IGNORECASE,
+    )
+    _ROUTE_ACTIVITY = re.compile(
+        r"(?:自由行|旅游|旅行|游玩|出游|"
+        r"玩(?=\s*(?:[1-9]\d?|[一二两三四五六七八九十]+)\s*天))",
         re.IGNORECASE,
     )
 
@@ -379,9 +400,26 @@ class RuleTravelExtractor:
 
         return [normalized for _, normalized in sorted(candidates)]
 
+    @classmethod
+    def _route_message(cls, message: str) -> str:
+        """Mask non-route fields so date ranges cannot look like city routes."""
+        masked = list(message)
+        for pattern in (
+            cls._DATE,
+            cls._SHORT_DATE,
+            cls._CHINESE_DATE,
+            cls._TRAVELERS,
+            cls._BUDGET,
+            cls._DURATION,
+            cls._ROUTE_ACTIVITY,
+        ):
+            for match in pattern.finditer(message):
+                masked[match.start():match.end()] = " " * (match.end() - match.start())
+        return "".join(masked)
+
     def extract(self, message: str, profile: TravelProfile) -> TravelProfile:
         updates: dict[str, Any] = {}
-        route = self._ROUTE.search(message)
+        route = self._ROUTE.search(self._route_message(message))
         if route:
             updates.update(origin=route.group(1).strip(), destination=route.group(2).strip())
         dates = self._normalized_dates(message)
