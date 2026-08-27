@@ -23,6 +23,37 @@ def test_rule_extractor_reads_explicit_chinese_and_english_routes(message, origi
 
 
 @pytest.mark.parametrize(
+    "message",
+    [
+        "从上海往南京",
+        "从上海前往南京",
+        "上海去往南京",
+        "由上海抵达南京",
+        "从上海到南京玩三天",
+    ],
+)
+def test_rule_extractor_reads_common_chinese_route_synonyms(message):
+    profile = RuleTravelExtractor().extract(message, TravelProfile())
+
+    assert profile.origin == "上海"
+    assert profile.destination == "南京"
+
+
+def test_rule_extractor_does_not_treat_compact_date_range_as_route():
+    profile = RuleTravelExtractor(reference_date=date(2026, 8, 24)).extract(
+        "2人8.25到8.27三天上海到南京预算9000",
+        TravelProfile(),
+    )
+
+    assert profile.origin == "上海"
+    assert profile.destination == "南京"
+    assert profile.start_date == "2026-08-25"
+    assert profile.end_date == "2026-08-27"
+    assert profile.travelers == 2
+    assert profile.budget_cny == 9000
+
+
+@pytest.mark.parametrize(
     ("message", "start_date", "end_date"),
     [
         ("福州到厦门，2026.8.16到2026.8.18，2人，预算5000", "2026-08-16", "2026-08-18"),

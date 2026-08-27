@@ -88,6 +88,18 @@ def test_rule_classifier_keeps_partial_plan_requests_on_collection_flow(message)
     assert RuleIntentClassifier().classify(message, has_trip=False).intent == "plan_trip"
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "从上海往南京旅游",
+        "由上海前往南京旅游",
+        "上海去往南京旅游",
+    ],
+)
+def test_rule_classifier_treats_route_synonyms_as_planning_context(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "plan_trip"
+
+
 @pytest.mark.parametrize("message", ["厦门未来三天天气怎么样？", "厦门三天天气如何"])
 def test_rule_classifier_keeps_standalone_multi_day_weather_questions_on_weather_route(message):
     assert RuleIntentClassifier().classify(message, has_trip=False).intent == "weather_query"
@@ -100,6 +112,7 @@ def test_rule_classifier_keeps_standalone_multi_day_weather_questions_on_weather
         "厦门有哪些适合游玩的景点？",
         "福建旅游有什么避坑建议？",
         "云南有哪些值得去的地方？",
+        "云南遇到雨天旅行有哪些准备建议？",
         "福建旅行时省内交通换乘如何规划？",
     ],
 )
