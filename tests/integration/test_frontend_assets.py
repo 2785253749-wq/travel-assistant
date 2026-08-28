@@ -32,7 +32,9 @@ def test_home_has_core_regions(client):
 def test_javascript_is_external(client):
     html = client.get("/").text
     assert '<script src="/static/app.js"' in html
+    assert '<script src="/static/footprints.js"' in html
     assert "DEEPSEEK_API_KEY" not in client.get("/static/app.js").text
+    assert "DEEPSEEK_API_KEY" not in client.get("/static/footprints.js").text
 
 
 def test_home_loads_a_responsive_external_stylesheet(client):

@@ -48,7 +48,9 @@
     footprintsContent: $("footprints-content"), footprintMap: $("footprint-map"), footprintAmap: $("footprint-amap"), footprintStatic: $("footprint-static"),
     footprintMapGrid: $("footprint-map-grid"), footprintMapEmpty: $("footprint-map-empty"),
     footprintList: $("footprint-list"), footprintListEmpty: $("footprint-list-empty"),
-    footprintProvinceCount: $("footprint-province-count"), footprintCityCount: $("footprint-city-count"),
+    footprintProvinceCount: $("footprint-province-count"), footprintCityCount: $("footprint-city-count"), footprintLatestCity: $("footprint-latest-city"),
+    footprintSearchForm: $("footprint-city-search-form"), footprintSearch: $("footprint-city-search"), footprintSearchResults: $("footprint-search-results"),
+    footprintVisitDialog: $("footprint-visit-dialog"), footprintVisitDialogTitle: $("footprint-visit-dialog-title"), footprintVisitForm: $("footprint-visit-form"), footprintVisitDate: $("footprint-visit-date"), footprintVisitCancel: $("footprint-visit-cancel"),
     shareDialog: $("share-dialog"), shareLink: $("share-link"), shareExpiry: $("share-expiry"),
     copyShare: $("copy-share-link"), revokeShare: $("revoke-share-link"), closeShare: $("close-share-dialog"), renameDialog: $("rename-dialog"),
     renameForm: $("rename-form"), renameInput: $("rename-input"), cancelRename: $("cancel-rename"),
@@ -57,14 +59,13 @@
     name: "signed_out", activeView: "explore", busy: false, session: null, authClient: null, user: null, profile: null,
     pendingResult: null, currentTrip: null, renameTripId: null, shareTripId: null, providerNoticeActive: false,
     threadId: makeThreadId(), cityWeather: new Map(), cityWeatherRequests: new Map(), selectedExploreCityId: null,
-    footprints: [],
   };
   let authGeneration = 0;
   let sessionRevision = 0;
   let refreshRequest = null;
   let tripsLoadGeneration = 0;
   let mapExplorer = null;
-  let footprintMapExplorer = null;
+  let footprintsController = null;
   let cityWeatherCard = null;
   let exploreInitialized = false;
   let authInitializationPromise = null;
@@ -135,7 +136,7 @@
   async function switchView(view, { focusHeading = false } = {}) {
     if (!VIEWS.has(view)) return;
     if (state.activeView !== view) invalidateTripsLoads();
-    if (state.activeView === "footprints" && view !== "footprints") destroyFootprintsMap();
+    if (state.activeView === "footprints" && view !== "footprints") footprintsController?.unmount();
     state.activeView = view;
     for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage], ["footprints", elements.footprintsPage]]) {
       element.hidden = name !== view;
@@ -150,7 +151,7 @@
     elements.providerNotice.hidden = view !== "explore" || !state.providerNoticeActive;
     if (focusHeading) elements.viewHeadings[view].focus();
     if (view === "trips") await renderTripsPage();
-    if (view === "footprints") renderFootprintsPage();
+    if (view === "footprints") await ensureFootprintsController().mount();
   }
 
   function setStatus(message, isError = false) {
@@ -270,166 +271,6 @@
     return null;
   }
 
-  function footprintStorageKey() {
-    const userId = stableUserId(state.session);
-    return userId ? `voyage:footprints:${userId}` : null;
-  }
-
-  function readFootprints() {
-    const key = footprintStorageKey();
-    if (!key || !window.localStorage) return [];
-    try {
-      const saved = JSON.parse(window.localStorage.getItem(key) || "[]");
-      return Array.isArray(saved)
-        ? saved.filter((item) => item && typeof item.id === "string").map((item) => ({
-          ...item,
-          coordinates: footprintCoordinates(item),
-        }))
-        : [];
-    } catch (_) {
-      return [];
-    }
-  }
-
-  function saveFootprints() {
-    const key = footprintStorageKey();
-    if (!key || !window.localStorage) return;
-    try {
-      window.localStorage.setItem(key, JSON.stringify(state.footprints));
-    } catch (_) {
-      setStatus("足迹暂时无法保存，请检查浏览器存储设置。", true);
-    }
-  }
-
-  function footprintContext(id) {
-    const data = window.TravelMapExplorer?.EXPLORE_TRIAL;
-    if (!data) return null;
-    for (const city of data.cities || []) {
-      const province = (data.provinces || []).find((item) => item.id === city.provinceId);
-      if (city.id === id) return { kind: "city", city, province };
-      const place = (city.places || []).find((item) => item.id === id);
-      if (place) return { kind: "place", place, city, province };
-    }
-    return null;
-  }
-
-  function footprintCoordinates(entry) {
-    if (Array.isArray(entry.coordinates) && entry.coordinates.length === 2
-      && entry.coordinates.every(Number.isFinite)) return [...entry.coordinates];
-    const context = footprintContext(entry.id);
-    if (!context) return [];
-    const item = context.kind === "city" ? context.city : context.place;
-    return Array.isArray(item.coordinates) ? [...item.coordinates] : [];
-  }
-
-  function toggleFootprint(id) {
-    if (!state.session) {
-      navigateToAuth("signin");
-      return;
-    }
-    const context = footprintContext(id);
-    if (!context) return;
-    const item = context.kind === "city" ? context.city : context.place;
-    const existing = state.footprints.some((entry) => entry.id === id);
-    if (existing) {
-      state.footprints = state.footprints.filter((entry) => entry.id !== id);
-    } else {
-      state.footprints = [...state.footprints, {
-        id,
-        kind: context.kind,
-        name: item.name,
-        provinceId: context.province?.id || "",
-        provinceName: context.province?.name || "",
-        cityId: context.city?.id || context.city?.name || "",
-        cityName: context.city?.name || item.name,
-        coordinates: Array.isArray(item.coordinates) ? [...item.coordinates] : [],
-        visitedAt: new Date().toISOString(),
-      }];
-    }
-    saveFootprints();
-    renderFootprintsPage();
-    if (context.kind === "place") renderSelectedPlace(item);
-    else if (state.selectedExploreCityId === id) renderCityWeather(id, item.name);
-  }
-
-  function initializeFootprintsMap() {
-    if (footprintMapExplorer || !elements.footprintAmap) return;
-    const mapModule = window.TravelMapExplorer;
-    if (!mapModule || typeof mapModule.createFootprintMap !== "function") return;
-    footprintMapExplorer = mapModule.createFootprintMap(elements.footprintAmap, {
-      amapKey: window.TRAVEL_ASSISTANT_CONFIG?.amapJsKey || null,
-      securityJsCode: window.TRAVEL_ASSISTANT_CONFIG?.amapSecurityJsCode || null,
-      fallbackRoot: elements.footprintStatic,
-      entries: state.footprints,
-    });
-  }
-
-  function destroyFootprintsMap() {
-    if (!footprintMapExplorer) return;
-    footprintMapExplorer.destroy();
-    footprintMapExplorer = null;
-  }
-
-  function renderFootprintsPage() {
-    const signedIn = Boolean(state.session);
-    elements.footprintsAuthPrompt.hidden = signedIn;
-    elements.footprintsContent.hidden = !signedIn;
-    if (!signedIn) {
-      destroyFootprintsMap();
-      return;
-    }
-
-    const entries = state.footprints;
-    const provinces = new Set(entries.map((entry) => entry.provinceId).filter(Boolean));
-    const cities = new Set(entries.map((entry) => entry.cityId).filter(Boolean));
-    elements.footprintProvinceCount.textContent = String(provinces.size);
-    elements.footprintCityCount.textContent = String(cities.size);
-    clearChildren(elements.footprintMapGrid);
-    clearChildren(elements.footprintList);
-    elements.footprintMapEmpty.hidden = entries.length > 0;
-    elements.footprintListEmpty.hidden = entries.length > 0;
-
-    const data = window.TravelMapExplorer?.EXPLORE_TRIAL;
-    for (const province of data?.provinces || []) {
-      const provinceEntries = entries.filter((entry) => entry.provinceId === province.id);
-      const card = document.createElement("article");
-      card.className = `footprint-province ${provinceEntries.length ? "is-visited" : ""}`.trim();
-      const title = document.createElement("h3");
-      title.textContent = province.name;
-      const count = document.createElement("span");
-      count.className = "footprint-province-count";
-      count.textContent = provinceEntries.length ? `${provinceEntries.length} 个足迹` : "尚未到访";
-      card.append(title, count);
-      const citiesInProvince = [...new Set(provinceEntries.map((entry) => entry.cityName).filter(Boolean))];
-      if (citiesInProvince.length) {
-        const cityList = document.createElement("p");
-        cityList.textContent = citiesInProvince.join(" · ");
-        card.append(cityList);
-      }
-      elements.footprintMapGrid.append(card);
-    }
-
-    for (const entry of [...entries].sort((left, right) => String(right.visitedAt).localeCompare(String(left.visitedAt)))) {
-      const item = document.createElement("li");
-      item.className = "footprint-list-item";
-      const copy = document.createElement("div");
-      const title = document.createElement("strong");
-      title.textContent = entry.name;
-      const detail = document.createElement("span");
-      detail.textContent = `${entry.provinceName}${entry.cityName ? ` · ${entry.cityName}` : ""}`;
-      copy.append(title, detail);
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "secondary";
-      remove.textContent = "移除";
-      remove.addEventListener("click", () => toggleFootprint(entry.id));
-      item.append(copy, remove);
-      elements.footprintList.append(item);
-    }
-    initializeFootprintsMap();
-    footprintMapExplorer?.update(entries);
-  }
-
   function renderSelectedPlace(item) {
     if (!item) return;
     clearChildren(elements.explorePlaceCard);
@@ -446,12 +287,7 @@
     description.textContent = item.description;
     const recommendation = document.createElement("p");
     recommendation.textContent = item.recommendation;
-    const footprintButton = document.createElement("button");
-    footprintButton.type = "button";
-    footprintButton.className = "secondary footprint-action";
-    footprintButton.textContent = state.footprints.some((entry) => entry.id === item.id) ? "已在我的足迹" : "加入我的足迹";
-    footprintButton.addEventListener("click", () => toggleFootprint(item.id));
-    copy.append(label, title, description, recommendation, footprintButton);
+    copy.append(label, title, description, recommendation);
     elements.explorePlaceCard.append(visual, copy);
     elements.explorePlaceCard.hidden = false;
   }
@@ -653,6 +489,7 @@
         method: options.method || "GET",
         headers: authorizationHeaders({ "Content-Type": "application/json", ...(options.headers || {}) }),
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        signal: options.signal,
       });
     } catch (error) {
       if (!currency.isCurrent()) throw staleRequestError();
@@ -688,6 +525,36 @@
       throw error;
     }
     return payload;
+  }
+
+  function ensureFootprintsController() {
+    if (footprintsController) return footprintsController;
+    const module = window.TravelFootprints;
+    if (!module || typeof module.createController !== "function") {
+      return { mount: async () => {}, unmount() {}, setIdentity() {}, addCity: async () => null, isSaved: () => false };
+    }
+    footprintsController = module.createController({
+      elements: {
+        authPrompt: elements.footprintsAuthPrompt, content: elements.footprintsContent,
+        map: elements.footprintAmap, staticMap: elements.footprintStatic, mapGrid: elements.footprintMapGrid, mapEmpty: elements.footprintMapEmpty,
+        list: elements.footprintList, listEmpty: elements.footprintListEmpty,
+        provinceCount: elements.footprintProvinceCount, cityCount: elements.footprintCityCount, latestCity: elements.footprintLatestCity,
+        searchForm: elements.footprintSearchForm, search: elements.footprintSearch, searchResults: elements.footprintSearchResults,
+        visitDialog: elements.footprintVisitDialog, visitDialogTitle: elements.footprintVisitDialogTitle,
+        visitForm: elements.footprintVisitForm, visitDate: elements.footprintVisitDate,
+      },
+      request: requestJson,
+      createMap: (root, options) => window.TravelMapExplorer?.createFootprintMap(root, {
+        ...options,
+        amapKey: window.TRAVEL_ASSISTANT_CONFIG?.amapJsKey || null,
+        securityJsCode: window.TRAVEL_ASSISTANT_CONFIG?.amapSecurityJsCode || null,
+      }),
+      today: () => new Date().toISOString().slice(0, 10),
+      onAuthRequired: () => navigateToAuth("signin"),
+      onStatus: setStatus,
+    });
+    footprintsController.setIdentity(stableUserId(state.session));
+    return footprintsController;
   }
 
   function publicError(code) {
@@ -1078,7 +945,6 @@
     elements.email.value = "";
     clearChildren(elements.historyList);
     elements.history.hidden = true;
-    state.footprints = [];
   }
 
   function clearSession() {
@@ -1086,12 +952,12 @@
     sessionRevision += 1;
     state.session = null;
     state.user = null;
+    footprintsController?.setIdentity(null);
     clearAccountScopedState({ showWelcome: false });
     elements.authFormPanel.hidden = false;
     elements.account.hidden = true;
     elements.accountEntry.hidden = false;
     if (state.activeView === "trips") renderTripsPage();
-    if (state.activeView === "footprints") renderFootprintsPage();
     setState("signed_out");
   }
 
@@ -1139,7 +1005,7 @@
     }
     state.session = session;
     state.user = session.user || {};
-    state.footprints = readFootprints();
+    footprintsController?.setIdentity(stableUserId(session));
     if (options.resetConversation && !identityChanged) clearConversationState();
     elements.accountEmail.textContent = state.user.email || "已登录账户";
     elements.authFormPanel.hidden = true;
@@ -1150,7 +1016,7 @@
     setState("collecting");
     if (identityChanged || options.resetConversation) setStatus("已切换登录会话，请重新确认行程资料。", false);
     if (state.activeView === "trips" && refreshTrips) return renderTripsPage();
-    if (state.activeView === "footprints") renderFootprintsPage();
+    if (state.activeView === "footprints") footprintsController?.mount();
   }
 
   async function refreshBrowserSession(currency) {

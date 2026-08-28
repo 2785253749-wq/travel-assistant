@@ -75,7 +75,10 @@ class FakeElement {
   async dispatch(type) {
     if (type === "click" && this.disabled) return;
     const event = { preventDefault() {}, target: this, currentTarget: this };
-    for (const listener of this.listeners.get(type) || []) await listener(event);
+    for (let node = this; node; node = node.parentNode) {
+      event.currentTarget = node;
+      for (const listener of node.listeners.get(type) || []) await listener(event);
+    }
   }
 
   requestSubmit() { return this.dispatch("submit"); }
@@ -89,6 +92,11 @@ class FakeElement {
     let node = this;
     while (node) {
       if (selector === "section" && node.tagName === "SECTION") return node;
+      const dataSelector = /^\[data-([\w-]+)\]$/.exec(selector);
+      if (dataSelector) {
+        const key = dataSelector[1].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+        if (Object.prototype.hasOwnProperty.call(node.dataset, key)) return node;
+      }
       node = node.parentNode;
     }
     return null;
@@ -198,6 +206,7 @@ function createHarness(options = {}) {
   const html = fs.readFileSync(path.join(root, "app", "static", "index.html"), "utf8");
   const exploreDataSource = fs.readFileSync(path.join(root, "app", "static", "data", "explore-data.js"), "utf8");
   const mapExplorerSource = fs.readFileSync(path.join(root, "app", "static", "map-explorer.js"), "utf8");
+  const footprintsSource = fs.readFileSync(path.join(root, "app", "static", "footprints.js"), "utf8");
   const source = fs.readFileSync(path.join(root, "app", "static", "app.js"), "utf8");
   const { document, elements, created } = buildDocument(html);
   const auth = options.auth || new FakeSupabaseAuth();
@@ -241,7 +250,7 @@ function createHarness(options = {}) {
   };
   const context = {
     window, document, navigator: { clipboard: { async writeText() {} } }, URL, Date, Math, JSON,
-    encodeURIComponent, decodeURIComponent, setTimeout, clearTimeout,
+    encodeURIComponent, decodeURIComponent, setTimeout, clearTimeout, AbortController,
     fetch: async (url, requestOptions = {}) => {
       const call = { url: String(url), options: requestOptions };
       fetchCalls.push(call);
@@ -250,6 +259,7 @@ function createHarness(options = {}) {
   };
   vm.runInNewContext(exploreDataSource, context, { filename: "explore-data.js" });
   vm.runInNewContext(mapExplorerSource, context, { filename: "map-explorer.js" });
+  vm.runInNewContext(footprintsSource, context, { filename: "footprints.js" });
   vm.runInNewContext(source, context, { filename: "app.js" });
   return { auth, document, elements, created, fetchCalls, historyCalls, window, settle, jsonResponse };
 }

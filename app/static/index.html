@@ -111,6 +111,7 @@
         <div id="footprints-summary" class="footprints-summary" aria-label="足迹统计">
           <span><strong id="footprint-province-count">0</strong> 个省份</span>
           <span><strong id="footprint-city-count">0</strong> 个城市</span>
+          <span>最近到访：<strong id="footprint-latest-city">尚未到访</strong></span>
         </div>
       </div>
       <div id="footprints-auth-prompt" class="empty-state" hidden>
@@ -141,6 +142,14 @@
               <h2 id="footprint-list-title">去过的地方</h2>
             </div>
           </div>
+          <form id="footprint-city-search-form" class="footprint-city-search-form">
+            <label for="footprint-city-search">搜索城市</label>
+            <div class="footprint-search-row">
+              <input id="footprint-city-search" type="search" minlength="2" maxlength="40" placeholder="输入城市名称或 adcode" required>
+              <button type="submit">搜索</button>
+            </div>
+          </form>
+          <div id="footprint-search-results" class="footprint-search-results" aria-live="polite"></div>
           <ul id="footprint-list" class="footprint-list" aria-live="polite"></ul>
           <p id="footprint-list-empty" class="empty-state footprint-list-empty">还没有添加地点。</p>
         </aside>
@@ -232,9 +241,22 @@
     </form>
   </dialog>
 
+  <dialog id="footprint-visit-dialog" aria-labelledby="footprint-visit-dialog-title">
+    <form id="footprint-visit-form" class="dialog-content">
+      <h2 id="footprint-visit-dialog-title">点亮城市</h2>
+      <label for="footprint-visit-date">到访日期</label>
+      <input id="footprint-visit-date" type="date" required>
+      <div class="button-row">
+        <button type="submit">保存足迹</button>
+        <button id="footprint-visit-cancel" type="button" class="secondary">取消</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="/runtime-config.js"></script>
   <script src="/static/data/explore-data.js" defer></script>
   <script src="/static/map-explorer.js" defer></script>
+  <script src="/static/footprints.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.8/dist/umd/supabase.min.js" defer crossorigin="anonymous"></script>
   <script src="/static/app.js" defer></script>
 </body>
