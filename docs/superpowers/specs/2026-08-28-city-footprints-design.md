@@ -123,7 +123,7 @@ RLS 策略只允许 `auth.uid() = user_id` 的账户执行 `select`、`insert`�
 
 ## API
 
-所有足迹写接口和列表接口都要求 Bearer Token，并沿用现有私有 API 的一次刷新重试规则。
+所有足迹、城市搜索和城市边界接口都要求 Bearer Token，并沿用现有私有 API 的一次刷新重试规则。城市数据虽然是公共地理信息，但本阶段只服务于私人足迹页；要求登录可以限制高德配额被匿名滥用。
 
 ### `GET /api/footprints`
 
@@ -149,6 +149,10 @@ RLS 策略只允许 `auth.uid() = user_id` 的账户执行 `select`、`insert`�
 ### `DELETE /api/footprints/{footprint_id}`
 
 删除当前账户记录。不存在或不属于当前账户的 ID 对外统一按不存在处理。
+
+### `GET /api/map/cities?q={query}`
+
+按中文城市名或六位 `adcode` 搜索城市，返回至多 10 个规范化候选项，包括城市和所属省份名称、`adcode` 与中心点。查询长度限制为 2 至 40 个字符，不接受空白查询；结果经过服务端短期缓存，不返回高德原始响应。
 
 ### `GET /api/map/districts/{city_adcode}`
 
