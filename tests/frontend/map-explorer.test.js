@@ -562,3 +562,37 @@ test("a failed city polygon falls back to that city's center marker", withBrowse
   assert.equal(polygons.length, 1);
   assert.deepEqual(markers.map((marker) => marker.options.position), [[118.1, 24.5]]);
 }));
+
+test("focus highlights the target polygon and restores the previous polygon", withBrowser(async () => {
+  const { createFootprintMap } = require("../../app/static/map-explorer.js");
+  const maps = [];
+  const polygons = [];
+  class AMapMap {
+    constructor() { this.setFitViewCalls = []; maps.push(this); }
+    setFitView(overlays) { this.setFitViewCalls.push(overlays); }
+    destroy() {}
+  }
+  class Polygon {
+    constructor(options) { this.options = { ...options }; polygons.push(this); }
+    setOptions(options) { Object.assign(this.options, options); }
+    on() {}
+    off() {}
+    setMap(map) { this.map = map; }
+  }
+  global.window.AMap = { Map: AMapMap, Polygon };
+  const root = new FakeElement("section");
+  const layers = ["350200", "350100"].map((cityAdcode, index) => ({
+    footprint: { city_adcode: cityAdcode, city_name: index ? "福州市" : "厦门市" },
+    boundary: { status: "fresh", rings: [[[118 + index, 24], [119 + index, 24]]], center: [118.1 + index, 24.5] },
+  }));
+  const view = createFootprintMap(root, { amapKey: "key", securityJsCode: "code", layers });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  view.focus("350200");
+  assert.equal(polygons[0].options.fillOpacity, 0.62);
+  view.focus("350100");
+  assert.equal(polygons[0].options.fillOpacity, 0.38);
+  assert.equal(polygons[1].options.fillOpacity, 0.62);
+  assert.equal(maps.length, 1);
+  view.destroy();
+}));

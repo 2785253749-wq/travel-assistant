@@ -309,6 +309,7 @@
     let currentLayers = Array.isArray(layers) ? layers : null;
     let currentEntries = Array.isArray(entries) ? entries : [];
     const overlays = new Map();
+    let focusedOverlay = null;
     const canvas = document.createElement("div");
     canvas.className = "amap-footprint-canvas";
     canvas.setAttribute("aria-label", "我的足迹地图");
@@ -432,6 +433,7 @@
       overlays.forEach((record, key) => {
         const layer = desired.get(key);
         if (!layer || record.signature !== layerSignature(layer)) {
+          if (focusedOverlay === record) focusedOverlay = null;
           removeOverlay(record);
           overlays.delete(key);
         }
@@ -449,6 +451,7 @@
       overlays.forEach((record, key) => {
         const entry = desired.get(key);
         if (!entry || record.signature !== layerSignature(entry)) {
+          if (focusedOverlay === record) focusedOverlay = null;
           removeOverlay(record);
           overlays.delete(key);
         }
@@ -508,6 +511,17 @@
         const record = overlays.get(cityAdcode);
         if (!record) return;
         try {
+          if (focusedOverlay && focusedOverlay !== record && focusedOverlay.kind === "polygon") {
+            if (typeof focusedOverlay.overlay.setOptions === "function") focusedOverlay.overlay.setOptions({ fillOpacity: 0.38 });
+            else if (focusedOverlay.overlay.options) focusedOverlay.overlay.options.fillOpacity = 0.38;
+          }
+          if (record.kind === "polygon") {
+            if (typeof record.overlay.setOptions === "function") record.overlay.setOptions({ fillOpacity: 0.62 });
+            else if (record.overlay.options) record.overlay.options.fillOpacity = 0.62;
+            focusedOverlay = record;
+          } else {
+            focusedOverlay = null;
+          }
           if (record.kind === "polygon" && typeof map.setFitView === "function") map.setFitView([record.overlay]);
           else if (validCenter(record.center) && typeof map.setZoomAndCenter === "function") map.setZoomAndCenter(11, record.center);
           else if (typeof map.setFitView === "function") map.setFitView([record.overlay]);
@@ -521,6 +535,7 @@
           try { map.destroy(); } catch (_) { /* best effort cleanup */ }
         }
         map = null;
+        focusedOverlay = null;
         clear(root);
         root.hidden = true;
         if (fallbackRoot) fallbackRoot.hidden = false;
