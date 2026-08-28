@@ -13,7 +13,9 @@ OWNER_SCOPED_TABLES = {
     "conversation_messages": "user_id",
     "share_links": "user_id",
     "ai_usage": "user_id",
+    "user_footprints": "user_id",
 }
+SEPARATE_OWNER_CRUD_TABLES = {"user_footprints"}
 CONTROLLED_OWNER_UPDATE_TABLES = {"travel_notes": "author_id"}
 PARENT_STATUS_GUARDED_OWNER_TABLES = {"travel_note_images": "owner_id"}
 OWNER_DELETE_ONLY_TABLES = {"community_posts": "user_id"}
@@ -499,6 +501,18 @@ def _assert_private_rls_contract(migration: str) -> None:
     for table, owner_column in OWNER_SCOPED_TABLES.items():
         table_policies = [body for policy_table, body in policies if policy_table == table]
         assert table_policies
+        if table in SEPARATE_OWNER_CRUD_TABLES:
+            allowed_patterns = (
+                rf"\bfor\s+select\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+                rf"\bfor\s+insert\b[\s\S]*\bwith\s+check\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+                rf"\bfor\s+update\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)[\s\S]*\bwith\s+check\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+                rf"\bfor\s+delete\b[\s\S]*\busing\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+            )
+            assert len(table_policies) == len(allowed_patterns)
+            for policy in table_policies:
+                assert any(re.fullmatch(pattern, policy) for pattern in allowed_patterns)
+                assert not re.search(r"\bfor\s+all\b", policy)
+            continue
         for policy in table_policies:
             assert re.search(r"\bfor\s+all\b", policy)
             assert re.search(
