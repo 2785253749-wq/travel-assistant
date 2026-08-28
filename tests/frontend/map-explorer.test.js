@@ -255,7 +255,7 @@ test("late AMap loading initializes the current Xiamen view and its place marker
   const { createMapExplorer } = require("../../app/static/map-explorer.js");
   const maps = [];
   const markers = [];
-  class Map {
+  class AMapMap {
     constructor(host, options) { this.host = host; this.options = options; maps.push(this); }
     setZoomAndCenter() {}
     destroy() {}
@@ -270,7 +270,7 @@ test("late AMap loading initializes the current Xiamen view and its place marker
 
   explorer.showProvince("fujian");
   explorer.showCity("xiamen");
-  global.window.AMap = { Map, Marker };
+  global.window.AMap = { Map: AMapMap, Marker };
   head.firstChild.onload();
   await new Promise((resolve) => setImmediate(resolve));
 
@@ -456,4 +456,109 @@ test("footprint map keeps the static panel when AMap credentials are unavailable
   assert.equal(root.hidden, true);
   assert.equal(fallback.hidden, false);
   footprintMap.destroy();
+}));
+
+test("saved city renders one boundary polygon and fits the map bounds", withBrowser(async () => {
+  const { createFootprintMap } = require("../../app/static/map-explorer.js");
+  const maps = [];
+  const polygons = [];
+  class Map {
+    constructor(host, options) { this.host = host; this.options = options; this.setFitViewCalls = []; maps.push(this); }
+    setFitView(overlays) { this.setFitViewCalls.push(overlays); }
+    destroy() {}
+  }
+  class Polygon {
+    constructor(options) { this.options = options; polygons.push(this); }
+    setMap(map) { this.map = map; }
+  }
+  global.window.AMap = { Map, Polygon };
+  const root = new FakeElement("section");
+  const layers = [{
+    footprint: { city_adcode: "350200", city_name: "厦门市" },
+    boundary: { status: "fresh", rings: [[[118, 24], [119, 24], [118, 24]]], center: [118.1, 24.5] },
+  }];
+
+  const view = createFootprintMap(root, { amapKey: "key", securityJsCode: "code", layers });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(polygons.length, 1);
+  assert.deepEqual(polygons[0].options.path, layers[0].boundary.rings);
+  assert.equal(polygons[0].options.fillColor, "#27b8aa");
+  assert.equal(polygons[0].options.fillOpacity, 0.38);
+  assert.equal(polygons[0].options.strokeColor, "#087f76");
+  assert.equal(polygons[0].options.strokeWeight, 2);
+  assert.equal(maps[0].setFitViewCalls.length, 1);
+  view.destroy();
+}));
+
+test("footprint layers downgrade unavailable boundaries and update by city adcode", withBrowser(async () => {
+  const { createFootprintMap } = require("../../app/static/map-explorer.js");
+  const maps = [];
+  const polygons = [];
+  const markers = [];
+  class AMapMap {
+    constructor() { this.setFitViewCalls = []; this.setZoomAndCenterCalls = []; maps.push(this); }
+    setFitView(overlays) { this.setFitViewCalls.push(overlays); }
+    setZoomAndCenter(...args) { this.setZoomAndCenterCalls.push(args); }
+    destroy() {}
+  }
+  class Polygon {
+    constructor(options) { this.options = options; this.events = new global.Map(); polygons.push(this); }
+    on(event, handler) { this.events.set(event, handler); }
+    off(event, handler) { assert.equal(this.events.get(event), handler); this.events.delete(event); }
+    setMap(map) { this.map = map; }
+  }
+  class Marker {
+    constructor(options) { this.options = options; markers.push(this); }
+    setMap(map) { this.map = map; }
+  }
+  global.window.AMap = { Map: AMapMap, Polygon, Marker };
+  const root = new FakeElement("section");
+  const xiamen = { footprint: { city_adcode: "350200", city_name: "厦门市" }, boundary: { status: "fresh", rings: [[[118, 24], [119, 24]]], center: [118.1, 24.5] } };
+  const fuzhou = { footprint: { city_adcode: "350100", city_name: "福州市" }, boundary: { status: "unavailable", rings: [], center: [119.3, 26.1] } };
+  const view = createFootprintMap(root, { amapKey: "key", securityJsCode: "code", layers: [xiamen, fuzhou] });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(polygons.length, 1);
+  assert.equal(markers.length, 1);
+  const originalPolygon = polygons[0];
+  view.update([xiamen]);
+  assert.equal(polygons[0], originalPolygon);
+  assert.equal(markers[0].map, null);
+  assert.equal(maps.length, 1);
+
+  view.focus("350200");
+  assert.equal(maps[0].setFitViewCalls.length, 3);
+  assert.equal(maps.length, 1);
+  view.destroy();
+  assert.equal(originalPolygon.map, null);
+  assert.equal(originalPolygon.events.size, 0);
+}));
+
+test("a failed city polygon falls back to that city's center marker", withBrowser(async () => {
+  const { createFootprintMap } = require("../../app/static/map-explorer.js");
+  const polygons = [];
+  const markers = [];
+  class Map { constructor() {} setFitView() {} destroy() {} }
+  class Polygon {
+    constructor(options) { polygons.push(options); throw new Error("polygon unavailable"); }
+  }
+  class Marker {
+    constructor(options) { this.options = options; markers.push(this); }
+    setMap(map) { this.map = map; }
+  }
+  global.window.AMap = { Map, Polygon, Marker };
+  const root = new FakeElement("section");
+  createFootprintMap(root, {
+    amapKey: "key",
+    securityJsCode: "code",
+    layers: [{
+      footprint: { city_adcode: "350200", city_name: "厦门市" },
+      boundary: { status: "fresh", rings: [[[118, 24], [119, 24]]], center: [118.1, 24.5] },
+    }],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(polygons.length, 1);
+  assert.deepEqual(markers.map((marker) => marker.options.position), [[118.1, 24.5]]);
 }));

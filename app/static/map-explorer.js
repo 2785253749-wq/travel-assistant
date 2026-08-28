@@ -300,24 +300,38 @@
     securityJsCode = null,
     fallbackRoot = null,
     entries = [],
+    layers = null,
   } = {}) {
     if (!root) throw new Error("footprint map root is required");
     let destroyed = false;
     let amap = null;
     let map = null;
-    let markers = [];
+    let currentLayers = Array.isArray(layers) ? layers : null;
     let currentEntries = Array.isArray(entries) ? entries : [];
+    const overlays = new Map();
     const canvas = document.createElement("div");
     canvas.className = "amap-footprint-canvas";
     canvas.setAttribute("aria-label", "我的足迹地图");
     root.append(canvas);
 
-    function clearMarkers() {
-      const currentMarkers = markers;
-      markers = [];
-      currentMarkers.forEach((marker) => {
+    function removeOverlay(record) {
+      if (!record) return;
+      if (record.overlay && typeof record.overlay.off === "function") {
+        record.handlers.forEach(({ event, handler }) => {
+          try { record.overlay.off(event, handler); } catch (_) { /* best effort cleanup */ }
+        });
+      }
+      try {
+        if (record.overlay && typeof record.overlay.setMap === "function") record.overlay.setMap(null);
+      } catch (_) { /* best effort cleanup */ }
+    }
+
+    function clearOverlays() {
+      const currentOverlays = Array.from(overlays.values());
+      overlays.clear();
+      currentOverlays.forEach((record) => {
         try {
-          if (typeof marker.setMap === "function") marker.setMap(null);
+          removeOverlay(record);
         } catch (_) { /* best effort cleanup */ }
       });
     }
@@ -334,18 +348,126 @@
       if (fallbackRoot) fallbackRoot.hidden = true;
     }
 
-    function renderMarkers() {
-      clearMarkers();
-      currentEntries.filter((entry) => Array.isArray(entry.coordinates)
-        && entry.coordinates.length === 2 && entry.coordinates.every(Number.isFinite)).forEach((entry) => {
-        const marker = new amap.Marker({ position: entry.coordinates, title: entry.name || "旅行足迹" });
-        markers.push(marker);
-        marker.setMap(map);
+    function validCenter(center) {
+      return Array.isArray(center) && center.length === 2 && center.every(Number.isFinite);
+    }
+
+    function validRings(rings) {
+      return Array.isArray(rings) && rings.length > 0 && rings.every((ring) => Array.isArray(ring) && ring.length > 0);
+    }
+
+    function layerKey(layer) {
+      return layer && layer.footprint && layer.footprint.city_adcode;
+    }
+
+    function layerSignature(layer) {
+      return JSON.stringify(layer);
+    }
+
+    function bindOverlayEvents(record) {
+      const overlay = record.overlay;
+      if (!overlay || typeof overlay.on !== "function") return;
+      if (record.kind !== "polygon") return;
+      const enter = () => {
+        if (typeof overlay.setOptions === "function") overlay.setOptions({ fillOpacity: 0.62 });
+        else if (overlay.options) overlay.options.fillOpacity = 0.62;
+      };
+      const leave = () => {
+        if (typeof overlay.setOptions === "function") overlay.setOptions({ fillOpacity: 0.38 });
+        else if (overlay.options) overlay.options.fillOpacity = 0.38;
+      };
+      overlay.on("mouseover", enter);
+      overlay.on("mouseout", leave);
+      record.handlers.push({ event: "mouseover", handler: enter }, { event: "mouseout", handler: leave });
+    }
+
+    function createLayerOverlay(layer) {
+      const footprint = layer && layer.footprint ? layer.footprint : {};
+      const boundary = layer && layer.boundary ? layer.boundary : {};
+      const key = layerKey(layer);
+      if (!key || !amap) return null;
+      const usePolygon = boundary.status !== "unavailable" && validRings(boundary.rings) && typeof amap.Polygon === "function";
+      let overlay;
+      let kind = "marker";
+      if (usePolygon) {
+        try {
+          overlay = new amap.Polygon({
+            path: boundary.rings,
+            fillColor: "#27b8aa",
+            fillOpacity: 0.38,
+            strokeColor: "#087f76",
+            strokeWeight: 2,
+          });
+          kind = "polygon";
+        } catch (_) {
+          overlay = null;
+        }
+      }
+      if (!overlay && validCenter(boundary.center) && typeof amap.Marker === "function") {
+        overlay = new amap.Marker({ position: boundary.center, title: footprint.city_name || "旅行足迹" });
+      }
+      if (!overlay) return null;
+      let record = { key, kind, overlay, center: boundary.center, handlers: [], signature: layerSignature(layer) };
+      try {
+        overlay.setMap(map);
+      } catch (error) {
+        if (kind !== "polygon" || !validCenter(boundary.center) || typeof amap.Marker !== "function") throw error;
+        overlay = new amap.Marker({ position: boundary.center, title: footprint.city_name || "旅行足迹" });
+        record = { key, kind: "marker", overlay, center: boundary.center, handlers: [], signature: layerSignature(layer) };
+        overlay.setMap(map);
+      }
+      bindOverlayEvents(record);
+      return record;
+    }
+
+    function createLegacyOverlay(entry) {
+      if (!entry || !validCenter(entry.coordinates) || typeof amap.Marker !== "function") return null;
+      const overlay = new amap.Marker({ position: entry.coordinates, title: entry.name || "旅行足迹" });
+      overlay.setMap(map);
+      return { key: entry.id || JSON.stringify(entry.coordinates), kind: "marker", overlay, center: entry.coordinates, handlers: [], signature: layerSignature(entry) };
+    }
+
+    function renderLayers({ fit = false } = {}) {
+      const desired = new Map((currentLayers || []).filter((layer) => layerKey(layer)).map((layer) => [layerKey(layer), layer]));
+      overlays.forEach((record, key) => {
+        const layer = desired.get(key);
+        if (!layer || record.signature !== layerSignature(layer)) {
+          removeOverlay(record);
+          overlays.delete(key);
+        }
       });
+      desired.forEach((layer, key) => {
+        if (overlays.has(key)) return;
+        const record = createLayerOverlay(layer);
+        if (record) overlays.set(key, record);
+      });
+      if (fit && map && typeof map.setFitView === "function" && overlays.size) map.setFitView(Array.from(overlays.values()).map((record) => record.overlay));
+    }
+
+    function renderEntries({ fit = false } = {}) {
+      const desired = new Map(currentEntries.map((entry) => [entry.id || JSON.stringify(entry.coordinates), entry]));
+      overlays.forEach((record, key) => {
+        const entry = desired.get(key);
+        if (!entry || record.signature !== layerSignature(entry)) {
+          removeOverlay(record);
+          overlays.delete(key);
+        }
+      });
+      desired.forEach((entry, key) => {
+        if (overlays.has(key)) return;
+        const record = createLegacyOverlay(entry);
+        if (record) overlays.set(key, record);
+      });
+      if (fit && map && typeof map.setFitView === "function" && overlays.size) map.setFitView(Array.from(overlays.values()).map((record) => record.overlay));
+    }
+
+    function renderCurrent({ fit = false } = {}) {
+      if (currentLayers) renderLayers({ fit });
+      else renderEntries({ fit });
     }
 
     function fallbackOnlineMap() {
-      clearMarkers();
+      clearOverlays();
       if (map && typeof map.destroy === "function") {
         try { map.destroy(); } catch (_) { /* best effort cleanup */ }
       }
@@ -360,7 +482,7 @@
       try {
         showOnline();
         map = new amap.Map(canvas, { zoom: 4, center: [104.2, 35.9], viewMode: "2D" });
-        renderMarkers();
+        renderCurrent({ fit: true });
       } catch (_) {
         fallbackOnlineMap();
       }
@@ -372,14 +494,29 @@
 
     return {
       update(nextEntries) {
-        currentEntries = Array.isArray(nextEntries) ? nextEntries : [];
+        if (Array.isArray(nextEntries) && (nextEntries.length === 0 || nextEntries[0].footprint)) {
+          currentLayers = nextEntries;
+        } else {
+          currentLayers = null;
+          currentEntries = Array.isArray(nextEntries) ? nextEntries : [];
+        }
         if (!map || !amap || destroyed) return;
-        try { renderMarkers(); } catch (_) { fallbackOnlineMap(); }
+        try { renderCurrent({ fit: true }); } catch (_) { fallbackOnlineMap(); }
+      },
+      focus(cityAdcode) {
+        if (!map || destroyed) return;
+        const record = overlays.get(cityAdcode);
+        if (!record) return;
+        try {
+          if (record.kind === "polygon" && typeof map.setFitView === "function") map.setFitView([record.overlay]);
+          else if (validCenter(record.center) && typeof map.setZoomAndCenter === "function") map.setZoomAndCenter(11, record.center);
+          else if (typeof map.setFitView === "function") map.setFitView([record.overlay]);
+        } catch (_) { /* best effort focus */ }
       },
       destroy() {
         destroyed = true;
         amapLoading.cancel();
-        clearMarkers();
+        clearOverlays();
         if (map && typeof map.destroy === "function") {
           try { map.destroy(); } catch (_) { /* best effort cleanup */ }
         }
