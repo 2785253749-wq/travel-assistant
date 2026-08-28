@@ -81,6 +81,7 @@ def test_production_module_binds_the_verified_bearer_token_to_footprint_reposito
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-test-key")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "service-role-test-key")
     monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", secrets.token_urlsafe(32))
     get_settings.cache_clear()
     from app import composition as composition_module
@@ -111,6 +112,7 @@ def test_production_module_rejects_authenticated_users_without_a_verified_token(
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-test-key")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "service-role-test-key")
     monkeypatch.setenv("ANON_SESSION_SIGNING_SECRET", secrets.token_urlsafe(32))
     get_settings.cache_clear()
     from app import composition as composition_module
