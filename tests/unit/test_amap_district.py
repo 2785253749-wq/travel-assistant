@@ -156,6 +156,14 @@ def test_search_upstream_failures_return_an_empty_safe_catalog(
     assert provider.search("厦门") == []
 
 
+def test_search_redirect_response_with_valid_looking_payload_returns_an_empty_catalog() -> None:
+    provider, _ = provider_for(
+        [json_response(success_payload(city_district()), status_code=302)]
+    )
+
+    assert provider.search("厦门") == []
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -176,9 +184,10 @@ def test_malformed_district_payload_is_an_unavailable_boundary(payload: dict[str
 
 
 def test_boundary_rejects_more_than_the_configured_point_limit() -> None:
-    polyline = ";".join("118.0,24.0" for _ in range(50_001))
+    polyline = "118.0,24.0;119.0,24.0;119.0,25.0;118.0,25.0"
     provider, _ = provider_for(
-        [json_response(success_payload(city_district(polyline=polyline)))]
+        [json_response(success_payload(city_district(polyline=polyline)))],
+        district_max_points=4,
     )
 
     result = provider.boundary("350200")
@@ -186,6 +195,18 @@ def test_boundary_rejects_more_than_the_configured_point_limit() -> None:
     assert result.data is None
     assert result.degraded is True
     assert result.error_code == "DISTRICT_INVALID_RESPONSE"
+
+
+def test_boundary_redirect_response_with_valid_looking_payload_is_unavailable() -> None:
+    provider, _ = provider_for(
+        [json_response(success_payload(city_district()), status_code=302)]
+    )
+
+    result = provider.boundary("350200")
+
+    assert result.data is None
+    assert result.degraded is True
+    assert result.error_code == "DISTRICT_HTTP_ERROR"
 
 
 def test_http_error_is_unavailable_without_exposing_upstream_text_or_server_key() -> None:

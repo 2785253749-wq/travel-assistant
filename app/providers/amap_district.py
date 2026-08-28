@@ -100,7 +100,7 @@ class AmapDistrictProvider:
             headers={"Accept": "application/json"},
             timeout=self._timeout_seconds,
         )
-        if response.status_code >= 400:
+        if not response.is_success:
             raise _DistrictHttpError
         payload = response.json()
         if not isinstance(payload, dict):
