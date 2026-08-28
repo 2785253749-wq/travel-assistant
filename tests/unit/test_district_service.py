@@ -77,6 +77,11 @@ class FakeDistrictProvider:
         )
 
 
+class RaisingStaticDirectory:
+    def resolve(self, _city_adcode: str) -> CityRecord | None:
+        raise RuntimeError("private directory detail")
+
+
 @pytest.fixture
 def clock() -> Clock:
     return Clock()
@@ -136,6 +141,49 @@ def test_failure_cache_suppresses_retries_for_300_seconds(service, provider, clo
     service.get_boundary("350200")
 
     assert provider.calls == ["350200", "350200"]
+
+
+def test_negative_failure_cache_suppresses_retries_without_a_boundary_or_city(
+    service, provider, clock
+):
+    provider.fail = True
+
+    assert service.get_boundary("999999") is None
+    assert service.get_boundary("999999") is None
+    clock.advance(301)
+    assert service.get_boundary("999999") is None
+
+    assert provider.calls == ["999999", "999999"]
+
+
+def test_concurrent_negative_cache_miss_is_single_flight_without_a_city(
+    service, provider
+):
+    provider.fail = True
+    provider.block = True
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(service.get_boundary, "999999") for _ in range(4)]
+        assert provider.started.wait(timeout=1)
+        provider.release.set()
+        assert [future.result(timeout=1) for future in futures] == [None] * 4
+
+    assert provider.calls == ["999999"]
+
+
+def test_directory_failure_is_published_as_a_safe_negative_cache(provider, clock):
+    from app.footprints.districts import DistrictBoundaryService
+
+    provider.fail = True
+    service = DistrictBoundaryService(
+        provider,
+        static_directory=RaisingStaticDirectory(),
+        clock=clock,
+    )
+
+    assert service.get_boundary("999999") is None
+    assert service.get_boundary("999999") is None
+
+    assert provider.calls == ["999999"]
 
 
 def test_static_trial_cities_are_resolved_and_searched_without_provider(service, provider):

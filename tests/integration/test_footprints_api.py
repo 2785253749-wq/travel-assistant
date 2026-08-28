@@ -85,6 +85,7 @@ def test_city_search_requires_auth_and_valid_query(client):
     assert client.get("/api/map/cities?q=厦门").status_code == 401
     assert client.get("/api/map/cities?q=x", headers=_headers()).status_code == 422
     assert client.get("/api/map/cities?q=%20%20", headers=_headers()).status_code == 422
+    assert client.get("/api/map/cities?q=%20x%20", headers=_headers()).status_code == 422
 
 
 def test_city_search_returns_normalized_trial_candidates(client):
@@ -129,6 +130,7 @@ def test_boundary_unavailable_never_leaks_server_secret(client):
 def test_boundary_requires_auth_and_a_six_digit_adcode(client):
     assert client.get("/api/map/districts/350200").status_code == 401
     assert client.get("/api/map/districts/not-an-adcode", headers=_headers()).status_code == 422
+    assert client.get("/api/map/districts/１２３４５６", headers=_headers()).status_code == 422
 
 
 def test_crud_uses_verified_owner_and_omits_account_identity(client):

@@ -29,6 +29,12 @@ class _CacheEntry:
     failure_until: float
 
 
+@dataclass(frozen=True, slots=True)
+class _CacheLookup:
+    hit: bool
+    boundary: DistrictBoundaryView | None
+
+
 class DistrictBoundaryService:
     """Canonical city lookup with bounded boundary caching and safe degradation."""
 
@@ -62,7 +68,10 @@ class DistrictBoundaryService:
         return _unique_cities(candidates)[:10]
 
     def resolve(self, city_adcode: str) -> CityRecord | None:
-        static_city = self._static_directory.resolve(city_adcode)
+        try:
+            static_city = self._static_directory.resolve(city_adcode)
+        except Exception:
+            return None
         if static_city is not None:
             return static_city
         try:
@@ -75,14 +84,14 @@ class DistrictBoundaryService:
 
     def get_boundary(self, city_adcode: str) -> DistrictBoundaryView | None:
         while True:
-            now = self._clock()
+            now = self._now()
             with self._lock:
                 entry = self._cache.get(city_adcode)
                 if entry is not None:
                     self._cache.move_to_end(city_adcode)
                     cached = self._cached_view(entry, now)
-                    if cached is not None:
-                        return cached
+                    if cached.hit:
+                        return cached.boundary
                 event = self._inflight.get(city_adcode)
                 if event is None:
                     event = Event()
@@ -90,31 +99,40 @@ class DistrictBoundaryService:
                     break
             event.wait()
 
-        entry = self._fetch_entry(city_adcode, previous=entry)
-        with self._lock:
-            self._cache[city_adcode] = entry
-            self._cache.move_to_end(city_adcode)
-            while len(self._cache) > _MAX_CACHE_ENTRIES:
-                self._cache.popitem(last=False)
-            self._inflight.pop(city_adcode).set()
-            return self._cached_view(entry, self._clock())
+        fetched = self._failure_entry(city_adcode, previous=entry)
+        try:
+            fetched = self._fetch_entry(city_adcode, previous=entry)
+        except Exception:
+            pass
+        finally:
+            try:
+                with self._lock:
+                    self._cache[city_adcode] = fetched
+                    self._cache.move_to_end(city_adcode)
+                    while len(self._cache) > _MAX_CACHE_ENTRIES:
+                        self._cache.popitem(last=False)
+            finally:
+                with self._lock:
+                    event = self._inflight.pop(city_adcode, None)
+                    if event is not None:
+                        event.set()
+        return self._cached_view(fetched, self._now()).boundary
 
     def _fetch_entry(
         self, city_adcode: str, *, previous: _CacheEntry | None
     ) -> _CacheEntry:
-        now = self._clock()
+        now = self._now()
         try:
             result = self._provider.boundary(city_adcode)
+            boundary = (
+                result.data
+                if result.data is not None
+                and not result.degraded
+                and result.data.city.city_adcode == city_adcode
+                else None
+            )
         except Exception:
-            result = None
-        boundary = (
-            result.data
-            if result is not None
-            and result.data is not None
-            and not result.degraded
-            and result.data.city.city_adcode == city_adcode
-            else None
-        )
+            boundary = None
         if boundary is not None:
             return _CacheEntry(
                 boundary=boundary,
@@ -122,32 +140,59 @@ class DistrictBoundaryService:
                 fresh_until=now + self._cache_ttl_seconds,
                 failure_until=0,
             )
+        return self._failure_entry(city_adcode, previous=previous, now=now)
+
+    def _failure_entry(
+        self,
+        city_adcode: str,
+        *,
+        previous: _CacheEntry | None,
+        now: float | None = None,
+    ) -> _CacheEntry:
+        cached_at = self._now() if now is None else now
         return _CacheEntry(
             boundary=previous.boundary if previous is not None else None,
             fallback_city=(
                 previous.fallback_city
                 if previous is not None and previous.fallback_city is not None
-                else self.resolve(city_adcode)
+                else self._safe_resolve(city_adcode)
             ),
             fresh_until=previous.fresh_until if previous is not None else 0,
-            failure_until=now + self._failure_cache_seconds,
+            failure_until=cached_at + self._failure_cache_seconds,
         )
 
     def _cached_view(
         self, entry: _CacheEntry, now: float
-    ) -> DistrictBoundaryView | None:
+    ) -> _CacheLookup:
         if entry.boundary is not None:
             if now < entry.fresh_until:
-                return _to_view(entry.boundary, "fresh")
+                return _CacheLookup(True, _to_view(entry.boundary, "fresh"))
             if now < entry.failure_until:
-                return _to_view(entry.boundary, "stale")
-        if now < entry.failure_until and entry.fallback_city is not None:
-            return DistrictBoundaryView(
-                city=entry.fallback_city,
-                rings=[],
-                status="unavailable",
+                return _CacheLookup(True, _to_view(entry.boundary, "stale"))
+        if now < entry.failure_until:
+            return _CacheLookup(
+                True,
+                DistrictBoundaryView(
+                    city=entry.fallback_city,
+                    rings=[],
+                    status="unavailable",
+                )
+                if entry.fallback_city is not None
+                else None,
             )
-        return None
+        return _CacheLookup(False, None)
+
+    def _safe_resolve(self, city_adcode: str) -> CityRecord | None:
+        try:
+            return self.resolve(city_adcode)
+        except Exception:
+            return None
+
+    def _now(self) -> float:
+        try:
+            return self._clock()
+        except Exception:
+            return monotonic()
 
     def _static_matches(self, query: str) -> list[CityRecord]:
         return [

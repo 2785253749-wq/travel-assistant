@@ -109,17 +109,23 @@ def remove_footprint(
 
 @router.get("/api/map/cities", response_model=list[CityRecord])
 def search_cities(
-    q: Annotated[str, Query(min_length=2, max_length=40, pattern=r".*\S.*")],
+    q: Annotated[str, Query()],
     user: CurrentUser,
     service: DistrictService = Depends(get_district_boundary_service),
 ) -> list[CityRecord]:
     del user
-    return service.search(q)
+    normalized_query = q.strip()
+    if not 2 <= len(normalized_query) <= 40:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "REQUEST_INVALID", "message": "Request validation failed"},
+        )
+    return service.search(normalized_query)
 
 
 @router.get("/api/map/districts/{city_adcode}", response_model=DistrictBoundaryView)
 def get_district_boundary(
-    city_adcode: Annotated[str, Path(pattern=r"^\d{6}$")],
+    city_adcode: Annotated[str, Path(pattern=r"^[0-9]{6}$")],
     user: CurrentUser,
     service: DistrictService = Depends(get_district_boundary_service),
 ) -> DistrictBoundaryView:
