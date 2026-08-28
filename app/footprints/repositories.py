@@ -78,7 +78,7 @@ class SupabaseFootprintRepository:
             )
             return [self._stored_from_row(row) for row in _rows(response.data)]
         except Exception as exc:  # pragma: no cover - exercised through fakes
-            raise _unavailable(exc) from exc
+            raise _unavailable() from exc
 
     def upsert_owned(
         self, user_id: UUID, city: CityRecord, visited_at: date
@@ -97,6 +97,7 @@ class SupabaseFootprintRepository:
             response = (
                 self._client.table("user_footprints")
                 .upsert(payload, on_conflict="user_id,city_adcode")
+                .eq("user_id", str(user_id))
                 .execute()
             )
             rows = _rows(response.data)
@@ -104,7 +105,7 @@ class SupabaseFootprintRepository:
                 raise RuntimeError("footprint upsert returned no row")
             return self._stored_from_row(rows[0])
         except Exception as exc:  # pragma: no cover - exercised through fakes
-            raise _unavailable(exc) from exc
+            raise _unavailable() from exc
 
     def update_visited_at(
         self, user_id: UUID, footprint_id: UUID, visited_at: date
@@ -120,7 +121,7 @@ class SupabaseFootprintRepository:
             rows = _rows(response.data)
             return self._stored_from_row(rows[0]) if rows else None
         except Exception as exc:  # pragma: no cover - exercised through fakes
-            raise _unavailable(exc) from exc
+            raise _unavailable() from exc
 
     def delete_owned(self, user_id: UUID, footprint_id: UUID) -> bool:
         try:
@@ -133,7 +134,7 @@ class SupabaseFootprintRepository:
             )
             return bool(_rows(response.data))
         except Exception as exc:  # pragma: no cover - exercised through fakes
-            raise _unavailable(exc) from exc
+            raise _unavailable() from exc
 
     @staticmethod
     def _stored_from_row(row: object) -> StoredFootprint:
@@ -185,7 +186,7 @@ def _parse_datetime(value: object) -> datetime:
     raise RuntimeError("footprint timestamp is invalid")
 
 
-def _unavailable(error: Exception) -> AppError:
+def _unavailable() -> AppError:
     return AppError("FOOTPRINT_UNAVAILABLE", "FOOTPRINT_UNAVAILABLE")
 
 

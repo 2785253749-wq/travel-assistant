@@ -174,6 +174,7 @@ def test_upsert_uses_verified_owner_and_composite_conflict(repository, client):
         "visited_at": "2026-08-28",
     }
     assert client.query.on_conflict == "user_id,city_adcode"
+    assert client.query.filters == [("user_id", str(USER_A))]
 
 
 def test_update_filters_id_and_owner(repository, client):
