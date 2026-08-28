@@ -18,6 +18,10 @@ RAG_WEATHER_ENVIRONMENT_VARIABLES = (
     "WEATHER_DAILY_LIMIT",
     "WEATHER_CACHE_SECONDS",
     "WEATHER_TIMEOUT_SECONDS",
+    "DISTRICT_CACHE_SECONDS",
+    "DISTRICT_FAILURE_CACHE_SECONDS",
+    "DISTRICT_TIMEOUT_SECONDS",
+    "DISTRICT_MAX_POINTS",
 )
 
 
@@ -164,6 +168,54 @@ def test_rag_and_weather_operational_limits_must_be_positive(
     _clear_rag_weather_environment(monkeypatch)
     with pytest.raises(ValueError):
         Settings(_env_file=None, **{field_name: invalid_value})
+
+
+@pytest.mark.parametrize(
+    "field_name, invalid_value",
+    [
+        ("district_cache_seconds", 0),
+        ("district_failure_cache_seconds", 0),
+        ("district_timeout_seconds", 0.0),
+        ("district_max_points", 0),
+    ],
+)
+def test_district_operational_limits_must_be_positive(
+    monkeypatch, field_name, invalid_value
+):
+    """Guards disabled district caching, timeouts, or geometry limits."""
+    from app.core.config import Settings
+
+    _clear_rag_weather_environment(monkeypatch)
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, **{field_name: invalid_value})
+
+
+def test_district_settings_expose_the_exact_operational_contract(monkeypatch):
+    """Guards the bounded cache and geometry budgets used by the provider."""
+    from app.core.config import Settings
+
+    _clear_rag_weather_environment(monkeypatch)
+    settings = Settings(_env_file=None)
+
+    annotations = get_type_hints(Settings)
+    assert {
+        field_name: annotations[field_name]
+        for field_name in (
+            "district_cache_seconds",
+            "district_failure_cache_seconds",
+            "district_timeout_seconds",
+            "district_max_points",
+        )
+    } == {
+        "district_cache_seconds": int,
+        "district_failure_cache_seconds": int,
+        "district_timeout_seconds": float,
+        "district_max_points": int,
+    }
+    assert settings.district_cache_seconds == 2_592_000
+    assert settings.district_failure_cache_seconds == 300
+    assert settings.district_timeout_seconds == 5.0
+    assert settings.district_max_points == 50_000
 
 
 def test_rag_and_weather_settings_expose_the_exact_operational_contract(monkeypatch):

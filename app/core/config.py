@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     weather_daily_limit: int = Field(default=100, gt=0)
     weather_cache_seconds: int = Field(default=1800, gt=0)
     weather_timeout_seconds: float = Field(default=10.0, gt=0.0)
+    district_cache_seconds: int = Field(default=2_592_000, gt=0)
+    district_failure_cache_seconds: int = Field(default=300, gt=0)
+    district_timeout_seconds: float = Field(default=5.0, gt=0.0)
+    district_max_points: int = Field(default=50_000, gt=0)
     supabase_url: AnyHttpUrl | None = None
     supabase_anon_key: SecretStr | None = None
     supabase_service_key: SecretStr | None = None
