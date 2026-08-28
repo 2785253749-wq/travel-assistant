@@ -1,6 +1,8 @@
 from pathlib import Path
 import re
 
+import pytest
+
 
 MIGRATION = (
     Path(__file__).parents[2]
@@ -47,21 +49,52 @@ def test_footprint_table_enforces_owner_city_and_visit_data_constraints():
     assert "visited_at date not null check (visited_at <= current_date)" in sql
 
 
-def test_footprint_grants_exclude_anon_and_authenticated_privilege_escalation():
-    sql = MIGRATION.read_text(encoding="utf-8").lower()
-    grants = re.findall(
-        r"grant\s+(.+?)\s+on\s+table\s+public\.user_footprints\s+to\s+(.+?);",
-        sql,
-    )
+def _assert_footprint_grant_contract(sql: str) -> None:
+    grants = []
+    for statement in sql.split(";"):
+        grant = re.fullmatch(
+            r"\s*grant\s+(.+?)\s+on\s+table\s+public\.user_footprints\s+to\s+(.+?)\s*",
+            statement,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if grant:
+            grants.append(grant.groups())
     allowed_authenticated_privileges = {"select", "insert", "update", "delete"}
 
     assert grants
     for raw_privileges, raw_roles in grants:
-        roles = {role.strip() for role in raw_roles.split(",")}
-        privileges = {privilege.strip() for privilege in raw_privileges.split(",")}
-        assert "anon" not in roles
-        if "authenticated" in roles:
-            assert privileges <= allowed_authenticated_privileges
+        roles = {role.strip().lower() for role in raw_roles.split(",")}
+        privileges = {privilege.strip().lower() for privilege in raw_privileges.split(",")}
+        assert roles == {"authenticated"}
+        assert privileges <= allowed_authenticated_privileges
+
+
+def test_footprint_grants_exclude_anon_and_authenticated_privilege_escalation():
+    _assert_footprint_grant_contract(MIGRATION.read_text(encoding="utf-8").lower())
+
+
+@pytest.mark.parametrize(
+    "grant",
+    [
+        "GRANT SELECT ON TABLE public.user_footprints TO PUBLIC;",
+        "GRANT SELECT ON TABLE public.user_footprints TO reporting_role;",
+        "GRANT SELECT, REFERENCES ON TABLE public.user_footprints TO authenticated;",
+    ],
+)
+def test_footprint_grant_contract_rejects_unintended_roles_and_privileges(grant):
+    sql = MIGRATION.read_text(encoding="utf-8").lower() + "\n" + grant
+
+    with pytest.raises(AssertionError):
+        _assert_footprint_grant_contract(sql)
+
+
+def test_footprint_grant_contract_does_not_treat_revoke_as_a_grant():
+    sql = (
+        MIGRATION.read_text(encoding="utf-8").lower()
+        + "\nREVOKE SELECT ON TABLE public.user_footprints FROM PUBLIC;"
+    )
+
+    _assert_footprint_grant_contract(sql)
 
 
 def test_owner_sort_index_and_updated_timestamp_trigger_are_present():
