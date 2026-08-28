@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { FakeElement, descendants, findByText } = require("./dom-harness");
+const { EXPLORE_TRIAL } = require("../../app/static/data/explore-data.js");
 
 const XIAMEN = {
   id: "footprint-xiamen",
@@ -67,6 +68,15 @@ function controllerFixture({ request, createMap: createMapOption = () => createM
   return {
     controller, elements, map, requests,
     restore() { global.document = originalDocument; },
+  };
+}
+
+function createStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, String(value)); },
+    removeItem(key) { values.delete(key); },
   };
 }
 
@@ -246,6 +256,111 @@ test("editing sorts by visit date, focusing delegates to map, and delete failure
     assert.equal(deleteAttempted, true);
     assert.match(fixture.elements.list.textContent, /厦门市/);
     assert.ok(fixture.map.updates.at(-1).some((layer) => layer.footprint.city_adcode === "350200"));
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("every trial city and place carries the canonical city adcode", () => {
+  const expected = new Map([
+    ["xiamen", "350200"],
+    ["fuzhou", "350100"],
+    ["dali", "532900"],
+    ["lijiang", "530700"],
+  ]);
+  for (const city of EXPLORE_TRIAL.cities) {
+    assert.equal(city.adcode, expected.get(city.id));
+    assert.match(city.adcode, /^\d{6}$/);
+    for (const place of city.places) assert.equal(place.cityAdcode, city.adcode);
+  }
+  assert.deepEqual(EXPLORE_TRIAL.provinces.map((province) => province.adcode), ["350000", "530000"]);
+});
+
+test("adding two places in one city creates one cloud footprint", async () => {
+  let postCount = 0;
+  const fixture = controllerFixture({ request: async (path, options) => {
+    if (path === "/api/footprints" && !options.method) return postCount ? [{ ...XIAMEN }] : [];
+    if (path === "/api/footprints" && options.method === "POST") {
+      postCount += 1;
+      return XIAMEN;
+    }
+    return { status: "unavailable", rings: [], center: XIAMEN.center };
+  } });
+  try {
+    fixture.controller.setIdentity("user-a");
+    await fixture.controller.mount();
+    await fixture.controller.addCity({ cityAdcode: "350200", suggestedVisitedAt: "2026-08-20" });
+    await fixture.controller.addCity({ cityAdcode: "350200", suggestedVisitedAt: "2026-08-21" });
+    assert.equal(postCount, 1);
+    assert.equal(fixture.elements.cityCount.textContent, "1");
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("legacy places migrate once after the first successful cloud load", async () => {
+  const storage = createStorage({
+    "voyage:footprints:user-a": JSON.stringify([
+      { id: "gulangyu", visitedAt: "2026-08-20T10:00:00Z" },
+      { id: "nanputuo", visitedAt: "2026-08-21T10:00:00Z" },
+      { id: "unknown-place", visitedAt: "2026-08-22T10:00:00Z" },
+    ]),
+  });
+  const fixture = controllerFixture({ request: async (path, options) => {
+    if (path === "/api/footprints" && !options.method) return [];
+    if (path === "/api/footprints" && options.method === "POST") return XIAMEN;
+    return { status: "unavailable", rings: [], center: XIAMEN.center };
+  } });
+  const controller = require("../../app/static/footprints.js").createController({
+    elements: fixture.elements,
+    request: async (path, options = {}) => {
+      fixture.requests.push({ path, options });
+      return path === "/api/footprints" && !options.method ? [] : path === "/api/footprints" ? XIAMEN : { status: "unavailable", rings: [], center: XIAMEN.center };
+    },
+    createMap: () => fixture.map,
+    localStorage: storage,
+    today: () => "2026-08-28",
+  });
+  try {
+    controller.setIdentity("user-a");
+    await controller.mount();
+    const posts = fixture.requests.filter((item) => item.path === "/api/footprints" && item.options.method === "POST");
+    assert.equal(posts.length, 1);
+    assert.deepEqual(posts[0].options.body, { city_adcode: "350200", visited_at: "2026-08-21" });
+    assert.equal(storage.getItem("voyage:footprints-cloud-migration:v1:user-a"), "complete");
+    await controller.mount();
+    assert.equal(fixture.requests.filter((item) => item.path === "/api/footprints" && item.options.method === "POST").length, 1);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("failed legacy migration does not write a marker and retries later", async () => {
+  const storage = createStorage({ "voyage:footprints:user-a": JSON.stringify([{ id: "gulangyu", visitedAt: "2026-08-20" }]) });
+  let shouldFail = true;
+  const fixture = controllerFixture({ request: async (path, options) => {
+    if (path === "/api/footprints" && !options.method) return [];
+    if (path === "/api/footprints" && options.method === "POST" && shouldFail) throw new Error("offline");
+    if (path === "/api/footprints" && options.method === "POST") return XIAMEN;
+    return { status: "unavailable", rings: [], center: XIAMEN.center };
+  } });
+  const controller = require("../../app/static/footprints.js").createController({
+    elements: fixture.elements, request: fixture.requests.length ? undefined : async (path, options = {}) => {
+      fixture.requests.push({ path, options });
+      if (path === "/api/footprints" && !options.method) return [];
+      if (path === "/api/footprints" && options.method === "POST" && shouldFail) throw new Error("offline");
+      if (path === "/api/footprints" && options.method === "POST") return XIAMEN;
+      return { status: "unavailable", rings: [], center: XIAMEN.center };
+    }, createMap: () => fixture.map, localStorage: storage, today: () => "2026-08-28",
+  });
+  try {
+    controller.setIdentity("user-a");
+    await controller.mount();
+    assert.equal(storage.getItem("voyage:footprints-cloud-migration:v1:user-a"), null);
+    shouldFail = false;
+    controller.unmount();
+    await controller.mount();
+    assert.equal(storage.getItem("voyage:footprints-cloud-migration:v1:user-a"), "complete");
   } finally {
     fixture.restore();
   }

@@ -290,7 +290,11 @@
     const footprintButton = document.createElement("button");
     footprintButton.type = "button";
     footprintButton.className = "secondary footprint-action";
-    footprintButton.textContent = "加入我的足迹";
+    const placeCity = exploreCityForPlace(item.id);
+    const footprintController = ensureFootprintsController();
+    const alreadySaved = placeCity && footprintController.isSaved(placeCity.adcode);
+    footprintButton.textContent = alreadySaved ? "已在我的足迹" : "加入我的足迹";
+    footprintButton.disabled = Boolean(alreadySaved);
     footprintButton.addEventListener("click", async () => {
       if (!state.session) {
         navigateToAuth("signin");
@@ -300,7 +304,7 @@
       if (!city) return;
       try {
         const saved = await ensureFootprintsController().addCity({
-          cityName: city.name,
+          cityAdcode: city.adcode,
           suggestedVisitedAt: new Date().toISOString().slice(0, 10),
         });
         if (saved) {
@@ -579,6 +583,7 @@
         securityJsCode: window.TRAVEL_ASSISTANT_CONFIG?.amapSecurityJsCode || null,
       }),
       today: () => new Date().toISOString().slice(0, 10),
+      localStorage: window.localStorage,
       onAuthRequired: () => navigateToAuth("signin"),
       onStatus: setStatus,
     });

@@ -20,10 +20,35 @@
     return [...footprints].sort((left, right) => String(right.visited_at).localeCompare(String(left.visited_at)));
   }
 
+  function canonicalAdcode(value) {
+    return typeof value === "string" && /^[0-9]{6}$/.test(value) ? value : null;
+  }
+
+  function dateInChina(value, todayValue) {
+    const fallback = todayValue();
+    if (!value) return fallback;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return fallback;
+    const chinaDate = new Date(parsed.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    return chinaDate > fallback ? fallback : chinaDate;
+  }
+
+  function defaultLegacyResolver(entry) {
+    const data = globalScope && globalScope.TRAVEL_EXPLORE_DATA;
+    if (!data || !entry || typeof entry.id !== "string") return null;
+    for (const city of data.cities || []) {
+      if (city.id === entry.id) return city;
+      const place = (city.places || []).find((item) => item.id === entry.id);
+      if (place) return { ...place, cityAdcode: city.adcode, cityName: city.name };
+    }
+    return null;
+  }
+
   function createController({
     elements = {}, request = async () => [], createMap = null,
     today = () => new Date().toISOString().slice(0, 10),
-    onAuthRequired = () => {}, onStatus = () => {},
+    onAuthRequired = () => {}, onStatus = () => {}, localStorage = null,
+    resolveLegacyEntry = defaultLegacyResolver,
   } = {}) {
     let identity = null;
     let mounted = false;
@@ -189,6 +214,39 @@
       updateMap();
     }
 
+    async function migrateLegacy(currentGeneration) {
+      if (!localStorage || !identity || !current(currentGeneration)) return;
+      const markerKey = `voyage:footprints-cloud-migration:v1:${identity}`;
+      if (localStorage.getItem(markerKey) === "complete") return;
+      const legacyKey = `voyage:footprints:${identity}`;
+      let entries;
+      try {
+        const raw = localStorage.getItem(legacyKey);
+        entries = raw ? JSON.parse(raw) : [];
+      } catch (_) {
+        entries = [];
+      }
+      if (!Array.isArray(entries)) entries = [];
+      const migratedCities = new Map();
+      for (const entry of entries) {
+        const resolved = resolveLegacyEntry(entry);
+        const cityAdcode = canonicalAdcode(resolved && (resolved.cityAdcode || resolved.adcode));
+        if (!cityAdcode) continue;
+        const visitedAt = dateInChina(entry && (entry.visitedAt || entry.visited_at), today);
+        const previous = migratedCities.get(cityAdcode);
+        if (!previous || visitedAt > previous) migratedCities.set(cityAdcode, visitedAt);
+      }
+      for (const [cityAdcode, visitedAt] of migratedCities) {
+        if (footprints.some((item) => item.city_adcode === cityAdcode)) continue;
+        await addCity({
+          cityAdcode,
+          suggestedVisitedAt: visitedAt,
+        });
+        if (!current(currentGeneration)) return;
+      }
+      if (current(currentGeneration)) localStorage.setItem(markerKey, "complete");
+    }
+
     async function searchCities(event) {
       if (event) event.preventDefault();
       const query = elements.search && typeof elements.search.value === "string" ? elements.search.value.trim() : "";
@@ -265,7 +323,10 @@
         ));
         cityAdcode = city && city.city_adcode;
       }
-      if (typeof cityAdcode !== "string" || !/^\d{6}$/.test(cityAdcode)) return null;
+      cityAdcode = canonicalAdcode(cityAdcode);
+      if (!cityAdcode) return null;
+      const existing = footprints.find((item) => item.city_adcode === cityAdcode);
+      if (existing) return existing;
       const footprint = await request("/api/footprints", {
         method: "POST",
         body: { city_adcode: cityAdcode, visited_at: suggestedVisitedAt || today() },
@@ -355,9 +416,15 @@
           const loaded = await request("/api/footprints", { signal: abortController.signal });
           if (!current(currentGeneration)) return;
           footprints = sortedFootprints(Array.isArray(loaded) ? loaded.filter(validFootprint) : []);
-        boundaries = new Map();
-        boundaryQueue = [];
-        queuedBoundaryAdcodes = new Set();
+          boundaries = new Map();
+          boundaryQueue = [];
+          queuedBoundaryAdcodes = new Set();
+          try {
+            await migrateLegacy(currentGeneration);
+          } catch (error) {
+            if (current(currentGeneration)) report(error, "旧足迹迁移暂时失败，请稍后重试。");
+          }
+          if (!current(currentGeneration)) return;
           render();
           beginMap();
           updateMap();
