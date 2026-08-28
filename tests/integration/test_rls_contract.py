@@ -13,7 +13,9 @@ OWNER_SCOPED_TABLES = {
     "conversation_messages": "user_id",
     "share_links": "user_id",
     "ai_usage": "user_id",
+    "user_footprints": "user_id",
 }
+SEPARATE_OWNER_CRUD_TABLES = {"user_footprints"}
 CONTROLLED_OWNER_UPDATE_TABLES = {"travel_notes": "author_id"}
 PARENT_STATUS_GUARDED_OWNER_TABLES = {"travel_note_images": "owner_id"}
 OWNER_DELETE_ONLY_TABLES = {"community_posts": "user_id"}
@@ -499,6 +501,25 @@ def _assert_private_rls_contract(migration: str) -> None:
     for table, owner_column in OWNER_SCOPED_TABLES.items():
         table_policies = [body for policy_table, body in policies if policy_table == table]
         assert table_policies
+        if table in SEPARATE_OWNER_CRUD_TABLES:
+            expected_policies = {
+                "select": rf"\bfor\s+select\s+to\s+authenticated\s+using\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+                "insert": rf"\bfor\s+insert\s+to\s+authenticated\s+with\s+check\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+                "update": rf"\bfor\s+update\s+to\s+authenticated\s+using\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)\s*with\s+check\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+                "delete": rf"\bfor\s+delete\s+to\s+authenticated\s+using\s*\(\s*auth\.uid\(\)\s*=\s*{owner_column}\s*\)",
+            }
+            matched_operations = []
+            for policy in table_policies:
+                matches = [
+                    operation
+                    for operation, pattern in expected_policies.items()
+                    if re.fullmatch(pattern, policy)
+                ]
+                assert len(matches) == 1
+                matched_operations.extend(matches)
+                assert not re.search(r"\bfor\s+all\b", policy)
+            assert sorted(matched_operations) == sorted(expected_policies)
+            continue
         for policy in table_policies:
             assert re.search(r"\bfor\s+all\b", policy)
             assert re.search(
@@ -620,6 +641,30 @@ def test_rls_contract_accepts_the_audited_model_call_reservation_column():
     """
 
     _assert_private_rls_contract(migration)
+
+
+@pytest.mark.parametrize(
+    "later_migration",
+    [
+        '''
+        drop policy "users create own footprints" on public.user_footprints;
+        create policy "duplicate footprint select" on public.user_footprints
+        for select to authenticated
+        using (auth.uid() = user_id);
+        ''',
+        '''
+        drop policy "users create own footprints" on public.user_footprints;
+        create policy "public footprint insert" on public.user_footprints
+        for insert
+        with check (auth.uid() = user_id);
+        ''',
+    ],
+)
+def test_user_footprints_contract_rejects_duplicate_operations_or_missing_authenticated_role(
+    later_migration,
+):
+    with pytest.raises(AssertionError):
+        _assert_private_rls_contract(_migration() + "\n" + later_migration)
 
 
 def test_policy_parser_handles_comments_quoted_identifiers_and_statement_boundaries():

@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.core.http import ChatNetworkRateLimitMiddleware, RequestBodyLimitMiddleware
 from app.core.logging import configure_logging, operational_context, request_context
 from app.api.auth import CurrentUser
+from app.api.footprints import router as footprints_router
 from app.api.trips import router as trips_router
 from app.api.chat import router as chat_router
 from app.api.community import router as community_router
@@ -129,6 +130,7 @@ def api_me(user: CurrentUser):
     return {"id": str(user.id), "email": user.email}
 
 app.include_router(trips_router)
+app.include_router(footprints_router)
 app.include_router(chat_router)
 app.include_router(community_router)
 app.include_router(travel_notes_router)

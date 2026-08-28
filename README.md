@@ -49,6 +49,11 @@ uvicorn app.main:app --reload
 | `DEEPSEEK_API_BASE` | 否 | `https://api.deepseek.com` |
 | `AMAP_JS_KEY` | 地图在线模式 | 高德 JavaScript API 浏览器 Key；必须与安全密钥同时配置，否则使用离线地图 |
 | `AMAP_SECURITY_JS_CODE` | 地图在线模式 | 高德 JavaScript API 安全密钥；直连模式会交给浏览器，必须在高德控制台限制允许域名 |
+| `AMAP_WEB_SERVICE_KEY` | 城市搜索/边界 | 仅服务端使用的高德 Web 服务 Key；留空时使用试点城市的安全降级目录 |
+| `DISTRICT_CACHE_SECONDS` | 否 | 城市边界成功缓存时长，默认 `2592000` 秒（30 天） |
+| `DISTRICT_FAILURE_CACHE_SECONDS` | 否 | 城市边界失败缓存时长，默认 `300` 秒 |
+| `DISTRICT_TIMEOUT_SECONDS` | 否 | 高德行政区请求超时，默认 `5` 秒 |
+| `DISTRICT_MAX_POINTS` | 否 | 单个城市边界最多保留的坐标点数，默认 `50000` |
 | `SUPABASE_URL` | 生产必需 | Supabase 项目 URL |
 | `SUPABASE_ANON_KEY` | 生产必需 | 浏览器可用的 anon key，仍受 RLS 保护 |
 | `SUPABASE_SERVICE_KEY` | 生产必需 | 仅服务端使用，绝不能暴露到前端或仓库 |
@@ -80,7 +85,11 @@ Explore 页面当前只实现 **福建、云南** 两个省份的地图试点：
 
 该试点不包含全国地图数据、真实景点图片、实时搜索与路线、票务或酒店支付、社区内容等能力。地图点选只会在前端打开助手并展示本地推荐，不会自动发起 AI 请求。
 
-高德 Key 与安全密钥分别通过 Render 环境变量 `AMAP_JS_KEY`、`AMAP_SECURITY_JS_CODE` 配置，禁止把真实值写入 `.env.example`、源码、文档、日志或 Git 提交记录。当前直连模式会把这两项浏览器配置交给前端，因此必须在高德控制台限制允许域名；若未来需要更强隔离，应另行设计服务代理。具体的生产配置和验收步骤见 [Render + Supabase 免费层部署说明](docs/deployment/free-tier.md)。
+高德 JavaScript Key 与安全密钥分别通过 Render 环境变量 `AMAP_JS_KEY`、`AMAP_SECURITY_JS_CODE` 配置；城市搜索和行政区边界使用服务端专用的 `AMAP_WEB_SERVICE_KEY`。禁止把任何真实值写入 `.env.example`、源码、文档、日志或 Git 提交记录。当前直连模式会把 JavaScript 配置交给前端，因此必须在高德控制台限制允许域名；服务端 Web Service Key 只存在于 Render 环境变量中。未配置服务端 Key 时，城市搜索和边界接口仅使用安全降级目录，不发起上游请求。具体的生产配置和验收步骤见 [Render + Supabase 免费层部署说明](docs/deployment/free-tier.md)。
+
+### 云端足迹部署顺序
+
+云端足迹需要先在 Supabase SQL Editor 中执行 `supabase/migrations/013_city_footprints.sql`，确认表、索引、RLS 和权限迁移成功后，再部署应用。部署时可使用 `.env.example` 中的四个边界缓存默认值，并只在 Render Environment 中填写服务端 `AMAP_WEB_SERVICE_KEY`；不要把该 Key 配置到浏览器或提交到仓库。未配置该 Key 时，足迹仍支持已知试点城市的私有 CRUD，并会安全降级为中心点 Marker。
 
 ## RAG 知识库与天气试点
 
@@ -112,7 +121,7 @@ python -m app.scripts.import_knowledge --content-dir app/rag/content
 
 详细步骤见 [Render + Supabase 免费层部署说明](docs/deployment/free-tier.md)。简要流程：
 
-1. 在 [Supabase Dashboard](https://supabase.com/dashboard) 创建免费项目并执行 `supabase/migrations/` 中的迁移。
+1. 在 [Supabase Dashboard](https://supabase.com/dashboard) 创建免费项目并按顺序执行 `supabase/migrations/` 中的迁移；启用云端足迹前必须确认 `013_city_footprints.sql` 执行成功。
 2. 在 [Render Dashboard](https://dashboard.render.com/) 通过仓库根目录的 `render.yaml` 创建 Blueprint。
 3. 在 Render 平台输入所有 `sync: false` 的 Secret；不要上传 `.env`。
 4. 部署后先检查 `/health`，再执行文档中的在线冒烟测试。

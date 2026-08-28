@@ -749,6 +749,40 @@ dialog {
   padding: .35rem .65rem;
 }
 
+.footprint-city-search-form {
+  display: grid;
+  gap: .35rem;
+  margin: .85rem 0;
+}
+
+.footprint-search-row,
+.footprint-list-actions,
+.footprint-search-results {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+}
+
+.footprint-search-row input {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.footprint-search-results {
+  flex-wrap: wrap;
+  min-height: 0;
+  margin-bottom: .7rem;
+}
+
+.footprint-list-actions {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.footprint-list-actions button {
+  white-space: nowrap;
+}
+
 .footprint-list-empty {
   margin-top: .8rem;
 }
@@ -778,5 +812,14 @@ dialog {
 
   .footprint-map {
     min-height: 34rem;
+  }
+
+  .footprint-list-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .footprint-list-actions {
+    justify-content: flex-end;
   }
 }

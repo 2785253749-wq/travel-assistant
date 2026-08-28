@@ -93,10 +93,39 @@ test("navigation opens the private footprints view beside Trips", async () => {
   assert.ok(harness.elements.get("footprints-page-title"), "footprints view has a heading");
 });
 
-test("signed-in users can add an explored place to their footprints", async () => {
-  const harness = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }) });
+test("signed-in footprints page loads private cloud data through the shared request helper", async () => {
+  const harness = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }), fetch: async (call) => {
+    if (call.url === "/api/footprints") return jsonResponse(200, [{
+      id: "footprint-xiamen", city_adcode: "350200", city_name: "厦门市", province_adcode: "350000", province_name: "福建省",
+      center: [118.09, 24.48], visited_at: "2026-08-20", created_at: "2026-08-20T00:00:00Z", updated_at: "2026-08-20T00:00:00Z",
+    }]);
+    if (call.url === "/api/map/districts/350200") return jsonResponse(200, { status: "unavailable", rings: [], center: [118.09, 24.48] });
+    return jsonResponse(200, {});
+  } });
+  await settle();
+  await harness.elements.get("footprints-nav-button").dispatch("click");
   await settle();
 
+  assert.equal(harness.elements.get("footprint-province-count").textContent, "1");
+  assert.equal(harness.elements.get("footprint-city-count").textContent, "1");
+  assert.equal(harness.elements.get("footprint-list").children.length, 1);
+  assert.equal(harness.fetchCalls.filter((call) => call.url === "/api/footprints").length, 1);
+  assert.equal(harness.fetchCalls.find((call) => call.url === "/api/footprints").options.headers.Authorization, "Bearer access-one");
+});
+
+test("selected Explore places keep the add-to-footprints action and save through the cloud controller", async () => {
+  const saved = {
+    id: "footprint-xiamen", city_adcode: "350200", city_name: "厦门市", province_adcode: "350000", province_name: "福建省",
+    center: [118.09, 24.48], visited_at: "2026-08-28", created_at: "2026-08-28T00:00:00Z", updated_at: "2026-08-28T00:00:00Z",
+  };
+  const harness = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }), fetch: async (call) => {
+    if (call.url === "/api/map/cities?q=%E5%8E%A6%E9%97%A8") return jsonResponse(200, [{
+      city_adcode: "350200", city_name: "厦门市", province_adcode: "350000", province_name: "福建省", center: [118.09, 24.48],
+    }]);
+    if (call.url === "/api/footprints" && call.options.method === "POST") return jsonResponse(201, saved);
+    return jsonResponse(200, []);
+  } });
+  await settle();
   await findByText(harness.elements.get("explore-shortcuts"), "厦门").dispatch("click");
   await settle();
   await harness.elements.get("recommendation-grid").children[0].dispatch("click");
@@ -104,14 +133,14 @@ test("signed-in users can add an explored place to their footprints", async () =
   const addFootprint = findByText(harness.elements.get("explore-place-card"), "加入我的足迹");
   assert.ok(addFootprint, "selected place exposes an add-footprint action");
   await addFootprint.dispatch("click");
-  await harness.elements.get("footprints-nav-button").dispatch("click");
+  await settle();
 
-  assert.equal(harness.elements.get("footprint-province-count").textContent, "1");
-  assert.equal(harness.elements.get("footprint-city-count").textContent, "1");
-  assert.equal(harness.elements.get("footprint-list").children.length, 1);
+  const post = harness.fetchCalls.find((call) => call.url === "/api/footprints" && call.options.method === "POST");
+  assert.deepEqual(JSON.parse(post.options.body), { city_adcode: "350200", visited_at: new Date().toISOString().slice(0, 10) });
+  assert.equal(post.options.headers.Authorization, "Bearer access-one");
 });
 
-test("footprints view mounts its map adapter and restores the static fallback on exit", async () => {
+test("footprints view unmounts its map adapter and restores the static fallback on exit", async () => {
   const harness = createHarness({ auth: new FakeSupabaseAuth({ initialSession: SESSION }) });
   await settle();
 
