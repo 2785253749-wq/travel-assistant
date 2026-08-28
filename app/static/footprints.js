@@ -36,6 +36,9 @@
     let selectedCity = null;
     let editingFootprint = null;
     let searchCandidates = new Map();
+    let boundaryQueue = [];
+    let queuedBoundaryAdcodes = new Set();
+    let boundaryWorkers = 0;
 
     function report(error, fallback) {
       if (error && ["AUTH_REQUIRED", "AUTH_INVALID"].includes(error.code)) onAuthRequired();
@@ -74,7 +77,6 @@
       editingFootprint = footprint;
       if (elements.visitDialogTitle) elements.visitDialogTitle.textContent = footprint ? `修改${footprint.city_name}的到访日期` : `点亮${city.city_name}`;
       if (elements.visitDate) elements.visitDate.value = footprint ? footprint.visited_at : today();
-      if (elements.latestCity) elements.latestCity.textContent = city.city_name;
       if (elements.visitDialog && typeof elements.visitDialog.showModal === "function") elements.visitDialog.showModal();
     }
 
@@ -138,26 +140,44 @@
     }
 
     function startBoundaryLoads(currentGeneration) {
-      const pending = footprints.filter((footprint) => !boundaries.has(footprint.city_adcode));
-      let next = 0;
-      const worker = async () => {
-        while (next < pending.length && current(currentGeneration)) {
-          const footprint = pending[next++];
-          try {
-            const boundary = await request(`/api/map/districts/${encodeURIComponent(footprint.city_adcode)}`, { signal: abortController.signal });
-            if (!current(currentGeneration)) return;
-            boundaries.set(footprint.city_adcode, boundary && typeof boundary === "object" ? boundary : {
-              status: "unavailable", rings: [], center: footprint.center,
-            });
-            updateMap();
-          } catch (error) {
-            if (!current(currentGeneration)) return;
-            boundaries.set(footprint.city_adcode, { status: "unavailable", rings: [], center: footprint.center });
-            updateMap();
-          }
+      for (const footprint of footprints) {
+        if (boundaries.has(footprint.city_adcode) || queuedBoundaryAdcodes.has(footprint.city_adcode)) continue;
+        queuedBoundaryAdcodes.add(footprint.city_adcode);
+        boundaryQueue.push({ footprint, generation: currentGeneration });
+      }
+      runBoundaryQueue();
+    }
+
+    function runBoundaryQueue() {
+      while (boundaryWorkers < 3 && boundaryQueue.length) {
+        const entry = boundaryQueue.shift();
+        if (!current(entry.generation)) {
+          queuedBoundaryAdcodes.delete(entry.footprint.city_adcode);
+          continue;
         }
-      };
-      for (let workerIndex = 0; workerIndex < Math.min(3, pending.length); workerIndex += 1) worker();
+        boundaryWorkers += 1;
+        loadBoundary(entry).finally(() => {
+          boundaryWorkers -= 1;
+          runBoundaryQueue();
+        });
+      }
+    }
+
+    async function loadBoundary({ footprint, generation: currentGeneration }) {
+      try {
+        const boundary = await request(`/api/map/districts/${encodeURIComponent(footprint.city_adcode)}`, { signal: abortController.signal });
+        if (!current(currentGeneration)) return;
+        boundaries.set(footprint.city_adcode, boundary && typeof boundary === "object" ? boundary : {
+          status: "unavailable", rings: [], center: footprint.center,
+        });
+        updateMap();
+      } catch (_) {
+        if (!current(currentGeneration)) return;
+        boundaries.set(footprint.city_adcode, { status: "unavailable", rings: [], center: footprint.center });
+        updateMap();
+      } finally {
+        queuedBoundaryAdcodes.delete(footprint.city_adcode);
+      }
     }
 
     function replaceFootprint(next) {
@@ -224,10 +244,26 @@
       }
     }
 
-    async function addCity({ cityAdcode, suggestedVisitedAt } = {}) {
+    function cancelVisit() {
+      selectedCity = null;
+      editingFootprint = null;
+      if (elements.visitDialog && typeof elements.visitDialog.close === "function") elements.visitDialog.close();
+    }
+
+    async function addCity({ cityAdcode, cityName, suggestedVisitedAt } = {}) {
       if (!identity) {
         onAuthRequired();
         return null;
+      }
+      if ((typeof cityAdcode !== "string" || !/^\d{6}$/.test(cityAdcode)) && typeof cityName === "string" && cityName.trim().length >= 2) {
+        const cities = await request(`/api/map/cities?q=${encodeURIComponent(cityName.trim())}`, {
+          signal: abortController && abortController.signal,
+        });
+        const requestedName = cityName.trim();
+        const city = Array.isArray(cities) && cities.find((item) => item && (
+          item.city_name === requestedName || item.city_name.replace(/[市州]$/, "") === requestedName
+        ));
+        cityAdcode = city && city.city_adcode;
       }
       if (typeof cityAdcode !== "string" || !/^\d{6}$/.test(cityAdcode)) return null;
       const footprint = await request("/api/footprints", {
@@ -282,6 +318,7 @@
 
     if (elements.searchForm) elements.searchForm.addEventListener("submit", searchCities);
     if (elements.visitForm) elements.visitForm.addEventListener("submit", submitVisit);
+    if (elements.visitCancel) elements.visitCancel.addEventListener("click", cancelVisit);
     if (elements.list) elements.list.addEventListener("click", handleListClick);
     if (elements.searchResults) elements.searchResults.addEventListener("click", handleSearchResultClick);
 
@@ -298,6 +335,8 @@
         loadedIdentity = null;
         footprints = [];
         boundaries = new Map();
+        boundaryQueue = [];
+        queuedBoundaryAdcodes = new Set();
         selectedCity = null;
         editingFootprint = null;
         render();
@@ -316,7 +355,9 @@
           const loaded = await request("/api/footprints", { signal: abortController.signal });
           if (!current(currentGeneration)) return;
           footprints = sortedFootprints(Array.isArray(loaded) ? loaded.filter(validFootprint) : []);
-          boundaries = new Map();
+        boundaries = new Map();
+        boundaryQueue = [];
+        queuedBoundaryAdcodes = new Set();
           render();
           beginMap();
           updateMap();
@@ -334,6 +375,8 @@
         loadedIdentity = null;
         if (abortController) abortController.abort();
         abortController = null;
+        boundaryQueue = [];
+        queuedBoundaryAdcodes = new Set();
         stopMap();
       },
       addCity,

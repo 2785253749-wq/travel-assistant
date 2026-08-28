@@ -287,9 +287,38 @@
     description.textContent = item.description;
     const recommendation = document.createElement("p");
     recommendation.textContent = item.recommendation;
-    copy.append(label, title, description, recommendation);
+    const footprintButton = document.createElement("button");
+    footprintButton.type = "button";
+    footprintButton.className = "secondary footprint-action";
+    footprintButton.textContent = "加入我的足迹";
+    footprintButton.addEventListener("click", async () => {
+      if (!state.session) {
+        navigateToAuth("signin");
+        return;
+      }
+      const city = exploreCityForPlace(item.id);
+      if (!city) return;
+      try {
+        const saved = await ensureFootprintsController().addCity({
+          cityName: city.name,
+          suggestedVisitedAt: new Date().toISOString().slice(0, 10),
+        });
+        if (saved) {
+          footprintButton.textContent = "已在我的足迹";
+          footprintButton.disabled = true;
+        }
+      } catch (error) {
+        setStatus(error && error.code === "AUTH_REQUIRED" ? "请先登录后再管理足迹。" : "足迹暂时无法保存，请稍后重试。", true);
+      }
+    });
+    copy.append(label, title, description, recommendation, footprintButton);
     elements.explorePlaceCard.append(visual, copy);
     elements.explorePlaceCard.hidden = false;
+  }
+
+  function exploreCityForPlace(placeId) {
+    const cities = window.TravelMapExplorer?.EXPLORE_TRIAL?.cities || [];
+    return cities.find((city) => (city.places || []).some((place) => place.id === placeId)) || null;
   }
 
   function clearSelectedPlace() {
@@ -541,7 +570,7 @@
         provinceCount: elements.footprintProvinceCount, cityCount: elements.footprintCityCount, latestCity: elements.footprintLatestCity,
         searchForm: elements.footprintSearchForm, search: elements.footprintSearch, searchResults: elements.footprintSearchResults,
         visitDialog: elements.footprintVisitDialog, visitDialogTitle: elements.footprintVisitDialogTitle,
-        visitForm: elements.footprintVisitForm, visitDate: elements.footprintVisitDate,
+        visitForm: elements.footprintVisitForm, visitDate: elements.footprintVisitDate, visitCancel: elements.footprintVisitCancel,
       },
       request: requestJson,
       createMap: (root, options) => window.TravelMapExplorer?.createFootprintMap(root, {

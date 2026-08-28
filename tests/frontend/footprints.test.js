@@ -32,7 +32,7 @@ function createElements() {
     provinceCount: new FakeElement("strong"), cityCount: new FakeElement("strong"), latestCity: new FakeElement("strong"),
     list: new FakeElement("ul"), listEmpty: new FakeElement("p"),
     searchForm: new FakeElement("form"), search: new FakeElement("input"), searchResults: new FakeElement("div"),
-    visitDialog: new FakeElement("dialog"), visitDialogTitle: new FakeElement("h2"), visitForm: new FakeElement("form"), visitDate: new FakeElement("input"),
+    visitDialog: new FakeElement("dialog"), visitDialogTitle: new FakeElement("h2"), visitForm: new FakeElement("form"), visitDate: new FakeElement("input"), visitCancel: new FakeElement("button"),
   };
   elements.searchForm.append(elements.search);
   elements.visitForm.append(elements.visitDate);
@@ -144,6 +144,31 @@ test("boundary request concurrency never exceeds three", async () => {
   }
 });
 
+test("adding a city while boundaries load shares the three-request budget", async () => {
+  const pendingBoundaries = [];
+  let active = 0;
+  let maximum = 0;
+  const fixture = controllerFixture({ request: async (path, options) => {
+    if (path === "/api/footprints" && !options.method) return [XIAMEN, FUZHOU, DALI];
+    if (path === "/api/footprints" && options.method === "POST") return LIJIANG;
+    active += 1;
+    maximum = Math.max(maximum, active);
+    const pending = deferred();
+    pendingBoundaries.push(pending);
+    return pending.promise.finally(() => { active -= 1; });
+  } });
+  try {
+    fixture.controller.setIdentity("user-a");
+    await fixture.controller.mount();
+    await fixture.controller.addCity({ cityAdcode: "530700", suggestedVisitedAt: "2026-08-28" });
+    assert.equal(maximum, 3);
+    fixture.controller.unmount();
+    pendingBoundaries.forEach((pending) => pending.resolve({ status: "unavailable", rings: [], center: [118.09, 24.48] }));
+  } finally {
+    fixture.restore();
+  }
+});
+
 test("canonical city result posts adcode and visit date", async () => {
   const fixture = controllerFixture({ request: async (path, options) => {
     if (path === "/api/footprints" && !options.method) return [];
@@ -163,6 +188,37 @@ test("canonical city result posts adcode and visit date", async () => {
     await fixture.elements.visitForm.dispatch("submit");
     const post = fixture.requests.find((item) => item.path === "/api/footprints" && item.options.method === "POST");
     assert.deepEqual(post.options.body, { city_adcode: "350200", visited_at: "2026-08-28" });
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("cancelling or failing a date dialog keeps the existing footprint summary unchanged", async () => {
+  const fixture = controllerFixture({ request: async (path, options) => {
+    if (path === "/api/footprints" && !options.method) return [XIAMEN];
+    if (path === "/api/map/cities?q=%E7%A6%8F%E5%B7%9E") return [{
+      city_adcode: "350100", city_name: "福州市", province_adcode: "350000", province_name: "福建省", center: [119.3, 26.08],
+    }];
+    if (path === "/api/footprints" && options.method === "POST") throw Object.assign(new Error("offline"), { code: "FOOTPRINT_UNAVAILABLE" });
+    return { status: "unavailable", rings: [], center: [118.09, 24.48] };
+  } });
+  try {
+    fixture.controller.setIdentity("user-a");
+    await fixture.controller.mount();
+    assert.equal(fixture.elements.latestCity.textContent, "厦门市");
+    fixture.elements.search.value = "福州";
+    await fixture.elements.searchForm.dispatch("submit");
+    await findByText(fixture.elements.searchResults, "福州市").dispatch("click");
+    assert.equal(fixture.elements.latestCity.textContent, "厦门市");
+    await fixture.elements.visitCancel.dispatch("click");
+    assert.equal(fixture.elements.visitDialog.open, false);
+    assert.equal(fixture.elements.cityCount.textContent, "1");
+    await findByText(fixture.elements.searchResults, "福州市").dispatch("click");
+    fixture.elements.visitDate.value = "2026-08-28";
+    await fixture.elements.visitForm.dispatch("submit");
+    assert.equal(fixture.elements.cityCount.textContent, "1");
+    assert.equal(fixture.elements.latestCity.textContent, "厦门市");
+    assert.doesNotMatch(fixture.elements.list.textContent, /福州/);
   } finally {
     fixture.restore();
   }
