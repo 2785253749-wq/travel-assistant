@@ -81,6 +81,56 @@ def test_list_requires_bearer(client):
     }
 
 
+def test_city_search_requires_auth_and_valid_query(client):
+    assert client.get("/api/map/cities?q=厦门").status_code == 401
+    assert client.get("/api/map/cities?q=x", headers=_headers()).status_code == 422
+    assert client.get("/api/map/cities?q=%20%20", headers=_headers()).status_code == 422
+
+
+def test_city_search_returns_normalized_trial_candidates(client):
+    from app.composition import get_district_boundary_service
+    from app.footprints.districts import UnavailableDistrictBoundaryService
+
+    app.dependency_overrides[get_district_boundary_service] = (
+        lambda: UnavailableDistrictBoundaryService()
+    )
+
+    response = client.get("/api/map/cities?q=厦门", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "city_adcode": "350200",
+            "city_name": "厦门市",
+            "province_adcode": "350000",
+            "province_name": "福建省",
+            "center": [118.09, 24.48],
+        }
+    ]
+
+
+def test_boundary_unavailable_never_leaks_server_secret(client):
+    from app.composition import get_district_boundary_service
+    from app.footprints.districts import UnavailableDistrictBoundaryService
+
+    app.dependency_overrides[get_district_boundary_service] = (
+        lambda: UnavailableDistrictBoundaryService()
+    )
+
+    response = client.get("/api/map/districts/350200", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "unavailable"
+    assert response.json()["city"]["center"] == [118.09, 24.48]
+    assert "server-secret" not in response.text
+    assert "restapi.amap.com" not in response.text
+
+
+def test_boundary_requires_auth_and_a_six_digit_adcode(client):
+    assert client.get("/api/map/districts/350200").status_code == 401
+    assert client.get("/api/map/districts/not-an-adcode", headers=_headers()).status_code == 422
+
+
 def test_crud_uses_verified_owner_and_omits_account_identity(client):
     created = _create(client)
 

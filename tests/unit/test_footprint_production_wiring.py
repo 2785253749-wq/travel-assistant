@@ -15,7 +15,11 @@ USER_B = UUID("22222222-2222-2222-2222-222222222222")
 
 
 def _clear_footprint_state(composition_module) -> None:
-    for name in ("get_development_footprint_repository", "get_development_footprint_module"):
+    for name in (
+        "get_development_footprint_repository",
+        "get_development_footprint_module",
+        "get_district_boundary_service",
+    ):
         dependency = getattr(composition_module, name, None)
         if dependency is not None and hasattr(dependency, "cache_clear"):
             dependency.cache_clear()
@@ -43,6 +47,29 @@ def test_development_module_shares_memory_but_scopes_each_account(monkeypatch):
     assert first is second
     assert [footprint.city_adcode for footprint in first.list(USER_A)] == ["350200"]
     assert second.list(USER_B) == []
+    get_settings.cache_clear()
+    _clear_footprint_state(composition_module)
+
+
+def test_footprint_module_reuses_the_shared_unavailable_district_directory(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.delenv("AMAP_WEB_SERVICE_KEY", raising=False)
+    get_settings.cache_clear()
+    from app import composition as composition_module
+    from app.footprints.districts import UnavailableDistrictBoundaryService
+
+    _clear_footprint_state(composition_module)
+
+    module = composition_module.get_footprint_module(
+        AuthenticatedUser(id=USER_A, email="alice@example.com", access_token="user-a")
+    )
+
+    assert isinstance(
+        composition_module.get_district_boundary_service(),
+        UnavailableDistrictBoundaryService,
+    )
+    assert module._city_directory is composition_module.get_district_boundary_service()
     get_settings.cache_clear()
     _clear_footprint_state(composition_module)
 

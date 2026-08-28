@@ -1,15 +1,29 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 
 from app.api.auth import CurrentUser
-from app.composition import get_footprint_module
+from app.composition import get_district_boundary_service, get_footprint_module
 from app.core.errors import AppError
-from app.footprints.models import FootprintCreate, FootprintUpdate, FootprintView
+from app.footprints.districts import (
+    DistrictBoundaryService,
+    UnavailableDistrictBoundaryService,
+)
+from app.footprints.models import (
+    CityRecord,
+    DistrictBoundaryView,
+    FootprintCreate,
+    FootprintUpdate,
+    FootprintView,
+)
 from app.footprints.service import FootprintModule
 
 
 router = APIRouter(tags=["footprints"])
+
+DistrictService = DistrictBoundaryService | UnavailableDistrictBoundaryService
 
 
 def _raise_http(error: AppError) -> None:
@@ -91,3 +105,29 @@ def remove_footprint(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except AppError as error:
         _raise_http(error)
+
+
+@router.get("/api/map/cities", response_model=list[CityRecord])
+def search_cities(
+    q: Annotated[str, Query(min_length=2, max_length=40, pattern=r".*\S.*")],
+    user: CurrentUser,
+    service: DistrictService = Depends(get_district_boundary_service),
+) -> list[CityRecord]:
+    del user
+    return service.search(q)
+
+
+@router.get("/api/map/districts/{city_adcode}", response_model=DistrictBoundaryView)
+def get_district_boundary(
+    city_adcode: Annotated[str, Path(pattern=r"^\d{6}$")],
+    user: CurrentUser,
+    service: DistrictService = Depends(get_district_boundary_service),
+) -> DistrictBoundaryView:
+    del user
+    boundary = service.get_boundary(city_adcode)
+    if boundary is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "DISTRICT_NOT_FOUND", "message": "District not found"},
+        )
+    return boundary

@@ -30,7 +30,11 @@ from app.footprints.repositories import (
     InMemoryFootprintRepository,
     create_user_scoped_footprint_repository,
 )
-from app.footprints.service import FootprintModule, StaticCityDirectory
+from app.footprints.districts import (
+    DistrictBoundaryService,
+    UnavailableDistrictBoundaryService,
+)
+from app.footprints.service import FootprintModule
 from app.profile.repositories import (
     InMemoryProfileRepository,
     create_user_scoped_profile_repository,
@@ -39,6 +43,7 @@ from app.profile.service import ProfileModule
 from app.infrastructure.usage import SupabaseUsageRepository
 from app.infrastructure.weather import SupabaseWeatherQuotaRepository
 from app.providers.aggregate import ProviderEvidenceAggregator
+from app.providers.amap_district import AmapDistrictProvider
 from app.providers.amap_weather import AmapWeatherProvider
 from app.rag.embedding import EmbeddingHttpClient, EmbeddingQuota, JinaEmbedder
 from app.rag.repository import KnowledgeRepository
@@ -140,7 +145,7 @@ def get_development_footprint_repository() -> InMemoryFootprintRepository:
 @lru_cache(maxsize=1)
 def get_development_footprint_module() -> FootprintModule:
     return FootprintModule(
-        get_development_footprint_repository(), StaticCityDirectory()
+        get_development_footprint_repository(), get_district_boundary_service()
     )
 
 
@@ -152,8 +157,30 @@ def get_footprint_module(user: CurrentUser) -> FootprintModule:
     url, anon_key = _supabase_public_credentials()
     return FootprintModule(
         create_user_scoped_footprint_repository(url, anon_key, user.access_token),
-        StaticCityDirectory(),
+        get_district_boundary_service(),
     )
+
+
+def build_district_boundary_service(
+    *, settings: Settings | None = None
+) -> DistrictBoundaryService | UnavailableDistrictBoundaryService:
+    settings = settings or get_settings()
+    if (
+        settings.amap_web_service_key is None
+        or not settings.amap_web_service_key.get_secret_value().strip()
+    ):
+        return UnavailableDistrictBoundaryService()
+    return DistrictBoundaryService(
+        AmapDistrictProvider(settings=settings),
+        cache_ttl_seconds=settings.district_cache_seconds,
+        failure_cache_seconds=settings.district_failure_cache_seconds,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_district_boundary_service(
+) -> DistrictBoundaryService | UnavailableDistrictBoundaryService:
+    return build_district_boundary_service()
 
 
 @lru_cache(maxsize=1)
