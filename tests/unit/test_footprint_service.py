@@ -66,6 +66,18 @@ class UnavailableCityDirectory:
         raise RuntimeError("upstream failure")
 
 
+class AppErrorCityDirectory:
+    def resolve(self, city_adcode: str) -> CityRecord | None:
+        del city_adcode
+        raise AppError("DEPENDENCY_ERROR", "dependency detail")
+
+
+class AppErrorFootprintRepository:
+    def list_owned(self, user_id: UUID) -> list[StoredFootprint]:
+        del user_id
+        raise AppError("DEPENDENCY_ERROR", "dependency detail")
+
+
 @pytest.fixture
 def repository():
     return InMemoryFootprintRepository()
@@ -143,8 +155,53 @@ def test_list_hides_owner_and_sorts_newest_visit_first(module, repository):
     assert len(repository.rows) == 3
 
 
+def test_list_uses_created_at_descending_when_visited_dates_are_equal(
+    module, repository
+):
+    module.add(USER_A, request())
+    module.add(USER_A, FootprintCreate(city_adcode="350100", visited_at=TODAY))
+    xiamen_key = USER_A, "350200"
+    fuzhou_key = USER_A, "350100"
+    repository.rows[xiamen_key] = replace(
+        repository.rows[xiamen_key], created_at=TIMESTAMP
+    )
+    repository.rows[fuzhou_key] = replace(
+        repository.rows[fuzhou_key], created_at=TIMESTAMP + timedelta(seconds=1)
+    )
+
+    views = module.list(USER_A)
+
+    assert [view.city_adcode for view in views] == ["350100", "350200"]
+
+
 def test_unavailable_directory_maps_to_a_stable_error(repository):
     module = FootprintModule(repository, UnavailableCityDirectory(), today=lambda: TODAY)
 
     with pytest.raises(AppError, match="FOOTPRINT_UNAVAILABLE"):
         module.add(USER_A, request())
+
+
+def test_city_directory_app_error_is_normalized_to_unavailable(repository):
+    module = FootprintModule(repository, AppErrorCityDirectory(), today=lambda: TODAY)
+
+    with pytest.raises(AppError) as error:
+        module.add(USER_A, request())
+
+    assert (error.value.code, error.value.message) == (
+        "FOOTPRINT_UNAVAILABLE",
+        "FOOTPRINT_UNAVAILABLE",
+    )
+
+
+def test_repository_app_error_is_normalized_to_unavailable():
+    module = FootprintModule(
+        AppErrorFootprintRepository(), StaticCityDirectory(), today=lambda: TODAY
+    )
+
+    with pytest.raises(AppError) as error:
+        module.list(USER_A)
+
+    assert (error.value.code, error.value.message) == (
+        "FOOTPRINT_UNAVAILABLE",
+        "FOOTPRINT_UNAVAILABLE",
+    )

@@ -158,8 +158,6 @@ class FootprintModule:
     def _repository_call(operation: Callable[[], object]):
         try:
             return operation()
-        except AppError:
-            raise
         except Exception as exc:
             raise AppError("FOOTPRINT_UNAVAILABLE", "FOOTPRINT_UNAVAILABLE") from exc
 
