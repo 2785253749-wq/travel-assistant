@@ -68,16 +68,10 @@ class DistrictBoundaryService:
         return _unique_cities(candidates)[:10]
 
     def resolve(self, city_adcode: str) -> CityRecord | None:
-        try:
-            static_city = self._static_directory.resolve(city_adcode)
-        except Exception:
-            return None
+        static_city = self._static_directory.resolve(city_adcode)
         if static_city is not None:
             return static_city
-        try:
-            candidates = self._provider.search(city_adcode)
-        except Exception:
-            return None
+        candidates = self._provider.search(city_adcode)
         return next(
             (city for city in candidates if city.city_adcode == city_adcode), None
         )

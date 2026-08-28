@@ -78,6 +78,16 @@ class AppErrorFootprintRepository:
         raise AppError("DEPENDENCY_ERROR", "dependency detail")
 
 
+class FailingDistrictProvider:
+    def search(self, _query: str) -> list[CityRecord]:
+        raise RuntimeError("private provider detail")
+
+
+class EmptyDistrictProvider:
+    def search(self, _query: str) -> list[CityRecord]:
+        return []
+
+
 @pytest.fixture
 def repository():
     return InMemoryFootprintRepository()
@@ -129,6 +139,42 @@ def test_unknown_city_is_rejected(module):
             USER_A,
             FootprintCreate(city_adcode="110000", visited_at=TODAY),
         )
+
+
+def test_district_directory_provider_failure_maps_to_unavailable(repository):
+    from app.footprints.districts import DistrictBoundaryService
+
+    module = FootprintModule(
+        repository,
+        DistrictBoundaryService(FailingDistrictProvider()),
+        today=lambda: TODAY,
+    )
+
+    with pytest.raises(AppError) as error:
+        module.add(USER_A, FootprintCreate(city_adcode="110000", visited_at=TODAY))
+
+    assert (error.value.code, error.value.message) == (
+        "FOOTPRINT_UNAVAILABLE",
+        "FOOTPRINT_UNAVAILABLE",
+    )
+
+
+def test_district_directory_unknown_city_stays_not_found(repository):
+    from app.footprints.districts import DistrictBoundaryService
+
+    module = FootprintModule(
+        repository,
+        DistrictBoundaryService(EmptyDistrictProvider()),
+        today=lambda: TODAY,
+    )
+
+    with pytest.raises(AppError) as error:
+        module.add(USER_A, FootprintCreate(city_adcode="110000", visited_at=TODAY))
+
+    assert (error.value.code, error.value.message) == (
+        "FOOTPRINT_CITY_NOT_FOUND",
+        "FOOTPRINT_CITY_NOT_FOUND",
+    )
 
 
 def test_other_account_cannot_update_or_delete(module):
