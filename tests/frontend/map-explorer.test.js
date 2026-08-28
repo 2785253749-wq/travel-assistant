@@ -573,10 +573,10 @@ test("focus highlights the target polygon and restores the previous polygon", wi
     destroy() {}
   }
   class Polygon {
-    constructor(options) { this.options = { ...options }; polygons.push(this); }
+    constructor(options) { this.options = { ...options }; this.events = new global.Map(); polygons.push(this); }
     setOptions(options) { Object.assign(this.options, options); }
-    on() {}
-    off() {}
+    on(event, handler) { this.events.set(event, handler); }
+    off(event, handler) { assert.equal(this.events.get(event), handler); this.events.delete(event); }
     setMap(map) { this.map = map; }
   }
   global.window.AMap = { Map: AMapMap, Polygon };
@@ -590,9 +590,18 @@ test("focus highlights the target polygon and restores the previous polygon", wi
 
   view.focus("350200");
   assert.equal(polygons[0].options.fillOpacity, 0.62);
+  polygons[0].events.get("mouseover")();
+  polygons[0].events.get("mouseout")();
+  assert.equal(polygons[0].options.fillOpacity, 0.62);
   view.focus("350100");
   assert.equal(polygons[0].options.fillOpacity, 0.38);
   assert.equal(polygons[1].options.fillOpacity, 0.62);
+  polygons[1].events.get("mouseover")();
+  polygons[1].events.get("mouseout")();
+  assert.equal(polygons[1].options.fillOpacity, 0.62);
+  polygons[0].events.get("mouseover")();
+  polygons[0].events.get("mouseout")();
+  assert.equal(polygons[0].options.fillOpacity, 0.38);
   assert.equal(maps.length, 1);
   view.destroy();
 }));

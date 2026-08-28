@@ -365,17 +365,20 @@
       return JSON.stringify(layer);
     }
 
+    function setPolygonOpacity(record, fillOpacity) {
+      if (typeof record.overlay.setOptions === "function") record.overlay.setOptions({ fillOpacity });
+      else if (record.overlay.options) record.overlay.options.fillOpacity = fillOpacity;
+    }
+
     function bindOverlayEvents(record) {
       const overlay = record.overlay;
       if (!overlay || typeof overlay.on !== "function") return;
       if (record.kind !== "polygon") return;
       const enter = () => {
-        if (typeof overlay.setOptions === "function") overlay.setOptions({ fillOpacity: 0.62 });
-        else if (overlay.options) overlay.options.fillOpacity = 0.62;
+        setPolygonOpacity(record, 0.62);
       };
       const leave = () => {
-        if (typeof overlay.setOptions === "function") overlay.setOptions({ fillOpacity: 0.38 });
-        else if (overlay.options) overlay.options.fillOpacity = 0.38;
+        if (focusedOverlay !== record) setPolygonOpacity(record, 0.38);
       };
       overlay.on("mouseover", enter);
       overlay.on("mouseout", leave);
@@ -512,12 +515,10 @@
         if (!record) return;
         try {
           if (focusedOverlay && focusedOverlay !== record && focusedOverlay.kind === "polygon") {
-            if (typeof focusedOverlay.overlay.setOptions === "function") focusedOverlay.overlay.setOptions({ fillOpacity: 0.38 });
-            else if (focusedOverlay.overlay.options) focusedOverlay.overlay.options.fillOpacity = 0.38;
+            setPolygonOpacity(focusedOverlay, 0.38);
           }
           if (record.kind === "polygon") {
-            if (typeof record.overlay.setOptions === "function") record.overlay.setOptions({ fillOpacity: 0.62 });
-            else if (record.overlay.options) record.overlay.options.fillOpacity = 0.62;
+            setPolygonOpacity(record, 0.62);
             focusedOverlay = record;
           } else {
             focusedOverlay = null;
