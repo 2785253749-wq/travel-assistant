@@ -26,6 +26,11 @@ from app.infrastructure.repositories import (
     create_public_share_repository,
     create_user_scoped_supabase_repository,
 )
+from app.footprints.repositories import (
+    InMemoryFootprintRepository,
+    create_user_scoped_footprint_repository,
+)
+from app.footprints.service import FootprintModule, StaticCityDirectory
 from app.profile.repositories import (
     InMemoryProfileRepository,
     create_user_scoped_profile_repository,
@@ -124,6 +129,30 @@ def get_trip_service(user: CurrentUser) -> TripService:
     url, anon_key = _supabase_public_credentials()
     return TripService(
         create_user_scoped_supabase_repository(url, anon_key, user.access_token)
+    )
+
+
+@lru_cache(maxsize=1)
+def get_development_footprint_repository() -> InMemoryFootprintRepository:
+    return InMemoryFootprintRepository()
+
+
+@lru_cache(maxsize=1)
+def get_development_footprint_module() -> FootprintModule:
+    return FootprintModule(
+        get_development_footprint_repository(), StaticCityDirectory()
+    )
+
+
+def get_footprint_module(user: CurrentUser) -> FootprintModule:
+    if not _uses_supabase():
+        return get_development_footprint_module()
+    if not user.access_token:
+        raise RuntimeError("A verified bearer token is required for footprint access")
+    url, anon_key = _supabase_public_credentials()
+    return FootprintModule(
+        create_user_scoped_footprint_repository(url, anon_key, user.access_token),
+        StaticCityDirectory(),
     )
 
 
