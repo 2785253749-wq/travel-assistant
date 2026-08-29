@@ -97,7 +97,6 @@ class SupabaseFootprintRepository:
             response = (
                 self._client.table("user_footprints")
                 .upsert(payload, on_conflict="user_id,city_adcode")
-                .eq("user_id", str(user_id))
                 .execute()
             )
             rows = _rows(response.data)

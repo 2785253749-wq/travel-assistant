@@ -96,6 +96,28 @@ class FakeClient:
         return self.query
 
 
+class UpsertOnlyQuery:
+    def __init__(self) -> None:
+        self.payload: dict[str, object] | None = None
+        self.on_conflict: str | None = None
+
+    def upsert(self, payload: dict[str, object], *, on_conflict: str):
+        self.payload = payload
+        self.on_conflict = on_conflict
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=[_row()])
+
+
+class UpsertOnlyClient:
+    def __init__(self) -> None:
+        self.query = UpsertOnlyQuery()
+
+    def table(self, _name: str) -> UpsertOnlyQuery:
+        return self.query
+
+
 class FakePostgrest:
     def __init__(self) -> None:
         self.tokens: list[str] = []
@@ -174,7 +196,17 @@ def test_upsert_uses_verified_owner_and_composite_conflict(repository, client):
         "visited_at": "2026-08-28",
     }
     assert client.query.on_conflict == "user_id,city_adcode"
-    assert client.query.filters == [("user_id", str(USER_A))]
+    assert client.query.filters == []
+
+
+def test_upsert_works_with_postgrest_upsert_executor_without_eq_filter():
+    client = UpsertOnlyClient()
+    repository = SupabaseFootprintRepository(client)
+
+    stored = repository.upsert_owned(USER_A, XIAMEN, TODAY)
+
+    assert stored.id == FOOTPRINT_ID
+    assert client.query.on_conflict == "user_id,city_adcode"
 
 
 def test_update_filters_id_and_owner(repository, client):
