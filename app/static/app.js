@@ -2,7 +2,7 @@
   "use strict";
 
   const STATES = new Set(["signed_out", "collecting", "confirming", "planning", "planned", "error"]);
-  const VIEWS = new Set(["explore", "trips", "footprints"]);
+  const VIEWS = new Set(["explore", "trips"]);
   const PROFILE_LABELS = {
     origin: "出发地", destination: "目的地", start_date: "出发日期", end_date: "返回日期",
     travelers: "出行人数", budget_cny: "总预算（元）", preferences: "偏好", constraints: "限制",
@@ -32,9 +32,9 @@
     providerUpdatedAt: $("provider-updated-at"), chatPanel: $("chat-panel"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"),
-    explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"), footprintsPage: $("footprints-page"),
-    navigation: [$("explore-nav-button"), $("trips-nav-button"), $("footprints-nav-button")],
-    viewHeadings: { explore: $("explore-title"), trips: $("trips-page-title"), footprints: $("footprints-page-title") },
+    explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"),
+    navigation: [$("explore-nav-button"), $("trips-nav-button")],
+    viewHeadings: { explore: $("explore-title"), trips: $("trips-page-title") },
     exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
     mapBreadcrumb: $("map-breadcrumb"), mapTitle: $("map-title"), exploreShortcuts: $("explore-shortcuts"),
     recommendationsTitle: $("recommendations-title"), recommendationCount: $("recommendation-count"),
@@ -44,13 +44,6 @@
     tripContent: $("trip-content"), tripActions: $("trip-actions"), save: $("save-trip-button"),
     share: $("share-trip-button"), history: $("trip-history"), historyList: $("trip-history-list"),
     tripsAuthPrompt: $("trips-auth-prompt"), tripsLogin: $("trips-login-button"),
-    footprintsAuthPrompt: $("footprints-auth-prompt"), footprintsLogin: $("footprints-login-button"),
-    footprintsContent: $("footprints-content"), footprintMap: $("footprint-map"), footprintAmap: $("footprint-amap"), footprintStatic: $("footprint-static"),
-    footprintMapGrid: $("footprint-map-grid"), footprintMapEmpty: $("footprint-map-empty"),
-    footprintList: $("footprint-list"), footprintListEmpty: $("footprint-list-empty"),
-    footprintProvinceCount: $("footprint-province-count"), footprintCityCount: $("footprint-city-count"), footprintLatestCity: $("footprint-latest-city"),
-    footprintSearchForm: $("footprint-city-search-form"), footprintSearch: $("footprint-city-search"), footprintSearchResults: $("footprint-search-results"),
-    footprintVisitDialog: $("footprint-visit-dialog"), footprintVisitDialogTitle: $("footprint-visit-dialog-title"), footprintVisitForm: $("footprint-visit-form"), footprintVisitDate: $("footprint-visit-date"), footprintVisitCancel: $("footprint-visit-cancel"),
     shareDialog: $("share-dialog"), shareLink: $("share-link"), shareExpiry: $("share-expiry"),
     copyShare: $("copy-share-link"), revokeShare: $("revoke-share-link"), closeShare: $("close-share-dialog"), renameDialog: $("rename-dialog"),
     renameForm: $("rename-form"), renameInput: $("rename-input"), cancelRename: $("cancel-rename"),
@@ -65,7 +58,6 @@
   let refreshRequest = null;
   let tripsLoadGeneration = 0;
   let mapExplorer = null;
-  let footprintsController = null;
   let cityWeatherCard = null;
   let exploreInitialized = false;
   let authInitializationPromise = null;
@@ -136,9 +128,8 @@
   async function switchView(view, { focusHeading = false } = {}) {
     if (!VIEWS.has(view)) return;
     if (state.activeView !== view) invalidateTripsLoads();
-    if (state.activeView === "footprints" && view !== "footprints") footprintsController?.unmount();
     state.activeView = view;
-    for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage], ["footprints", elements.footprintsPage]]) {
+    for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage]]) {
       element.hidden = name !== view;
     }
     for (const button of elements.navigation) {
@@ -151,7 +142,6 @@
     elements.providerNotice.hidden = view !== "explore" || !state.providerNoticeActive;
     if (focusHeading) elements.viewHeadings[view].focus();
     if (view === "trips") await renderTripsPage();
-    if (view === "footprints") await ensureFootprintsController().mount();
   }
 
   function setStatus(message, isError = false) {
@@ -287,42 +277,9 @@
     description.textContent = item.description;
     const recommendation = document.createElement("p");
     recommendation.textContent = item.recommendation;
-    const footprintButton = document.createElement("button");
-    footprintButton.type = "button";
-    footprintButton.className = "secondary footprint-action";
-    const placeCity = exploreCityForPlace(item.id);
-    const footprintController = ensureFootprintsController();
-    const alreadySaved = placeCity && footprintController.isSaved(placeCity.adcode);
-    footprintButton.textContent = alreadySaved ? "已在我的足迹" : "加入我的足迹";
-    footprintButton.disabled = Boolean(alreadySaved);
-    footprintButton.addEventListener("click", async () => {
-      if (!state.session) {
-        navigateToAuth("signin");
-        return;
-      }
-      const city = exploreCityForPlace(item.id);
-      if (!city) return;
-      try {
-        const saved = await ensureFootprintsController().addCity({
-          cityAdcode: city.adcode,
-          suggestedVisitedAt: new Date().toISOString().slice(0, 10),
-        });
-        if (saved) {
-          footprintButton.textContent = "已在我的足迹";
-          footprintButton.disabled = true;
-        }
-      } catch (error) {
-        setStatus(error && error.code === "AUTH_REQUIRED" ? "请先登录后再管理足迹。" : "足迹暂时无法保存，请稍后重试。", true);
-      }
-    });
-    copy.append(label, title, description, recommendation, footprintButton);
+    copy.append(label, title, description, recommendation);
     elements.explorePlaceCard.append(visual, copy);
     elements.explorePlaceCard.hidden = false;
-  }
-
-  function exploreCityForPlace(placeId) {
-    const cities = window.TravelMapExplorer?.EXPLORE_TRIAL?.cities || [];
-    return cities.find((city) => (city.places || []).some((place) => place.id === placeId)) || null;
   }
 
   function clearSelectedPlace() {
@@ -558,37 +515,6 @@
       throw error;
     }
     return payload;
-  }
-
-  function ensureFootprintsController() {
-    if (footprintsController) return footprintsController;
-    const module = window.TravelFootprints;
-    if (!module || typeof module.createController !== "function") {
-      return { mount: async () => {}, unmount() {}, setIdentity() {}, addCity: async () => null, isSaved: () => false };
-    }
-    footprintsController = module.createController({
-      elements: {
-        authPrompt: elements.footprintsAuthPrompt, content: elements.footprintsContent,
-        map: elements.footprintAmap, staticMap: elements.footprintStatic, mapGrid: elements.footprintMapGrid, mapEmpty: elements.footprintMapEmpty,
-        list: elements.footprintList, listEmpty: elements.footprintListEmpty,
-        provinceCount: elements.footprintProvinceCount, cityCount: elements.footprintCityCount, latestCity: elements.footprintLatestCity,
-        searchForm: elements.footprintSearchForm, search: elements.footprintSearch, searchResults: elements.footprintSearchResults,
-        visitDialog: elements.footprintVisitDialog, visitDialogTitle: elements.footprintVisitDialogTitle,
-        visitForm: elements.footprintVisitForm, visitDate: elements.footprintVisitDate, visitCancel: elements.footprintVisitCancel,
-      },
-      request: requestJson,
-      createMap: (root, options) => window.TravelMapExplorer?.createFootprintMap(root, {
-        ...options,
-        amapKey: window.TRAVEL_ASSISTANT_CONFIG?.amapJsKey || null,
-        securityJsCode: window.TRAVEL_ASSISTANT_CONFIG?.amapSecurityJsCode || null,
-      }),
-      today: () => new Date().toISOString().slice(0, 10),
-      localStorage: window.localStorage,
-      onAuthRequired: () => navigateToAuth("signin"),
-      onStatus: setStatus,
-    });
-    footprintsController.setIdentity(stableUserId(state.session));
-    return footprintsController;
   }
 
   function publicError(code) {
@@ -986,7 +912,6 @@
     sessionRevision += 1;
     state.session = null;
     state.user = null;
-    footprintsController?.setIdentity(null);
     clearAccountScopedState({ showWelcome: false });
     elements.authFormPanel.hidden = false;
     elements.account.hidden = true;
@@ -1039,7 +964,6 @@
     }
     state.session = session;
     state.user = session.user || {};
-    footprintsController?.setIdentity(stableUserId(session));
     if (options.resetConversation && !identityChanged) clearConversationState();
     elements.accountEmail.textContent = state.user.email || "已登录账户";
     elements.authFormPanel.hidden = true;
@@ -1050,7 +974,6 @@
     setState("collecting");
     if (identityChanged || options.resetConversation) setStatus("已切换登录会话，请重新确认行程资料。", false);
     if (state.activeView === "trips" && refreshTrips) return renderTripsPage();
-    if (state.activeView === "footprints") footprintsController?.mount();
   }
 
   async function refreshBrowserSession(currency) {
@@ -1437,7 +1360,6 @@
   elements.accountPageLink.addEventListener("click", () => navigateToAuth("signin"));
   elements.signOut.addEventListener("click", signOut);
   elements.tripsLogin.addEventListener("click", () => navigateToAuth("signin"));
-  elements.footprintsLogin.addEventListener("click", () => navigateToAuth("signin"));
   elements.save.addEventListener("click", saveTrip);
   elements.share.addEventListener("click", createShare);
   elements.copyShare.addEventListener("click", copyShareLink);

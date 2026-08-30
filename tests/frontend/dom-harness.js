@@ -206,7 +206,6 @@ function createHarness(options = {}) {
   const html = fs.readFileSync(path.join(root, "app", "static", "index.html"), "utf8");
   const exploreDataSource = fs.readFileSync(path.join(root, "app", "static", "data", "explore-data.js"), "utf8");
   const mapExplorerSource = fs.readFileSync(path.join(root, "app", "static", "map-explorer.js"), "utf8");
-  const footprintsSource = fs.readFileSync(path.join(root, "app", "static", "footprints.js"), "utf8");
   const source = fs.readFileSync(path.join(root, "app", "static", "app.js"), "utf8");
   const { document, elements, created } = buildDocument(html);
   const auth = options.auth || new FakeSupabaseAuth();
@@ -259,7 +258,6 @@ function createHarness(options = {}) {
   };
   vm.runInNewContext(exploreDataSource, context, { filename: "explore-data.js" });
   vm.runInNewContext(mapExplorerSource, context, { filename: "map-explorer.js" });
-  vm.runInNewContext(footprintsSource, context, { filename: "footprints.js" });
   vm.runInNewContext(source, context, { filename: "app.js" });
   return { auth, document, elements, created, fetchCalls, historyCalls, window, settle, jsonResponse };
 }
