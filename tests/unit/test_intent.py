@@ -94,6 +94,24 @@ def test_rule_classifier_prioritizes_train_queries_over_planning_context(message
 @pytest.mark.parametrize(
     "message",
     [
+        "明天福州到上海车票有哪些",
+        "福州到上海的车票",
+        "帮我看看明天福州去上海还有什么车票",
+        "明天福州到厦门有哪些高铁",
+    ],
+)
+def test_rule_classifier_routes_rail_ticket_route_questions_to_train_query(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "train_query"
+
+
+@pytest.mark.parametrize("message", ["我要买汽车票", "大巴车票多少钱"])
+def test_rule_classifier_does_not_route_road_ticket_questions_to_train_query(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent != "train_query"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
         "从北京到厦门，想安排景点和美食，也想参考天气",
         "厦门三天，2人预算4000元，想了解天气和景点",
     ],
