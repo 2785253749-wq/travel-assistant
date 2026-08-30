@@ -72,13 +72,14 @@ class _DynamicClauseRelations:
 def assess_message(message: str) -> SafetyDecision:
     """Classify prohibited requests before any model or provider is invoked."""
     normalized = message.strip().lower()
+    train_lookup = _is_supported_train_lookup(normalized)
     asks_dated_ticket_inventory = bool(
         re.search(r"(?:今天|明天|后天|\d{4}-\d{2}-\d{2}).{0,12}(?:还有|有).{0,8}(?:张|票)", normalized)
     )
     if (
-        any(term in normalized for term in _REALTIME_TERMS)
-        or asks_dated_ticket_inventory
-        or _requests_realtime_dynamic_data(normalized)
+        (not train_lookup and any(term in normalized for term in _REALTIME_TERMS))
+        or (not train_lookup and asks_dated_ticket_inventory)
+        or (not train_lookup and _requests_realtime_dynamic_data(normalized))
     ):
         return SafetyDecision("UNVERIFIABLE_REALTIME_REQUEST")
     if (
@@ -90,6 +91,18 @@ def assess_message(message: str) -> SafetyDecision:
     if any(term in normalized for term in _OUT_OF_SCOPE_TERMS):
         return SafetyDecision("OUT_OF_SCOPE")
     return SafetyDecision()
+
+
+def _is_supported_train_lookup(message: str) -> bool:
+    """Permit timetable/inventory lookup while retaining purchase refusals."""
+    rail_terms = ("火车", "高铁", "动车", "列车", "车次", "车票", "余票", "有票")
+    forbidden = ("保证", "帮我买", "购买", "支付", "预订", "订票", "抢票")
+    other_dynamic_subjects = ("机票", "航班", "酒店", "住宿", "门票")
+    return (
+        any(term in message for term in rail_terms)
+        and not any(term in message for term in forbidden)
+        and not any(term in message for term in other_dynamic_subjects)
+    )
 
 
 def _requests_realtime_dynamic_data(message: str) -> bool:

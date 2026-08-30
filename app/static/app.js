@@ -31,7 +31,7 @@
     authFormPanel: $("auth-form"), status: $("status-message"), providerNotice: $("provider-notice"),
     providerUpdatedAt: $("provider-updated-at"), chatPanel: $("chat-panel"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
-    assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"),
+    assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"), assistantMaximize: $("assistant-maximize"),
     explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"),
     navigation: [$("explore-nav-button"), $("trips-nav-button")],
     viewHeadings: { explore: $("explore-title"), trips: $("trips-page-title") },
@@ -51,6 +51,7 @@
   const state = {
     name: "signed_out", activeView: "explore", busy: false, session: null, authClient: null, user: null, profile: null,
     pendingResult: null, currentTrip: null, renameTripId: null, shareTripId: null, providerNoticeActive: false,
+    assistantMaximized: false, assistantRestore: null,
     threadId: makeThreadId(), cityWeather: new Map(), cityWeatherRequests: new Map(), selectedExploreCityId: null,
   };
   let authGeneration = 0;
@@ -181,14 +182,60 @@
 
   function clampAssistantPosition() {
     if (elements.assistantPanel.hidden) return;
+    if (state.assistantMaximized) {
+      Object.assign(elements.assistantPanel.style, { left: "16px", top: "16px", right: "auto", bottom: "auto" });
+      return;
+    }
     const left = Number.parseFloat(elements.assistantPanel.style.left);
     const top = Number.parseFloat(elements.assistantPanel.style.top);
     if (!Number.isFinite(left) || !Number.isFinite(top)) return;
     setAssistantPosition(left, top);
   }
 
+  function geometryValue(value, fallback) {
+    if (typeof value === "string" && value.trim()) return value;
+    return Number.isFinite(fallback) ? `${Math.round(fallback)}px` : "";
+  }
+
+  function assistantGeometry() {
+    const rect = elements.assistantPanel.getBoundingClientRect();
+    return {
+      left: geometryValue(elements.assistantPanel.style.left, rect.left),
+      top: geometryValue(elements.assistantPanel.style.top, rect.top),
+      width: geometryValue(elements.assistantPanel.style.width, rect.width),
+      height: geometryValue(elements.assistantPanel.style.height, rect.height),
+    };
+  }
+
+  function updateAssistantMaximizeControl() {
+    elements.assistantPanel.classList.toggle("is-maximized", state.assistantMaximized);
+    elements.assistantMaximize.textContent = state.assistantMaximized ? "还原" : "最大化";
+    elements.assistantMaximize.setAttribute("aria-label", `${state.assistantMaximized ? "还原" : "最大化"} AI 助手`);
+  }
+
+  function setAssistantMaximized(maximized) {
+    if (maximized === state.assistantMaximized) return;
+    if (maximized) {
+      state.assistantRestore = assistantGeometry();
+      state.assistantMaximized = true;
+      Object.assign(elements.assistantPanel.style, {
+        left: "16px", top: "16px", right: "auto", bottom: "auto", width: "", height: "",
+      });
+    } else {
+      const restore = state.assistantRestore;
+      state.assistantMaximized = false;
+      state.assistantRestore = null;
+      if (restore) Object.assign(elements.assistantPanel.style, { ...restore, right: "auto", bottom: "auto" });
+    }
+    updateAssistantMaximizeControl();
+  }
+
   function resetAssistantPosition() {
+    state.assistantMaximized = false;
+    state.assistantRestore = null;
+    updateAssistantMaximizeControl();
     Object.assign(elements.assistantPanel.style, { left: "", top: "", right: "", bottom: "" });
+    Object.assign(elements.assistantPanel.style, { width: "", height: "" });
   }
 
   function initializeAssistantDrag() {
@@ -199,7 +246,7 @@
     };
 
     handle.addEventListener("pointerdown", (event) => {
-      if (drag || elements.assistantPanel.hidden || event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
+      if (drag || state.assistantMaximized || elements.assistantPanel.hidden || event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
       const rect = elements.assistantPanel.getBoundingClientRect();
       drag = {
         pointerId: event.pointerId,
@@ -220,7 +267,7 @@
     handle.addEventListener("lostpointercapture", stopDrag);
     handle.addEventListener("keydown", (event) => {
       const move = keyboardMoves[event.key];
-      if (!move || elements.assistantPanel.hidden) return;
+      if (!move || state.assistantMaximized || elements.assistantPanel.hidden) return;
       const rect = elements.assistantPanel.getBoundingClientRect();
       const left = Number.parseFloat(elements.assistantPanel.style.left);
       const top = Number.parseFloat(elements.assistantPanel.style.top);
@@ -231,6 +278,89 @@
     handle.setAttribute("aria-label", "旅行助手位置控制。可拖动，或使用方向键每次移动 40 像素。");
     window.addEventListener("resize", clampAssistantPosition);
     window.addEventListener("orientationchange", clampAssistantPosition);
+  }
+
+  function initializeAssistantResize() {
+    const panel = elements.assistantPanel;
+    const edges = ["n", "e", "s", "w", "ne", "se", "sw", "nw"];
+    const minWidth = () => Math.min(380, Math.max(0, window.innerWidth - 24));
+    const minHeight = () => Math.min(450, Math.max(0, window.innerHeight - 96));
+    let resize = null;
+
+    const resizePanel = (event) => {
+      if (!resize || resize.pointerId !== event.pointerId) return;
+      const { edge, startRect } = resize;
+      const horizontal = edge.includes("e") || edge.includes("w");
+      const vertical = edge.includes("n") || edge.includes("s");
+      const right = startRect.left + startRect.width;
+      const bottom = startRect.top + startRect.height;
+      let left = startRect.left;
+      let top = startRect.top;
+      let width = startRect.width;
+      let height = startRect.height;
+
+      if (edge.length === 2) {
+        const horizontalDelta = edge.includes("e") ? event.clientX - resize.startX : resize.startX - event.clientX;
+        const verticalDelta = edge.includes("s") ? event.clientY - resize.startY : resize.startY - event.clientY;
+        const widthScale = (startRect.width + horizontalDelta) / startRect.width;
+        const heightScale = (startRect.height + verticalDelta) / startRect.height;
+        const requestedScale = Math.abs(widthScale - 1) >= Math.abs(heightScale - 1) ? widthScale : heightScale;
+        const minimumScale = Math.max(minWidth() / startRect.width, minHeight() / startRect.height);
+        const maximumWidth = edge.includes("e") ? window.innerWidth - startRect.left - 12 : right - 12;
+        const maximumHeight = edge.includes("s") ? window.innerHeight - startRect.top - 12 : bottom - 12;
+        const maximumScale = Math.min(maximumWidth / startRect.width, maximumHeight / startRect.height);
+        const scale = clamp(requestedScale, minimumScale, maximumScale);
+        width = startRect.width * scale;
+        height = startRect.height * scale;
+        left = edge.includes("w") ? right - width : startRect.left;
+        top = edge.includes("n") ? bottom - height : startRect.top;
+      } else {
+        if (edge.includes("e")) width = Math.min(Math.max(minWidth(), startRect.width + event.clientX - resize.startX), Math.max(minWidth(), window.innerWidth - left - 12));
+        if (edge.includes("w")) {
+          left = clamp(startRect.left + event.clientX - resize.startX, 12, right - minWidth());
+          width = right - left;
+        }
+        if (edge.includes("s")) height = Math.min(Math.max(minHeight(), startRect.height + event.clientY - resize.startY), Math.max(minHeight(), window.innerHeight - top - 12));
+        if (edge.includes("n")) {
+          top = clamp(startRect.top + event.clientY - resize.startY, 12, bottom - minHeight());
+          height = bottom - top;
+        }
+      }
+
+      if (!horizontal) left = startRect.left;
+      if (!vertical) top = startRect.top;
+      Object.assign(panel.style, {
+        left: `${Math.round(left)}px`, top: `${Math.round(top)}px`,
+        width: `${Math.round(width)}px`, height: `${Math.round(height)}px`, right: "auto", bottom: "auto",
+      });
+    };
+
+    for (const edge of edges) {
+      const handle = document.createElement("span");
+      handle.className = `assistant-resize-handle assistant-resize-${edge}`;
+      handle.dataset.edge = edge;
+      handle.setAttribute("aria-hidden", "true");
+      handle.addEventListener("pointerdown", (event) => {
+        if (resize || state.assistantMaximized || panel.hidden || event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
+        event.preventDefault();
+        resize = {
+          pointerId: event.pointerId,
+          edge,
+          startX: event.clientX,
+          startY: event.clientY,
+          startRect: panel.getBoundingClientRect(),
+        };
+        handle.setPointerCapture(event.pointerId);
+      });
+      handle.addEventListener("pointermove", resizePanel);
+      const stopResize = (event) => {
+        if (resize && resize.pointerId === event.pointerId) resize = null;
+      };
+      handle.addEventListener("pointerup", stopResize);
+      handle.addEventListener("pointercancel", stopResize);
+      handle.addEventListener("lostpointercapture", stopResize);
+      panel.append(handle);
+    }
   }
 
   function clearChildren(node) {
@@ -764,6 +894,184 @@
     return block;
   }
 
+  const TRAIN_REASON_LABELS = Object.freeze({
+    time_fit: "符合出发时间要求",
+    shorter_duration: "耗时更短",
+    lower_price: "价格更低",
+    earlier_arrival: "到达更早",
+    seat_available: "指定席别当前返回有票",
+    better_overall_fit: "综合条件更合适",
+  });
+
+  function formatTrainTime(value, includeDate = false) {
+    if (typeof value !== "string") return "时间未返回";
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})/.exec(value.trim());
+    if (!match) return "时间未返回";
+    return includeDate ? `${match[2]}-${match[3]} ${match[4]}` : match[4];
+  }
+
+  function formatTrainFetchedAt(value) {
+    if (typeof value !== "string" || !value.trim()) return "时间未返回";
+    const date = new Date(value.trim());
+    if (Number.isNaN(date.getTime())) return "时间未返回";
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+    return values.year && values.month && values.day && values.hour && values.minute
+      ? `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}` : "时间未返回";
+  }
+
+  function formatTrainDuration(minutes) {
+    if (!Number.isFinite(minutes) || minutes < 0) return "耗时未返回";
+    const hours = Math.floor(minutes / 60);
+    const remainder = minutes % 60;
+    if (!hours) return `${remainder}分钟`;
+    return remainder ? `${hours}小时${remainder}分` : `${hours}小时`;
+  }
+
+  function trainSeatStatus(seat) {
+    if (seat && seat.availability === "available") {
+      return seat.remaining_label && seat.remaining_label !== "有" ? seat.remaining_label : "有票";
+    }
+    if (seat && seat.availability === "unavailable") return "无票";
+    return "余票未知";
+  }
+
+  function formatTrainPrice(seat) {
+    return seat && seat.price_cny !== null && seat.price_cny !== undefined && Number.isFinite(Number(seat.price_cny)) && Number(seat.price_cny) > 0
+      ? `¥${seat.price_cny}` : "票价未返回";
+  }
+
+  function trainSeats(option, seatType) {
+    const seats = Array.isArray(option && option.seats) ? option.seats : [];
+    if (seatType) {
+      const requested = seats.find((seat) => seat && seat.seat_name === seatType);
+      return requested ? [requested] : [];
+    }
+    const validSeats = seats.filter((seat) => seat && typeof seat.seat_name === "string" && seat.seat_name.trim());
+    if (!validSeats.length) return [];
+    const preferred = validSeats.find((seat) => seat.seat_name === "二等座") || validSeats[0];
+    return [preferred, ...validSeats.filter((seat) => seat !== preferred)].slice(0, 3);
+  }
+
+  function renderTrainOption(option, { seatType = null, recommended = false } = {}) {
+    if (!option || typeof option !== "object") return null;
+    const card = document.createElement("article");
+    card.className = "train-option-card";
+    const title = document.createElement("h4");
+    title.className = "train-option-title";
+    const trainNumber = document.createElement("span");
+    trainNumber.className = "train-number";
+    trainNumber.textContent = String(option.train_no || "车次未返回");
+    title.append(trainNumber);
+
+    const route = document.createElement("div");
+    route.className = "train-route";
+    const departure = document.createElement("div");
+    departure.className = "train-station";
+    const departureTime = document.createElement("strong");
+    departureTime.className = "train-time";
+    const arrivalTime = document.createElement("strong");
+    arrivalTime.className = "train-time";
+    const crossDay = typeof option.departure_at === "string" && typeof option.arrival_at === "string"
+      && option.departure_at.slice(0, 10) !== option.arrival_at.slice(0, 10);
+    departureTime.textContent = formatTrainTime(option.departure_at, crossDay);
+    arrivalTime.textContent = formatTrainTime(option.arrival_at, crossDay);
+    const departureStation = document.createElement("span");
+    departureStation.textContent = String(option.departure_station || "出发站未返回");
+    departure.append(departureTime, departureStation);
+    const arrival = document.createElement("div");
+    arrival.className = "train-station";
+    const arrivalStation = document.createElement("span");
+    arrivalStation.textContent = String(option.arrival_station || "到达站未返回");
+    arrival.append(arrivalTime, arrivalStation);
+    const duration = document.createElement("span");
+    duration.className = "train-duration";
+    duration.textContent = `↓ ${formatTrainDuration(option.duration_minutes)}`;
+    route.append(departure, duration, arrival);
+
+    const seats = document.createElement("div");
+    seats.className = "train-seats";
+    for (const seat of trainSeats(option, seatType)) {
+      const seatNode = document.createElement("span");
+      seatNode.className = "train-seat";
+      const seatName = document.createElement("strong");
+      seatName.className = "train-seat-name";
+      seatName.textContent = `席别：${String(seat.seat_name || "席别未返回")}`;
+      const price = document.createElement("span");
+      price.className = "train-seat-price";
+      price.textContent = `价格：${formatTrainPrice(seat)}`;
+      const status = document.createElement("span");
+      status.className = `train-status train-status-${seat.availability || "unknown"}`;
+      const availability = document.createElement("span");
+      availability.className = "train-seat-availability";
+      availability.textContent = `余票：${trainSeatStatus(seat)}`;
+      status.append(availability);
+      seatNode.append(seatName, price, status);
+      seats.append(seatNode);
+    }
+    if (!seats.firstChild) {
+      const missing = document.createElement("span");
+      missing.className = "train-seat";
+      missing.textContent = seatType ? `${seatType}：席别未返回` : "席别未返回";
+      seats.append(missing);
+    }
+    card.append(title, route, seats);
+    return card;
+  }
+
+  function renderTrainResult(trainResult) {
+    if (!trainResult || trainResult.status !== "success") return null;
+    const options = Array.isArray(trainResult.options)
+      ? trainResult.options.filter((option) => option && typeof option === "object") : [];
+    const candidates = Array.isArray(trainResult.recommendation_candidates)
+      ? trainResult.recommendation_candidates.filter((option) => option && typeof option === "object") : [];
+    const allOptions = [...options, ...candidates.filter((candidate) => !options.some((option) => option.option_id === candidate.option_id))];
+    if (!allOptions.length) return null;
+    const recommendation = trainResult.recommendation && typeof trainResult.recommendation === "object"
+      ? trainResult.recommendation : null;
+    const selectedId = recommendation && typeof recommendation.selected_option_id === "string"
+      ? recommendation.selected_option_id : null;
+    const selected = allOptions.find((option) => option.option_id === selectedId) || allOptions[0];
+    const query = trainResult.query && typeof trainResult.query === "object" ? trainResult.query : {};
+    const region = document.createElement("article");
+    region.className = "train-result";
+    const heading = document.createElement("h3");
+    heading.textContent = recommendation && selectedId === selected.option_id ? "推荐车次" : "车次结果";
+    const primary = renderTrainOption(selected, { seatType: query.seat_type || null, recommended: heading.textContent === "推荐车次" });
+    if (primary) region.append(heading, primary);
+
+    if (recommendation && Array.isArray(recommendation.reason_codes) && recommendation.reason_codes.length) {
+      const reasons = document.createElement("p");
+      reasons.className = "train-recommendation-reason";
+      reasons.textContent = `推荐理由：${recommendation.reason_codes.map((code) => TRAIN_REASON_LABELS[code]).filter(Boolean).join("，") || "综合条件更合适"}`;
+      region.append(reasons);
+    }
+    const backups = candidates.filter((option) => option.option_id !== selected.option_id).slice(0, 3);
+    if (backups.length) {
+      const backupHeading = document.createElement("h4");
+      backupHeading.className = "train-alternatives-heading";
+      backupHeading.textContent = "其他可选";
+      region.append(backupHeading);
+      for (const option of backups) {
+        const card = renderTrainOption(option, { seatType: query.seat_type || null });
+        if (card) region.append(card);
+      }
+    }
+    const fetchedAt = typeof trainResult.fetched_at === "string" ? trainResult.fetched_at : "";
+    const queryTime = formatTrainFetchedAt(fetchedAt);
+    const time = document.createElement("p");
+    time.className = "train-query-time";
+    time.textContent = `查询时间：${queryTime === "时间未返回" ? "未知" : queryTime}`;
+    const disclaimer = document.createElement("p");
+    disclaimer.className = "train-disclaimer";
+    disclaimer.textContent = "车票价格、余票及车次信息可能实时变化，请以铁路官方最终查询结果为准。";
+    region.append(time, disclaimer);
+    return region;
+  }
+
   function asItinerary(reply) {
     if (typeof reply !== "string") return null;
     try {
@@ -819,6 +1127,8 @@
         return;
       }
       addMessage(response.reply, "assistant");
+      const trainResult = renderTrainResult(response.train_result);
+      if (trainResult) elements.messages.append(trainResult);
       state.pendingResult = {
         reply: response.reply, profile: response.profile || {}, itinerary: null,
         trip_id: response.trip_id || tripId,
@@ -1369,7 +1679,12 @@
   elements.cancelRename.addEventListener("click", () => { if (!state.busy) elements.renameDialog.close(); });
   elements.assistantReset.setAttribute("aria-label", "重置 AI 助手位置");
   elements.assistantReset.addEventListener("click", resetAssistantPosition);
+  elements.assistantMaximize.addEventListener("click", () => {
+    if (!state.busy) setAssistantMaximized(!state.assistantMaximized);
+  });
+  updateAssistantMaximizeControl();
   initializeAssistantDrag();
+  initializeAssistantResize();
   setAssistantOpen(false);
   initializeApp();
 })();

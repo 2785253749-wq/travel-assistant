@@ -21,6 +21,8 @@ from langchain_deepseek import ChatDeepSeek
 from app.agent.extraction import ExtractionCandidate, build_extraction_candidate, merge_profile, validate_profile
 from app.agent.intent import Intent, IntentResult, classify_intent
 from app.agent.safety import REFUSALS, assess_destination, assess_message
+from app.agent.train_extraction import TrainQueryExtractor
+from app.application.train import TrainRecommendationService
 from app.core.config import get_settings
 from app.core.logging import operational_context
 from app.core.usage import ProviderUnavailable, get_model_gateway
@@ -47,6 +49,12 @@ FIELD_LABELS = {
     "end_date": "返回日期", "travelers": "出行人数", "budget_cny": "总预算",
 }
 
+_ROUTE_SOURCE = r"(?:从|由|from)"
+_ROUTE_SEPARATOR = r"(?:前往|去往|到达|抵达|到|去|往|to)"
+_DISTINCT_ROUTE_SEPARATOR = r"(?:前往|去往|到达|抵达|to)"
+_ROUTE_PLACE = r"(?:[A-Za-z][A-Za-z -]{0,29}|[\u4e00-\u9fff·]{1,30})"
+_ROUTE_PLACE_LAZY = r"(?:[A-Za-z][A-Za-z -]{0,29}?|[\u4e00-\u9fff·]{1,30}?)"
+
 
 class TravelState(TypedDict, total=False):
     user_message: str
@@ -72,6 +80,7 @@ class ChatResult:
     trip_id: UUID | None = None
     intent: Intent | None = None
     persisted_this_request: bool = False
+    train_result: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -176,13 +185,25 @@ class ModelIntentClassifier:
 class RuleIntentClassifier:
     """Credential-free pre-confirmation routing; paid models are planning-only."""
 
-    _COMPLETE_PLAN_ROUTE = re.compile(r"(?:从|from)\s*[^\s，,。]{1,30}?\s*(?:到|去|to)\s*[^\s，,。]{1,30}", re.IGNORECASE)
+    _TRAIN_TICKET_ROUTE = re.compile(
+        rf"(?:{_ROUTE_SOURCE}\s*{_ROUTE_PLACE_LAZY}(?:出发)?\s*"
+        rf"{_ROUTE_SEPARATOR}\s*{_ROUTE_PLACE}|"
+        rf"{_ROUTE_PLACE_LAZY}\s*{_ROUTE_SEPARATOR}\s*{_ROUTE_PLACE})",
+        re.IGNORECASE,
+    )
+    _COMPLETE_PLAN_ROUTE = re.compile(
+        rf"(?:{_ROUTE_SOURCE}\s*{_ROUTE_PLACE_LAZY}(?:出发)?\s*"
+        rf"{_ROUTE_SEPARATOR}\s*{_ROUTE_PLACE}|"
+        rf"(?<![\u4e00-\u9fffA-Za-z])(?!(?:怎么|如何|怎样|哪里|哪儿))"
+        rf"{_ROUTE_PLACE_LAZY}(?:出发)?\s*{_DISTINCT_ROUTE_SEPARATOR}\s*{_ROUTE_PLACE})",
+        re.IGNORECASE,
+    )
     _PLAN_DATE = re.compile(r"\b20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b")
     _PLAN_TRAVELERS = re.compile(r"(?<!\d)[1-9]\d?\s*(?:人|travellers?|travelers?)", re.IGNORECASE)
     _PLAN_BUDGET = re.compile(r"(?:预算|budget)\s*(?:为|是|约)?\s*[:：]?\s*\d{1,8}", re.IGNORECASE)
     _PLAN_CONTEXT = re.compile(
         r"(?:规划(?:一[份个]|\d+\s*天|行程)|制定行程|生成行程|出游|想安排|"
-        r"从[^，,。]{1,30}(?:出发)?\s*(?:到|去))",
+        rf"(?:从|由)[^，,。]{{1,30}}(?:出发)?\s*{_ROUTE_SEPARATOR})",
         re.IGNORECASE,
     )
 
@@ -214,6 +235,15 @@ class RuleIntentClassifier:
             for term in ("作业", "裁员", "写代码", "编程", "homework", "write my")
         ):
             return IntentResult(intent="unsupported", confidence=1.0)
+        if any(
+            term in normalized
+            for term in ("火车", "高铁", "动车", "列车", "车次", "火车票", "高铁票", "动车票", "二等座", "一等座", "商务座", "余票", "有票吗", "有哪些车", "的车", "查车", "最快的车", "最便宜的车")
+        ) or (
+            "车票" in normalized
+            and self._TRAIN_TICKET_ROUTE.search(normalized) is not None
+            and not any(term in normalized for term in ("汽车", "大巴", "巴士", "客车", "公交", "长途"))
+        ):
+            return IntentResult(intent="train_query", confidence=1.0)
         # Planning context owns routing even when it also says “weather”,
         # “attractions”, or “food”: incomplete profiles must reach collection.
         if self._has_planning_context(normalized):
@@ -284,8 +314,8 @@ class RuleTravelExtractor:
     )
     _ROUTE = re.compile(
         _TRAVELER_PREFIX
-        + r"(?:(?:\u4ece|from)\s*)?([^\s\uff0c,\u3002]{1,30}?)(?:\u51fa\u53d1)?\s*"
-        r"(?:\u5230|\u53bb|to)\s*([^\s\uff0c,\u30020-9]{1,30})",
+        + rf"(?:{_ROUTE_SOURCE}\s*)?({_ROUTE_PLACE_LAZY})(?:出发)?\s*"
+        rf"{_ROUTE_SEPARATOR}\s*({_ROUTE_PLACE})",
         re.IGNORECASE,
     )
     _DATE = re.compile(
@@ -320,6 +350,15 @@ class RuleTravelExtractor:
     }
     _BUDGET = re.compile(
         r"(?:\u9884\u7b97(?:\u6539\u4e3a|\u8c03\u6574\u4e3a|\u4e3a|\u662f|\u7ea6)?|budget(?:\s+(?:to|is))?)\s*[:\uff1a]?\s*(\d{1,8})",
+        re.IGNORECASE,
+    )
+    _DURATION = re.compile(
+        r"(?:[1-9]\d?|[一二两三四五六七八九十]+)\s*天",
+        re.IGNORECASE,
+    )
+    _ROUTE_ACTIVITY = re.compile(
+        r"(?:自由行|旅游|旅行|游玩|出游|"
+        r"玩(?=\s*(?:[1-9]\d?|[一二两三四五六七八九十]+)\s*天))",
         re.IGNORECASE,
     )
 
@@ -379,9 +418,26 @@ class RuleTravelExtractor:
 
         return [normalized for _, normalized in sorted(candidates)]
 
+    @classmethod
+    def _route_message(cls, message: str) -> str:
+        """Mask non-route fields so date ranges cannot look like city routes."""
+        masked = list(message)
+        for pattern in (
+            cls._DATE,
+            cls._SHORT_DATE,
+            cls._CHINESE_DATE,
+            cls._TRAVELERS,
+            cls._BUDGET,
+            cls._DURATION,
+            cls._ROUTE_ACTIVITY,
+        ):
+            for match in pattern.finditer(message):
+                masked[match.start():match.end()] = " " * (match.end() - match.start())
+        return "".join(masked)
+
     def extract(self, message: str, profile: TravelProfile) -> TravelProfile:
         updates: dict[str, Any] = {}
-        route = self._ROUTE.search(message)
+        route = self._ROUTE.search(self._route_message(message))
         if route:
             updates.update(origin=route.group(1).strip(), destination=route.group(2).strip())
         dates = self._normalized_dates(message)
@@ -528,6 +584,9 @@ class SafeTravelAgent:
         knowledge: KnowledgeAnswerer | None = None,
         weather: DailyWeatherProvider | None = None,
         initial_profile: TravelProfile | None = None,
+        train_extractor: Any | None = None,
+        train_service: Any | None = None,
+        train_recommendation: TrainRecommendationService | None = None,
     ) -> None:
         self._classifier = classifier or ModelIntentClassifier()
         self._extractor = extractor or ModelTravelExtractor()
@@ -538,6 +597,9 @@ class SafeTravelAgent:
         self._knowledge = knowledge or UnavailableKnowledgeAnswerService()
         self._weather = weather or NullWeatherService()
         self._initial_profile = initial_profile or TravelProfile()
+        self._train_extractor = train_extractor or TrainQueryExtractor()
+        self._train_service = train_service
+        self._train_recommendation = train_recommendation or TrainRecommendationService()
 
     def collect(self, message: str, trip: Trip | None) -> ChatResult:
         """Normalize travel details and stop before providers or the planner."""
@@ -559,6 +621,8 @@ class SafeTravelAgent:
             special = self._special_intent_result(intent, message)
             if special is not None:
                 return special
+            if intent == "train_query":
+                return self._train_query_result(message)
             if intent == "unsupported":
                 result = self._refusal("OUT_OF_SCOPE")
                 result.intent = intent
@@ -750,6 +814,8 @@ class SafeTravelAgent:
             special = self._special_intent_result(intent, message)
             if special is not None:
                 return special
+            if intent == "train_query":
+                return self._train_query_result(message)
             if intent == "smalltalk":
                 return ChatResult(
                     "你好！我可以帮你规划国内 2 至 7 天的自由行。",
@@ -925,6 +991,65 @@ class SafeTravelAgent:
                 reply = card.summary
             return ChatResult(reply, "collecting", {}, warnings=warnings, intent=intent)
         return None
+
+    def _train_query_result(self, message: str) -> ChatResult:
+        extracted = self._train_extractor.extract(message)
+        query = getattr(extracted, "query", None)
+        if query is None:
+            labels = {
+                "departure_station": "出发站",
+                "arrival_station": "到达站",
+                "travel_date": "出发日期",
+            }
+            missing = getattr(extracted, "missing_fields", ())
+            prompt = "、".join(labels.get(field, field) for field in missing)
+            return ChatResult(
+                f"请补充车次查询的{prompt}。",
+                "collecting",
+                {},
+                error_code="TRAIN_QUERY_INCOMPLETE",
+                intent="train_query",
+            )
+        if self._train_service is None:
+            return ChatResult(
+                "车次服务暂时无法查询，请稍后重试。",
+                "collecting",
+                {},
+                error_code="TRAIN_SERVICE_UNAVAILABLE",
+                intent="train_query",
+            )
+        try:
+            result = self._train_service.search(query)
+            result = self._train_recommendation.recommend(result, message)
+            return ChatResult(
+                self._train_recommendation.render_reply(result),
+                "collecting",
+                {},
+                intent="train_query",
+                train_result=result,
+            )
+        except Exception as exc:
+            from app.trains.service import TrainQueryError
+
+            if isinstance(exc, TrainQueryError):
+                return ChatResult(
+                    str(exc.message),
+                    "collecting",
+                    {},
+                    error_code=exc.code,
+                    intent="train_query",
+                )
+            logging.getLogger("app.agent").warning(
+                "train_query_failed",
+                extra=operational_context(error_code="TRAIN_SERVICE_UNAVAILABLE", exception_type=type(exc).__name__),
+            )
+            return ChatResult(
+                "车次服务暂时无法查询，请稍后重试。",
+                "collecting",
+                {},
+                error_code="TRAIN_SERVICE_UNAVAILABLE",
+                intent="train_query",
+            )
 
     @staticmethod
     def _collecting(

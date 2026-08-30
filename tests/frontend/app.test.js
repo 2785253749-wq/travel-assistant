@@ -38,6 +38,32 @@ function assertBefore(events, first, second) {
   assert.ok(events.indexOf(first) < events.indexOf(second), `${first} must precede ${second}: ${events.join(", ")}`);
 }
 
+function trainResponse(overrides = {}) {
+  return {
+    reply: "已查询到车次。",
+    stage: "collecting",
+    profile: {},
+    train_result: {
+      query: { departure_station: "福州", arrival_station: "上海", travel_date: "2026-08-31" },
+      options: [
+        {
+          option_id: "G25-2026-08-31", train_no: "G25", departure_station: "福州", arrival_station: "上海",
+          departure_at: "2026-08-31T08:35:00+08:00", arrival_at: "2026-08-31T12:48:00+08:00",
+          duration_minutes: 253, bookable: true,
+          seats: [{ seat_name: "二等座", price_cny: 280, remaining_label: "有", availability: "available" }],
+          train_flags: [],
+        },
+      ],
+      recommendation_candidates: [],
+      recommendation: { selected_option_id: "G25-2026-08-31", reason_codes: ["time_fit", "shorter_duration"] },
+      fetched_at: "2026-08-30T19:30:00+08:00",
+      source: "https://www.juhe.cn/docs/api/id/817",
+      status: "success",
+    },
+    ...overrides,
+  };
+}
+
 async function dispatchPointer(element, type, properties) {
   const event = { preventDefault() {}, target: element, currentTarget: element, ...properties };
   for (const listener of element.listeners.get(type) || []) await listener(event);
@@ -185,6 +211,223 @@ test("provider notice is visible only while the Explore view is active", async (
   await harness.elements.get("explore-nav-button").dispatch("click");
   assert.equal(notice.hidden, false);
 
+});
+
+test("ordinary chat responses do not create a train result region", async () => {
+  const harness = createHarness({
+    fetch: async (call) => call.url === "/api/chat"
+      ? jsonResponse(200, { reply: "普通回复", stage: "collecting", profile: {} })
+      : jsonResponse(200, {}),
+  });
+  await settle();
+  harness.elements.get("message-input").value = "你好";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  assert.equal(descendants(harness.elements.get("chat-messages")).some((node) => node.className === "train-result"), false);
+});
+
+test("successful train responses render a recommendation and localized reason codes", async () => {
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, trainResponse()) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "明天福州到上海有哪些高铁";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.ok(region);
+  assert.match(region.textContent, /推荐车次/);
+  assert.match(region.textContent, /G25/);
+  assert.match(region.textContent, /福州/);
+  assert.match(region.textContent, /上海/);
+  assert.match(region.textContent, /08:35/);
+  assert.match(region.textContent, /12:48/);
+  assert.match(region.textContent, /4小时13分/);
+  assert.match(region.textContent, /二等座/);
+  assert.match(region.textContent, /¥280/);
+  assert.match(region.textContent, /有票/);
+  assert.match(region.textContent, /符合出发时间要求/);
+  assert.match(region.textContent, /耗时更短/);
+  assert.match(region.textContent, /查询时间：2026-08-30 19:30/);
+  assert.match(region.textContent, /价格、余票及车次信息可能实时变化/);
+});
+
+test("train cards render the train number only once", async () => {
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, trainResponse()) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  const title = descendants(region).find((node) => node.className === "train-option-title");
+  assert.equal(title.textContent, "G25");
+});
+
+test("train seat fields are separately labeled and prioritize second class", async () => {
+  const result = trainResponse();
+  result.train_result.options[0].seats = [
+    { seat_name: "商务座", price_cny: 473, remaining_label: "18", availability: "available" },
+    { seat_name: "二等座", price_cny: 216, remaining_label: "有", availability: "available" },
+  ];
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  const card = descendants(region).find((node) => node.className === "train-option-card");
+  const seats = descendants(card).filter((node) => node.className === "train-seat");
+  assert.equal(seats.length, 2);
+  assert.equal(seats[0].textContent, "席别：二等座价格：¥216余票：有票");
+  assert.equal(seats[1].textContent, "席别：商务座价格：¥473余票：18");
+  assert.ok(descendants(seats[0]).some((node) => node.className === "train-seat-name"));
+  assert.ok(descendants(seats[0]).some((node) => node.className === "train-seat-price"));
+  assert.ok(descendants(seats[0]).some((node) => node.className === "train-seat-availability"));
+});
+
+test("train cards use the first valid seat when second class is unavailable", async () => {
+  const result = trainResponse();
+  result.train_result.options[0].seats = [
+    { seat_name: "", price_cny: 0, remaining_label: null, availability: "unknown" },
+    { seat_name: "一等座", price_cny: 216, remaining_label: "有", availability: "available" },
+    { seat_name: "商务座", price_cny: 473, remaining_label: "18", availability: "available" },
+  ];
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  const card = descendants(region).find((node) => node.className === "train-option-card");
+  const seats = descendants(card).filter((node) => node.className === "train-seat");
+  assert.equal(seats[0].textContent, "席别：一等座价格：¥216余票：有票");
+});
+
+test("train query time is converted from UTC to China Standard Time", async () => {
+  const result = trainResponse();
+  result.train_result.fetched_at = "2026-08-30T12:23:00Z";
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.match(region.textContent, /查询时间：2026-08-30 20:23/);
+  assert.doesNotMatch(region.textContent, /查询时间：2026-08-30 12:23/);
+});
+
+test("train cards display bounded seats and safe labels for missing price or unknown inventory", async () => {
+  const result = trainResponse();
+  result.train_result.options[0].seats = [
+    { seat_name: "二等座", price_cny: null, remaining_label: null, availability: "unknown" },
+    { seat_name: "一等座", price_cny: 0, remaining_label: "无", availability: "unavailable" },
+  ];
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.ok(region);
+  assert.match(region.textContent, /票价未返回/);
+  assert.match(region.textContent, /余票未知/);
+  assert.match(region.textContent, /无票/);
+  assert.doesNotMatch(region.textContent, /¥None|¥0/);
+});
+
+test("train cards show at most three alternatives and do not repeat the recommendation", async () => {
+  const result = trainResponse();
+  const options = Array.from({ length: 5 }, (_, index) => ({
+    ...result.train_result.options[0],
+    option_id: `G${25 + index}-2026-08-31`, train_no: `G${25 + index}`,
+    departure_at: `2026-08-31T${String(8 + index).padStart(2, "0")}:35:00+08:00`,
+    arrival_at: `2026-08-31T${String(12 + index).padStart(2, "0")}:48:00+08:00`,
+  }));
+  result.train_result.options = options;
+  result.train_result.recommendation_candidates = options;
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.ok(region);
+  const cards = descendants(region).filter((node) => node.className === "train-option-card");
+  assert.equal(cards.length, 4);
+  assert.equal(cards.filter((card) => /G25/.test(card.textContent)).length, 1);
+});
+
+test("train cards can resolve the recommendation from candidates when options omit it", async () => {
+  const result = trainResponse();
+  const selected = result.train_result.options[0];
+  result.train_result.options = [];
+  result.train_result.recommendation_candidates = [selected];
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.ok(region);
+  assert.match(region.textContent, /G25/);
+});
+
+test("train cards make cross-day arrival explicit and keep hostile station text as text", async () => {
+  const result = trainResponse();
+  result.train_result.options[0].departure_station = "<img src=x onerror=alert(1)>";
+  result.train_result.options[0].arrival_at = "2026-09-01T06:20:00+08:00";
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.ok(region);
+  assert.match(region.textContent, /08-31 08:35/);
+  assert.match(region.textContent, /09-01 06:20/);
+  assert.match(region.textContent, /<img src=x onerror=alert\(1\)>/);
+  assert.equal(descendants(region).some((node) => node.tagName === "IMG"), false);
+});
+
+test("empty or unavailable train results render only the assistant reply", async () => {
+  const result = trainResponse();
+  result.reply = "这个时间段没有找到符合条件的车次。";
+  result.train_result.status = "unavailable";
+  result.train_result.options = [];
+  result.train_result.recommendation_candidates = [];
+  result.train_result.recommendation = null;
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  assert.match(harness.elements.get("chat-messages").textContent, /没有找到符合条件/);
+  assert.equal(descendants(harness.elements.get("chat-messages")).some((node) => node.className === "train-result"), false);
+});
+
+test("the browser bundle does not contain the server-side train API key setting", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../../app/static/app.js"), "utf8");
+  assert.doesNotMatch(source, /JUHE_TRAIN_API_KEY/);
+  assert.doesNotMatch(source, /apis\.juhe\.cn/);
 });
 
 test("assistant sends on Enter and keeps Shift+Enter for a newline", async () => {
@@ -702,6 +945,229 @@ test("an accessible reset control restores the assistant's default position", as
   assert.equal(panel.style.top, "");
   assert.equal(panel.style.right, "");
   assert.equal(panel.style.bottom, "");
+});
+
+test("assistant starts unmaximized and exposes a maximize control", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const maximize = harness.elements.get("assistant-maximize");
+  assert.ok(maximize, "a maximize button is present");
+  assert.doesNotMatch(panel.className, /\bis-maximized\b/);
+  assert.equal(maximize.textContent, "最大化");
+});
+
+test("maximize toggles the state and restores the saved position and size", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const maximize = harness.elements.get("assistant-maximize");
+  panel.style = { left: "210px", top: "120px", width: "800px", height: "700px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({ left: 210, top: 120, width: 800, height: 700 });
+  await maximize.dispatch("click");
+
+  assert.match(panel.className, /\bis-maximized\b/);
+  assert.equal(maximize.textContent, "还原");
+  assert.equal(panel.style.left, "16px");
+  assert.equal(panel.style.top, "16px");
+
+  await maximize.dispatch("click");
+
+  assert.doesNotMatch(panel.className, /\bis-maximized\b/);
+  assert.equal(maximize.textContent, "最大化");
+  assert.equal(panel.style.left, "210px");
+  assert.equal(panel.style.top, "120px");
+  assert.equal(panel.style.width, "800px");
+  assert.equal(panel.style.height, "700px");
+});
+
+test("reset exits maximize and restores the default position and size", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const maximize = harness.elements.get("assistant-maximize");
+  const reset = harness.elements.get("assistant-reset-position");
+  panel.style = { left: "210px", top: "120px", width: "800px", height: "700px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({ left: 210, top: 120, width: 800, height: 700 });
+  await maximize.dispatch("click");
+  await reset.dispatch("click");
+
+  assert.doesNotMatch(panel.className, /\bis-maximized\b/);
+  assert.equal(maximize.textContent, "最大化");
+  assert.equal(panel.style.left, "");
+  assert.equal(panel.style.top, "");
+  assert.equal(panel.style.width, "");
+  assert.equal(panel.style.height, "");
+  assert.equal(panel.style.right, "");
+  assert.equal(panel.style.bottom, "");
+});
+
+test("maximizing preserves existing chat and train result DOM", async () => {
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, trainResponse()) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+  const messages = harness.elements.get("chat-messages");
+  const before = messages.children.length;
+  const panel = harness.elements.get("assistant-panel");
+  panel.style = {};
+  panel.getBoundingClientRect = () => ({ left: 12, top: 12, width: 390, height: 400 });
+  const maximize = harness.elements.get("assistant-maximize");
+  await maximize.dispatch("click");
+
+  assert.equal(messages.children.length, before);
+  assert.ok(descendants(messages).some((node) => node.className === "train-result"));
+});
+
+test("assistant resize and flexible chat layout are present in CSS", () => {
+  const styles = fs.readFileSync(path.join(__dirname, "../../app/static/styles.css"), "utf8");
+
+  assert.match(styles, /\.assistant-panel[^\{]*\{[^}]*resize:\s*none/);
+  assert.match(styles, /\.assistant-resize-handle/);
+  assert.match(styles, /\.assistant-resize-e/);
+  assert.match(styles, /\.assistant-resize-se/);
+  assert.match(styles, /\.assistant-panel[^\{]*\{[^}]*min-width:/);
+  assert.match(styles, /\.assistant-panel[^\{]*\{[^}]*min-height:/);
+  assert.doesNotMatch(styles, /\.assistant-panel\s*\{[^}]*max-height:\s*min\(520px/);
+  assert.match(styles, /\.assistant-panel\s*\{[^}]*max-height:\s*calc\(100vh\s*-\s*24px\)/);
+  assert.match(styles, /\.assistant-panel\.is-maximized\s*\{/);
+  assert.match(styles, /\.chat-messages[^\{]*\{[^}]*flex:\s*1\s+1\s+auto/);
+  assert.match(styles, /\.chat-messages[^\{]*\{[^}]*overflow-y:\s*auto/);
+  assert.match(styles, /\.chat-form[^\{]*\{[^}]*flex:\s*0\s+0\s+auto/);
+});
+
+test("viewport resize keeps a normal assistant within the visible viewport", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = { left: "498px", top: "288px", width: "390px", height: "400px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({ left: 498, top: 288, width: 390, height: 400 });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+  harness.window.innerWidth = 600;
+  harness.window.innerHeight = 500;
+
+  await harness.window.dispatch("resize");
+
+  assert.equal(panel.style.left, "198px");
+  assert.equal(panel.style.top, "88px");
+});
+
+test("assistant exposes resize handles on every edge and corner", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handles = descendants(panel).filter((node) => node.className.includes("assistant-resize-"));
+  const edges = handles.map((node) => node.dataset.edge).sort();
+
+  assert.deepEqual(edges, ["e", "n", "ne", "nw", "s", "se", "sw", "w"]);
+});
+
+test("assistant edge and corner handles resize without moving the panel", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  harness.window.innerWidth = 1000;
+  harness.window.innerHeight = 800;
+  panel.style = { left: "100px", top: "80px", width: "625px", height: "500px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({
+    left: Number.parseFloat(panel.style.left),
+    top: Number.parseFloat(panel.style.top),
+    width: Number.parseFloat(panel.style.width),
+    height: Number.parseFloat(panel.style.height),
+  });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+  const east = descendants(panel).find((node) => node.dataset.edge === "e");
+  const southeast = descendants(panel).find((node) => node.dataset.edge === "se");
+  east.setPointerCapture = () => {};
+  southeast.setPointerCapture = () => {};
+
+  await dispatchPointer(east, "pointerdown", { pointerId: 7, pointerType: "mouse", isPrimary: true, button: 0, clientX: 725, clientY: 200 });
+  await dispatchPointer(east, "pointermove", { pointerId: 7, pointerType: "mouse", isPrimary: true, clientX: 850, clientY: 200 });
+  await dispatchPointer(east, "pointerup", { pointerId: 7 });
+
+  assert.equal(panel.style.left, "100px");
+  assert.equal(panel.style.top, "80px");
+  assert.equal(panel.style.width, "750px");
+
+  await dispatchPointer(southeast, "pointerdown", { pointerId: 8, pointerType: "mouse", isPrimary: true, button: 0, clientX: 850, clientY: 580 });
+  await dispatchPointer(southeast, "pointermove", { pointerId: 8, pointerType: "mouse", isPrimary: true, clientX: 950, clientY: 580 });
+  await dispatchPointer(southeast, "pointerup", { pointerId: 8 });
+
+  assert.equal(panel.style.left, "100px");
+  assert.equal(panel.style.top, "80px");
+  assert.equal(panel.style.width, "850px");
+  assert.equal(panel.style.height, "567px");
+});
+
+test("assistant northwest corner keeps the current aspect ratio", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  harness.window.innerWidth = 1000;
+  harness.window.innerHeight = 800;
+  panel.style = { left: "200px", top: "100px", width: "625px", height: "500px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({
+    left: Number.parseFloat(panel.style.left),
+    top: Number.parseFloat(panel.style.top),
+    width: Number.parseFloat(panel.style.width),
+    height: Number.parseFloat(panel.style.height),
+  });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+  const northwest = descendants(panel).find((node) => node.dataset.edge === "nw");
+  northwest.setPointerCapture = () => {};
+
+  await dispatchPointer(northwest, "pointerdown", { pointerId: 11, pointerType: "mouse", isPrimary: true, button: 0, clientX: 200, clientY: 100 });
+  await dispatchPointer(northwest, "pointermove", { pointerId: 11, pointerType: "mouse", isPrimary: true, clientX: 100, clientY: 100 });
+  await dispatchPointer(northwest, "pointerup", { pointerId: 11 });
+
+  assert.equal(panel.style.left, "100px");
+  assert.equal(panel.style.top, "20px");
+  assert.equal(panel.style.width, "725px");
+  assert.equal(panel.style.height, "580px");
+});
+
+test("assistant west and north handles preserve the opposite edges", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  harness.window.innerWidth = 1000;
+  harness.window.innerHeight = 800;
+  panel.style = { left: "200px", top: "180px", width: "500px", height: "500px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({
+    left: Number.parseFloat(panel.style.left),
+    top: Number.parseFloat(panel.style.top),
+    width: Number.parseFloat(panel.style.width),
+    height: Number.parseFloat(panel.style.height),
+  });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+  const west = descendants(panel).find((node) => node.dataset.edge === "w");
+  const north = descendants(panel).find((node) => node.dataset.edge === "n");
+  west.setPointerCapture = () => {};
+  north.setPointerCapture = () => {};
+
+  await dispatchPointer(west, "pointerdown", { pointerId: 9, pointerType: "mouse", isPrimary: true, button: 0, clientX: 200, clientY: 300 });
+  await dispatchPointer(west, "pointermove", { pointerId: 9, pointerType: "mouse", isPrimary: true, clientX: 150, clientY: 300 });
+  await dispatchPointer(west, "pointerup", { pointerId: 9 });
+  assert.equal(panel.style.left, "150px");
+  assert.equal(panel.style.width, "550px");
+
+  await dispatchPointer(north, "pointerdown", { pointerId: 10, pointerType: "mouse", isPrimary: true, button: 0, clientX: 400, clientY: 180 });
+  await dispatchPointer(north, "pointermove", { pointerId: 10, pointerType: "mouse", isPrimary: true, clientX: 400, clientY: 130 });
+  await dispatchPointer(north, "pointerup", { pointerId: 10 });
+  assert.equal(panel.style.top, "130px");
+  assert.equal(panel.style.height, "550px");
 });
 
 test("assistant drag ignores secondary mouse buttons and non-primary pointers", async () => {

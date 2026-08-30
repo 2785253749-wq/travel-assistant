@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
+from app.trains.models import TrainSearchResult
+
 
 class StrictSchema(BaseModel):
     """Public payload models reject unknown fields to keep API output stable."""
@@ -91,6 +93,7 @@ class ChatResponse(StrictSchema):
     trip_id: UUID | None = None
     sources: list[SourceCitation] | None = Field(default=None, max_length=100)
     warnings: list[WarningText] | None = Field(default=None, max_length=40)
+    train_result: TrainSearchResult | None = None
 
 
 class SourceCitation(StrictSchema):

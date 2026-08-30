@@ -35,6 +35,41 @@ def test_chat_api_keeps_legacy_response_shape(monkeypatch):
     }
 
 
+def test_chat_api_serializes_train_result_without_raw_provider_payload(monkeypatch):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+    from app.trains.models import TrainOption, TrainQuery, TrainSearchResult
+    from datetime import date, timezone, timedelta
+
+    option = TrainOption(
+        option_id="G25-2026-08-31", train_no="G25", departure_station="福州", arrival_station="上海",
+        departure_at=datetime(2026, 8, 31, 8, tzinfo=timezone(timedelta(hours=8))),
+        arrival_at=datetime(2026, 8, 31, 12, tzinfo=timezone(timedelta(hours=8))),
+        duration_minutes=240, bookable=True,
+        seats=[{"seat_name": "二等座", "price_cny": 280, "remaining_label": "有", "availability": "available"}],
+    )
+    train_result = TrainSearchResult(
+        query=TrainQuery(departure_station="福州", arrival_station="上海", travel_date=date(2026, 8, 31)),
+        options=[option], recommendation_candidates=[option],
+        fetched_at=datetime(2026, 8, 30, tzinfo=timezone.utc),
+        source="https://www.juhe.cn/docs/api/id/817", status="success",
+    )
+    monkeypatch.setattr(
+        chat_api, "chat",
+        lambda *args, **kwargs: ChatResult("已查询 G25", "collecting", {}, intent="train_query", train_result=train_result),
+    )
+
+    response = TestClient(app).post(
+        "/api/chat", json={"message": "明天福州到上海有哪些高铁", "thread_id": "train-result"}
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["train_result"]["options"][0]["train_no"] == "G25"
+    assert "raw" not in payload["train_result"]
+
+
 def test_chat_api_bounds_and_deduplicates_generated_citations_and_warnings(monkeypatch):
     """A direct JSONResponse must not bypass the public response contract."""
     from app.main import app
