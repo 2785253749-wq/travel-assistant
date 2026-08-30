@@ -87,6 +87,7 @@ def test_render_uses_free_plan_port_and_platform_secrets():
         "DEEPSEEK_API_KEY",
         "AMAP_JS_KEY",
         "AMAP_SECURITY_JS_CODE",
+        "AMAP_WEB_SERVICE_KEY",
         "SUPABASE_URL",
         "SUPABASE_ANON_KEY",
         "SUPABASE_SERVICE_KEY",
@@ -132,12 +133,12 @@ def test_deployment_document_keeps_rag_weather_server_secrets_and_safe_downgrade
 
 
 def test_deployment_document_distinguishes_browser_map_key_from_backend_weather_key():
-    """An unqualified no-Web-Service-Key claim would hide weather configuration."""
+    """The guide must distinguish browser maps from backend geography services."""
     text = Path("docs/deployment/free-tier.md").read_text(encoding="utf-8")
 
     assert "本项目不使用 Web 服务 Key" not in text
     assert "浏览器地图直连模式不使用 `AMAP_WEB_SERVICE_KEY`" in text
-    assert "后端天气服务使用 `AMAP_WEB_SERVICE_KEY`" in text
+    assert "后端天气与足迹城市边界服务使用 `AMAP_WEB_SERVICE_KEY`" in text
 
 
 def test_ci_runs_tests_offline_evaluation_and_public_repo_gate():

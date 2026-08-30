@@ -32,7 +32,7 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_public_repo.ps1
 | Render Secret | 值 |
 |---|---|
 | `JINA_API_KEY` | 仅后端导入与检索使用的 Jina key；作为 Render 私有变量，不得填入浏览器、日志或提交记录 |
-| `AMAP_WEB_SERVICE_KEY` | 仅后端天气服务使用的高德 Web 服务 Key；作为 Render 私有变量，不得填入浏览器、日志或提交记录，也不得复用地图 JavaScript API Key |
+| `AMAP_WEB_SERVICE_KEY` | 仅后端天气与足迹城市边界服务使用的高德 Web 服务 Key；作为 Render 私有变量，不得填入浏览器、日志或提交记录，也不得复用地图 JavaScript API Key |
 | `SUPABASE_URL` | Supabase Project URL |
 | `SUPABASE_ANON_KEY` | Supabase anon key |
 | `SUPABASE_SERVICE_KEY` | Supabase service-role key，仅后端 |
@@ -58,7 +58,7 @@ $bytes = New-Object byte[] 32
 
 迁移清单中的旧编号说明已更新：上线前必须按顺序执行全部迁移，至少确认 `008_rag_knowledge.sql` 和 `009_weather_quota.sql` 均成功。008 创建私有知识资料与嵌入额度，009 创建天气调用额度；两者都不是浏览器端操作。
 
-仅在迁移成功、受控环境完成知识导入后，才在 Render **Environment** 添加 `JINA_API_KEY` 和 `AMAP_WEB_SERVICE_KEY`。两项都是后端私有变量，真实值不得填入浏览器、日志或提交记录，也不得写入 `.env.example`、截图或公开文档。`AMAP_WEB_SERVICE_KEY` 仅用于后端天气查询，不能替代地图使用的 `AMAP_JS_KEY`。
+仅在迁移成功、受控环境完成知识导入后，才在 Render **Environment** 添加 `JINA_API_KEY` 和 `AMAP_WEB_SERVICE_KEY`。两项都是后端私有变量，真实值不得填入浏览器、日志或提交记录，也不得写入 `.env.example`、截图或公开文档。`AMAP_WEB_SERVICE_KEY` 用于后端天气查询和足迹城市边界查询，不能替代地图使用的 `AMAP_JS_KEY`。
 
 未配置 `JINA_API_KEY` 时，资料问答返回“资料库没有足够依据，无法可靠回答。”；未配置 `AMAP_WEB_SERVICE_KEY` 或天气上游失败时，显示“天气信息暂不可用”。两种降级都不得阻塞既有规划、保存与分享，行程仍可正常生成。
 
@@ -68,7 +68,7 @@ $bytes = New-Object byte[] 32
 
 当前 Explore 地图只覆盖 **福建、云南** 的试点数据；可点击进入厦门、福州、大理、丽江及其本地热门景点。它不覆盖全国地图、真实景点图片、实时搜索或路线、票务/酒店支付和社区功能。
 
-1. 在高德开放平台创建 **JavaScript API** 的浏览器 Key；浏览器地图直连模式不使用 `AMAP_WEB_SERVICE_KEY`，也不会通过地图脚本从后端调用高德 Web 服务。后端天气服务使用 `AMAP_WEB_SERVICE_KEY`，其 Render 私有变量配置见上文“RAG 与高德天气后端配置”。
+1. 在高德开放平台创建 **JavaScript API** 的浏览器 Key；浏览器地图直连模式不使用 `AMAP_WEB_SERVICE_KEY`，也不会通过地图脚本从后端调用高德 Web 服务。后端天气与足迹城市边界服务使用 `AMAP_WEB_SERVICE_KEY`，其 Render 私有变量配置见上文“RAG 与高德天气后端配置”。
 2. 在该 Key 的安全设置中只允许生产域名 `travel-assistant-2cbd.onrender.com` 与本地开发地址 `http://127.0.0.1`。不要使用宽泛的通配域名。
 3. 在 Render 的 **Environment** 页面新增或更新 `AMAP_JS_KEY` 与 `AMAP_SECURITY_JS_CODE`，两项必须同时填写并保存。不要把真实 Key 或安全密钥写入 Git、`.env.example`、截图、日志或任何公开文档。
 4. 触发 Render 重新部署后，访问 <https://travel-assistant-2cbd.onrender.com>，打开 Explore 页面验证地图。
