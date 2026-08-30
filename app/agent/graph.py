@@ -185,6 +185,12 @@ class ModelIntentClassifier:
 class RuleIntentClassifier:
     """Credential-free pre-confirmation routing; paid models are planning-only."""
 
+    _TRAIN_TICKET_ROUTE = re.compile(
+        rf"(?:{_ROUTE_SOURCE}\s*{_ROUTE_PLACE_LAZY}(?:出发)?\s*"
+        rf"{_ROUTE_SEPARATOR}\s*{_ROUTE_PLACE}|"
+        rf"{_ROUTE_PLACE_LAZY}\s*{_ROUTE_SEPARATOR}\s*{_ROUTE_PLACE})",
+        re.IGNORECASE,
+    )
     _COMPLETE_PLAN_ROUTE = re.compile(
         rf"(?:{_ROUTE_SOURCE}\s*{_ROUTE_PLACE_LAZY}(?:出发)?\s*"
         rf"{_ROUTE_SEPARATOR}\s*{_ROUTE_PLACE}|"
@@ -232,6 +238,10 @@ class RuleIntentClassifier:
         if any(
             term in normalized
             for term in ("火车", "高铁", "动车", "列车", "车次", "火车票", "高铁票", "动车票", "二等座", "一等座", "商务座", "余票", "有票吗", "有哪些车", "的车", "查车", "最快的车", "最便宜的车")
+        ) or (
+            "车票" in normalized
+            and self._TRAIN_TICKET_ROUTE.search(normalized) is not None
+            and not any(term in normalized for term in ("汽车", "大巴", "巴士", "客车", "公交", "长途"))
         ):
             return IntentResult(intent="train_query", confidence=1.0)
         # Planning context owns routing even when it also says “weather”,
