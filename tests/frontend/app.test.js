@@ -947,6 +947,229 @@ test("an accessible reset control restores the assistant's default position", as
   assert.equal(panel.style.bottom, "");
 });
 
+test("assistant starts unmaximized and exposes a maximize control", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const maximize = harness.elements.get("assistant-maximize");
+  assert.ok(maximize, "a maximize button is present");
+  assert.doesNotMatch(panel.className, /\bis-maximized\b/);
+  assert.equal(maximize.textContent, "最大化");
+});
+
+test("maximize toggles the state and restores the saved position and size", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const maximize = harness.elements.get("assistant-maximize");
+  panel.style = { left: "210px", top: "120px", width: "800px", height: "700px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({ left: 210, top: 120, width: 800, height: 700 });
+  await maximize.dispatch("click");
+
+  assert.match(panel.className, /\bis-maximized\b/);
+  assert.equal(maximize.textContent, "还原");
+  assert.equal(panel.style.left, "16px");
+  assert.equal(panel.style.top, "16px");
+
+  await maximize.dispatch("click");
+
+  assert.doesNotMatch(panel.className, /\bis-maximized\b/);
+  assert.equal(maximize.textContent, "最大化");
+  assert.equal(panel.style.left, "210px");
+  assert.equal(panel.style.top, "120px");
+  assert.equal(panel.style.width, "800px");
+  assert.equal(panel.style.height, "700px");
+});
+
+test("reset exits maximize and restores the default position and size", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const maximize = harness.elements.get("assistant-maximize");
+  const reset = harness.elements.get("assistant-reset-position");
+  panel.style = { left: "210px", top: "120px", width: "800px", height: "700px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({ left: 210, top: 120, width: 800, height: 700 });
+  await maximize.dispatch("click");
+  await reset.dispatch("click");
+
+  assert.doesNotMatch(panel.className, /\bis-maximized\b/);
+  assert.equal(maximize.textContent, "最大化");
+  assert.equal(panel.style.left, "");
+  assert.equal(panel.style.top, "");
+  assert.equal(panel.style.width, "");
+  assert.equal(panel.style.height, "");
+  assert.equal(panel.style.right, "");
+  assert.equal(panel.style.bottom, "");
+});
+
+test("maximizing preserves existing chat and train result DOM", async () => {
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, trainResponse()) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+  const messages = harness.elements.get("chat-messages");
+  const before = messages.children.length;
+  const panel = harness.elements.get("assistant-panel");
+  panel.style = {};
+  panel.getBoundingClientRect = () => ({ left: 12, top: 12, width: 390, height: 400 });
+  const maximize = harness.elements.get("assistant-maximize");
+  await maximize.dispatch("click");
+
+  assert.equal(messages.children.length, before);
+  assert.ok(descendants(messages).some((node) => node.className === "train-result"));
+});
+
+test("assistant resize and flexible chat layout are present in CSS", () => {
+  const styles = fs.readFileSync(path.join(__dirname, "../../app/static/styles.css"), "utf8");
+
+  assert.match(styles, /\.assistant-panel[^\{]*\{[^}]*resize:\s*none/);
+  assert.match(styles, /\.assistant-resize-handle/);
+  assert.match(styles, /\.assistant-resize-e/);
+  assert.match(styles, /\.assistant-resize-se/);
+  assert.match(styles, /\.assistant-panel[^\{]*\{[^}]*min-width:/);
+  assert.match(styles, /\.assistant-panel[^\{]*\{[^}]*min-height:/);
+  assert.doesNotMatch(styles, /\.assistant-panel\s*\{[^}]*max-height:\s*min\(520px/);
+  assert.match(styles, /\.assistant-panel\s*\{[^}]*max-height:\s*calc\(100vh\s*-\s*24px\)/);
+  assert.match(styles, /\.assistant-panel\.is-maximized\s*\{/);
+  assert.match(styles, /\.chat-messages[^\{]*\{[^}]*flex:\s*1\s+1\s+auto/);
+  assert.match(styles, /\.chat-messages[^\{]*\{[^}]*overflow-y:\s*auto/);
+  assert.match(styles, /\.chat-form[^\{]*\{[^}]*flex:\s*0\s+0\s+auto/);
+});
+
+test("viewport resize keeps a normal assistant within the visible viewport", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  harness.window.innerWidth = 900;
+  harness.window.innerHeight = 700;
+  panel.style = { left: "498px", top: "288px", width: "390px", height: "400px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({ left: 498, top: 288, width: 390, height: 400 });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+  harness.window.innerWidth = 600;
+  harness.window.innerHeight = 500;
+
+  await harness.window.dispatch("resize");
+
+  assert.equal(panel.style.left, "198px");
+  assert.equal(panel.style.top, "88px");
+});
+
+test("assistant exposes resize handles on every edge and corner", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  const handles = descendants(panel).filter((node) => node.className.includes("assistant-resize-"));
+  const edges = handles.map((node) => node.dataset.edge).sort();
+
+  assert.deepEqual(edges, ["e", "n", "ne", "nw", "s", "se", "sw", "w"]);
+});
+
+test("assistant edge and corner handles resize without moving the panel", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  harness.window.innerWidth = 1000;
+  harness.window.innerHeight = 800;
+  panel.style = { left: "100px", top: "80px", width: "625px", height: "500px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({
+    left: Number.parseFloat(panel.style.left),
+    top: Number.parseFloat(panel.style.top),
+    width: Number.parseFloat(panel.style.width),
+    height: Number.parseFloat(panel.style.height),
+  });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+  const east = descendants(panel).find((node) => node.dataset.edge === "e");
+  const southeast = descendants(panel).find((node) => node.dataset.edge === "se");
+  east.setPointerCapture = () => {};
+  southeast.setPointerCapture = () => {};
+
+  await dispatchPointer(east, "pointerdown", { pointerId: 7, pointerType: "mouse", isPrimary: true, button: 0, clientX: 725, clientY: 200 });
+  await dispatchPointer(east, "pointermove", { pointerId: 7, pointerType: "mouse", isPrimary: true, clientX: 850, clientY: 200 });
+  await dispatchPointer(east, "pointerup", { pointerId: 7 });
+
+  assert.equal(panel.style.left, "100px");
+  assert.equal(panel.style.top, "80px");
+  assert.equal(panel.style.width, "750px");
+
+  await dispatchPointer(southeast, "pointerdown", { pointerId: 8, pointerType: "mouse", isPrimary: true, button: 0, clientX: 850, clientY: 580 });
+  await dispatchPointer(southeast, "pointermove", { pointerId: 8, pointerType: "mouse", isPrimary: true, clientX: 950, clientY: 580 });
+  await dispatchPointer(southeast, "pointerup", { pointerId: 8 });
+
+  assert.equal(panel.style.left, "100px");
+  assert.equal(panel.style.top, "80px");
+  assert.equal(panel.style.width, "850px");
+  assert.equal(panel.style.height, "567px");
+});
+
+test("assistant northwest corner keeps the current aspect ratio", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  harness.window.innerWidth = 1000;
+  harness.window.innerHeight = 800;
+  panel.style = { left: "200px", top: "100px", width: "625px", height: "500px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({
+    left: Number.parseFloat(panel.style.left),
+    top: Number.parseFloat(panel.style.top),
+    width: Number.parseFloat(panel.style.width),
+    height: Number.parseFloat(panel.style.height),
+  });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+  const northwest = descendants(panel).find((node) => node.dataset.edge === "nw");
+  northwest.setPointerCapture = () => {};
+
+  await dispatchPointer(northwest, "pointerdown", { pointerId: 11, pointerType: "mouse", isPrimary: true, button: 0, clientX: 200, clientY: 100 });
+  await dispatchPointer(northwest, "pointermove", { pointerId: 11, pointerType: "mouse", isPrimary: true, clientX: 100, clientY: 100 });
+  await dispatchPointer(northwest, "pointerup", { pointerId: 11 });
+
+  assert.equal(panel.style.left, "100px");
+  assert.equal(panel.style.top, "20px");
+  assert.equal(panel.style.width, "725px");
+  assert.equal(panel.style.height, "580px");
+});
+
+test("assistant west and north handles preserve the opposite edges", async () => {
+  const harness = createHarness();
+  await settle();
+
+  const panel = harness.elements.get("assistant-panel");
+  harness.window.innerWidth = 1000;
+  harness.window.innerHeight = 800;
+  panel.style = { left: "200px", top: "180px", width: "500px", height: "500px", right: "auto", bottom: "auto" };
+  panel.getBoundingClientRect = () => ({
+    left: Number.parseFloat(panel.style.left),
+    top: Number.parseFloat(panel.style.top),
+    width: Number.parseFloat(panel.style.width),
+    height: Number.parseFloat(panel.style.height),
+  });
+  await harness.elements.get("assistant-toggle").dispatch("click");
+  const west = descendants(panel).find((node) => node.dataset.edge === "w");
+  const north = descendants(panel).find((node) => node.dataset.edge === "n");
+  west.setPointerCapture = () => {};
+  north.setPointerCapture = () => {};
+
+  await dispatchPointer(west, "pointerdown", { pointerId: 9, pointerType: "mouse", isPrimary: true, button: 0, clientX: 200, clientY: 300 });
+  await dispatchPointer(west, "pointermove", { pointerId: 9, pointerType: "mouse", isPrimary: true, clientX: 150, clientY: 300 });
+  await dispatchPointer(west, "pointerup", { pointerId: 9 });
+  assert.equal(panel.style.left, "150px");
+  assert.equal(panel.style.width, "550px");
+
+  await dispatchPointer(north, "pointerdown", { pointerId: 10, pointerType: "mouse", isPrimary: true, button: 0, clientX: 400, clientY: 180 });
+  await dispatchPointer(north, "pointermove", { pointerId: 10, pointerType: "mouse", isPrimary: true, clientX: 400, clientY: 130 });
+  await dispatchPointer(north, "pointerup", { pointerId: 10 });
+  assert.equal(panel.style.top, "130px");
+  assert.equal(panel.style.height, "550px");
+});
+
 test("assistant drag ignores secondary mouse buttons and non-primary pointers", async () => {
   const harness = createHarness();
   await settle();

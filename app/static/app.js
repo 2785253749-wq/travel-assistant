@@ -31,7 +31,7 @@
     authFormPanel: $("auth-form"), status: $("status-message"), providerNotice: $("provider-notice"),
     providerUpdatedAt: $("provider-updated-at"), chatPanel: $("chat-panel"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
-    assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"),
+    assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"), assistantMaximize: $("assistant-maximize"),
     explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"),
     navigation: [$("explore-nav-button"), $("trips-nav-button")],
     viewHeadings: { explore: $("explore-title"), trips: $("trips-page-title") },
@@ -51,6 +51,7 @@
   const state = {
     name: "signed_out", activeView: "explore", busy: false, session: null, authClient: null, user: null, profile: null,
     pendingResult: null, currentTrip: null, renameTripId: null, shareTripId: null, providerNoticeActive: false,
+    assistantMaximized: false, assistantRestore: null,
     threadId: makeThreadId(), cityWeather: new Map(), cityWeatherRequests: new Map(), selectedExploreCityId: null,
   };
   let authGeneration = 0;
@@ -181,14 +182,60 @@
 
   function clampAssistantPosition() {
     if (elements.assistantPanel.hidden) return;
+    if (state.assistantMaximized) {
+      Object.assign(elements.assistantPanel.style, { left: "16px", top: "16px", right: "auto", bottom: "auto" });
+      return;
+    }
     const left = Number.parseFloat(elements.assistantPanel.style.left);
     const top = Number.parseFloat(elements.assistantPanel.style.top);
     if (!Number.isFinite(left) || !Number.isFinite(top)) return;
     setAssistantPosition(left, top);
   }
 
+  function geometryValue(value, fallback) {
+    if (typeof value === "string" && value.trim()) return value;
+    return Number.isFinite(fallback) ? `${Math.round(fallback)}px` : "";
+  }
+
+  function assistantGeometry() {
+    const rect = elements.assistantPanel.getBoundingClientRect();
+    return {
+      left: geometryValue(elements.assistantPanel.style.left, rect.left),
+      top: geometryValue(elements.assistantPanel.style.top, rect.top),
+      width: geometryValue(elements.assistantPanel.style.width, rect.width),
+      height: geometryValue(elements.assistantPanel.style.height, rect.height),
+    };
+  }
+
+  function updateAssistantMaximizeControl() {
+    elements.assistantPanel.classList.toggle("is-maximized", state.assistantMaximized);
+    elements.assistantMaximize.textContent = state.assistantMaximized ? "还原" : "最大化";
+    elements.assistantMaximize.setAttribute("aria-label", `${state.assistantMaximized ? "还原" : "最大化"} AI 助手`);
+  }
+
+  function setAssistantMaximized(maximized) {
+    if (maximized === state.assistantMaximized) return;
+    if (maximized) {
+      state.assistantRestore = assistantGeometry();
+      state.assistantMaximized = true;
+      Object.assign(elements.assistantPanel.style, {
+        left: "16px", top: "16px", right: "auto", bottom: "auto", width: "", height: "",
+      });
+    } else {
+      const restore = state.assistantRestore;
+      state.assistantMaximized = false;
+      state.assistantRestore = null;
+      if (restore) Object.assign(elements.assistantPanel.style, { ...restore, right: "auto", bottom: "auto" });
+    }
+    updateAssistantMaximizeControl();
+  }
+
   function resetAssistantPosition() {
+    state.assistantMaximized = false;
+    state.assistantRestore = null;
+    updateAssistantMaximizeControl();
     Object.assign(elements.assistantPanel.style, { left: "", top: "", right: "", bottom: "" });
+    Object.assign(elements.assistantPanel.style, { width: "", height: "" });
   }
 
   function initializeAssistantDrag() {
@@ -199,7 +246,7 @@
     };
 
     handle.addEventListener("pointerdown", (event) => {
-      if (drag || elements.assistantPanel.hidden || event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
+      if (drag || state.assistantMaximized || elements.assistantPanel.hidden || event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
       const rect = elements.assistantPanel.getBoundingClientRect();
       drag = {
         pointerId: event.pointerId,
@@ -220,7 +267,7 @@
     handle.addEventListener("lostpointercapture", stopDrag);
     handle.addEventListener("keydown", (event) => {
       const move = keyboardMoves[event.key];
-      if (!move || elements.assistantPanel.hidden) return;
+      if (!move || state.assistantMaximized || elements.assistantPanel.hidden) return;
       const rect = elements.assistantPanel.getBoundingClientRect();
       const left = Number.parseFloat(elements.assistantPanel.style.left);
       const top = Number.parseFloat(elements.assistantPanel.style.top);
@@ -231,6 +278,89 @@
     handle.setAttribute("aria-label", "旅行助手位置控制。可拖动，或使用方向键每次移动 40 像素。");
     window.addEventListener("resize", clampAssistantPosition);
     window.addEventListener("orientationchange", clampAssistantPosition);
+  }
+
+  function initializeAssistantResize() {
+    const panel = elements.assistantPanel;
+    const edges = ["n", "e", "s", "w", "ne", "se", "sw", "nw"];
+    const minWidth = () => Math.min(380, Math.max(0, window.innerWidth - 24));
+    const minHeight = () => Math.min(450, Math.max(0, window.innerHeight - 96));
+    let resize = null;
+
+    const resizePanel = (event) => {
+      if (!resize || resize.pointerId !== event.pointerId) return;
+      const { edge, startRect } = resize;
+      const horizontal = edge.includes("e") || edge.includes("w");
+      const vertical = edge.includes("n") || edge.includes("s");
+      const right = startRect.left + startRect.width;
+      const bottom = startRect.top + startRect.height;
+      let left = startRect.left;
+      let top = startRect.top;
+      let width = startRect.width;
+      let height = startRect.height;
+
+      if (edge.length === 2) {
+        const horizontalDelta = edge.includes("e") ? event.clientX - resize.startX : resize.startX - event.clientX;
+        const verticalDelta = edge.includes("s") ? event.clientY - resize.startY : resize.startY - event.clientY;
+        const widthScale = (startRect.width + horizontalDelta) / startRect.width;
+        const heightScale = (startRect.height + verticalDelta) / startRect.height;
+        const requestedScale = Math.abs(widthScale - 1) >= Math.abs(heightScale - 1) ? widthScale : heightScale;
+        const minimumScale = Math.max(minWidth() / startRect.width, minHeight() / startRect.height);
+        const maximumWidth = edge.includes("e") ? window.innerWidth - startRect.left - 12 : right - 12;
+        const maximumHeight = edge.includes("s") ? window.innerHeight - startRect.top - 12 : bottom - 12;
+        const maximumScale = Math.min(maximumWidth / startRect.width, maximumHeight / startRect.height);
+        const scale = clamp(requestedScale, minimumScale, maximumScale);
+        width = startRect.width * scale;
+        height = startRect.height * scale;
+        left = edge.includes("w") ? right - width : startRect.left;
+        top = edge.includes("n") ? bottom - height : startRect.top;
+      } else {
+        if (edge.includes("e")) width = Math.min(Math.max(minWidth(), startRect.width + event.clientX - resize.startX), Math.max(minWidth(), window.innerWidth - left - 12));
+        if (edge.includes("w")) {
+          left = clamp(startRect.left + event.clientX - resize.startX, 12, right - minWidth());
+          width = right - left;
+        }
+        if (edge.includes("s")) height = Math.min(Math.max(minHeight(), startRect.height + event.clientY - resize.startY), Math.max(minHeight(), window.innerHeight - top - 12));
+        if (edge.includes("n")) {
+          top = clamp(startRect.top + event.clientY - resize.startY, 12, bottom - minHeight());
+          height = bottom - top;
+        }
+      }
+
+      if (!horizontal) left = startRect.left;
+      if (!vertical) top = startRect.top;
+      Object.assign(panel.style, {
+        left: `${Math.round(left)}px`, top: `${Math.round(top)}px`,
+        width: `${Math.round(width)}px`, height: `${Math.round(height)}px`, right: "auto", bottom: "auto",
+      });
+    };
+
+    for (const edge of edges) {
+      const handle = document.createElement("span");
+      handle.className = `assistant-resize-handle assistant-resize-${edge}`;
+      handle.dataset.edge = edge;
+      handle.setAttribute("aria-hidden", "true");
+      handle.addEventListener("pointerdown", (event) => {
+        if (resize || state.assistantMaximized || panel.hidden || event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
+        event.preventDefault();
+        resize = {
+          pointerId: event.pointerId,
+          edge,
+          startX: event.clientX,
+          startY: event.clientY,
+          startRect: panel.getBoundingClientRect(),
+        };
+        handle.setPointerCapture(event.pointerId);
+      });
+      handle.addEventListener("pointermove", resizePanel);
+      const stopResize = (event) => {
+        if (resize && resize.pointerId === event.pointerId) resize = null;
+      };
+      handle.addEventListener("pointerup", stopResize);
+      handle.addEventListener("pointercancel", stopResize);
+      handle.addEventListener("lostpointercapture", stopResize);
+      panel.append(handle);
+    }
   }
 
   function clearChildren(node) {
@@ -1549,7 +1679,12 @@
   elements.cancelRename.addEventListener("click", () => { if (!state.busy) elements.renameDialog.close(); });
   elements.assistantReset.setAttribute("aria-label", "重置 AI 助手位置");
   elements.assistantReset.addEventListener("click", resetAssistantPosition);
+  elements.assistantMaximize.addEventListener("click", () => {
+    if (!state.busy) setAssistantMaximized(!state.assistantMaximized);
+  });
+  updateAssistantMaximizeControl();
   initializeAssistantDrag();
+  initializeAssistantResize();
   setAssistantOpen(false);
   initializeApp();
 })();
