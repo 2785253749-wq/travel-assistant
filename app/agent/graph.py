@@ -21,6 +21,8 @@ from langchain_deepseek import ChatDeepSeek
 from app.agent.extraction import ExtractionCandidate, build_extraction_candidate, merge_profile, validate_profile
 from app.agent.intent import Intent, IntentResult, classify_intent
 from app.agent.safety import REFUSALS, assess_destination, assess_message
+from app.agent.train_extraction import TrainQueryExtractor
+from app.application.train import TrainRecommendationService
 from app.core.config import get_settings
 from app.core.logging import operational_context
 from app.core.usage import ProviderUnavailable, get_model_gateway
@@ -78,6 +80,7 @@ class ChatResult:
     trip_id: UUID | None = None
     intent: Intent | None = None
     persisted_this_request: bool = False
+    train_result: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -226,6 +229,11 @@ class RuleIntentClassifier:
             for term in ("作业", "裁员", "写代码", "编程", "homework", "write my")
         ):
             return IntentResult(intent="unsupported", confidence=1.0)
+        if any(
+            term in normalized
+            for term in ("火车", "高铁", "动车", "列车", "车次", "火车票", "高铁票", "动车票", "二等座", "一等座", "商务座", "余票", "有票吗", "有哪些车", "的车", "查车", "最快的车", "最便宜的车")
+        ):
+            return IntentResult(intent="train_query", confidence=1.0)
         # Planning context owns routing even when it also says “weather”,
         # “attractions”, or “food”: incomplete profiles must reach collection.
         if self._has_planning_context(normalized):
@@ -566,6 +574,9 @@ class SafeTravelAgent:
         knowledge: KnowledgeAnswerer | None = None,
         weather: DailyWeatherProvider | None = None,
         initial_profile: TravelProfile | None = None,
+        train_extractor: Any | None = None,
+        train_service: Any | None = None,
+        train_recommendation: TrainRecommendationService | None = None,
     ) -> None:
         self._classifier = classifier or ModelIntentClassifier()
         self._extractor = extractor or ModelTravelExtractor()
@@ -576,6 +587,9 @@ class SafeTravelAgent:
         self._knowledge = knowledge or UnavailableKnowledgeAnswerService()
         self._weather = weather or NullWeatherService()
         self._initial_profile = initial_profile or TravelProfile()
+        self._train_extractor = train_extractor or TrainQueryExtractor()
+        self._train_service = train_service
+        self._train_recommendation = train_recommendation or TrainRecommendationService()
 
     def collect(self, message: str, trip: Trip | None) -> ChatResult:
         """Normalize travel details and stop before providers or the planner."""
@@ -597,6 +611,8 @@ class SafeTravelAgent:
             special = self._special_intent_result(intent, message)
             if special is not None:
                 return special
+            if intent == "train_query":
+                return self._train_query_result(message)
             if intent == "unsupported":
                 result = self._refusal("OUT_OF_SCOPE")
                 result.intent = intent
@@ -788,6 +804,8 @@ class SafeTravelAgent:
             special = self._special_intent_result(intent, message)
             if special is not None:
                 return special
+            if intent == "train_query":
+                return self._train_query_result(message)
             if intent == "smalltalk":
                 return ChatResult(
                     "你好！我可以帮你规划国内 2 至 7 天的自由行。",
@@ -963,6 +981,65 @@ class SafeTravelAgent:
                 reply = card.summary
             return ChatResult(reply, "collecting", {}, warnings=warnings, intent=intent)
         return None
+
+    def _train_query_result(self, message: str) -> ChatResult:
+        extracted = self._train_extractor.extract(message)
+        query = getattr(extracted, "query", None)
+        if query is None:
+            labels = {
+                "departure_station": "出发站",
+                "arrival_station": "到达站",
+                "travel_date": "出发日期",
+            }
+            missing = getattr(extracted, "missing_fields", ())
+            prompt = "、".join(labels.get(field, field) for field in missing)
+            return ChatResult(
+                f"请补充车次查询的{prompt}。",
+                "collecting",
+                {},
+                error_code="TRAIN_QUERY_INCOMPLETE",
+                intent="train_query",
+            )
+        if self._train_service is None:
+            return ChatResult(
+                "车次服务暂时无法查询，请稍后重试。",
+                "collecting",
+                {},
+                error_code="TRAIN_SERVICE_UNAVAILABLE",
+                intent="train_query",
+            )
+        try:
+            result = self._train_service.search(query)
+            result = self._train_recommendation.recommend(result, message)
+            return ChatResult(
+                self._train_recommendation.render_reply(result),
+                "collecting",
+                {},
+                intent="train_query",
+                train_result=result,
+            )
+        except Exception as exc:
+            from app.trains.service import TrainQueryError
+
+            if isinstance(exc, TrainQueryError):
+                return ChatResult(
+                    str(exc.message),
+                    "collecting",
+                    {},
+                    error_code=exc.code,
+                    intent="train_query",
+                )
+            logging.getLogger("app.agent").warning(
+                "train_query_failed",
+                extra=operational_context(error_code="TRAIN_SERVICE_UNAVAILABLE", exception_type=type(exc).__name__),
+            )
+            return ChatResult(
+                "车次服务暂时无法查询，请稍后重试。",
+                "collecting",
+                {},
+                error_code="TRAIN_SERVICE_UNAVAILABLE",
+                intent="train_query",
+            )
 
     @staticmethod
     def _collecting(

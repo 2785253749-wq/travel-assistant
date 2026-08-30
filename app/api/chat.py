@@ -35,6 +35,7 @@ _KNOWN_INTENTS = {
     "explain_trip",
     "travel_knowledge",
     "weather_query",
+    "train_query",
     "smalltalk",
     "unsupported",
 }
@@ -126,6 +127,7 @@ def _json_chat_response(
     trip_id=None,
     sources: list[dict] | None = None,
     warnings: list[str] | None = None,
+    train_result=None,
 ) -> JSONResponse:
     """Validate the public model before returning an explicit response object."""
     payload = ChatResponse.model_validate(
@@ -137,10 +139,11 @@ def _json_chat_response(
             "trip_id": trip_id,
             "sources": _bounded_citations(sources or []),
             "warnings": (warnings or [])[:40] or None,
+            "train_result": train_result,
         }
     )
     content = payload.model_dump(mode="json")
-    for optional_field in ("itinerary", "trip_id", "sources", "warnings"):
+    for optional_field in ("itinerary", "trip_id", "sources", "warnings", "train_result"):
         if content[optional_field] is None:
             del content[optional_field]
     return JSONResponse(
@@ -277,6 +280,7 @@ def api_chat(
                 trip_id=result.trip_id,
                 sources=result.sources,
                 warnings=result.warnings,
+                train_result=result.train_result,
             )
         except AppError as exc:
             logging.getLogger("app.api.chat").info(

@@ -50,6 +50,8 @@ uvicorn app.main:app --reload
 | `AMAP_JS_KEY` | 地图在线模式 | 高德 JavaScript API 浏览器 Key；必须与安全密钥同时配置，否则使用离线地图 |
 | `AMAP_SECURITY_JS_CODE` | 地图在线模式 | 高德 JavaScript API 安全密钥；直连模式会交给浏览器，必须在高德控制台限制允许域名 |
 | `AMAP_WEB_SERVICE_KEY` | 城市搜索/边界 | 仅服务端使用的高德 Web 服务 Key；留空时使用试点城市的安全降级目录 |
+| `JUHE_TRAIN_API_KEY` | 车次查询 | 仅服务端使用的聚合数据火车查询 API Key；不得暴露到浏览器 |
+| `TRAIN_TIMEOUT_SECONDS` | 否 | 车次供应商请求超时，默认 `6` 秒 |
 | `DISTRICT_CACHE_SECONDS` | 否 | 城市边界成功缓存时长，默认 `2592000` 秒（30 天） |
 | `DISTRICT_FAILURE_CACHE_SECONDS` | 否 | 城市边界失败缓存时长，默认 `300` 秒 |
 | `DISTRICT_TIMEOUT_SECONDS` | 否 | 高德行政区请求超时，默认 `5` 秒 |

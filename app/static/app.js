@@ -764,6 +764,184 @@
     return block;
   }
 
+  const TRAIN_REASON_LABELS = Object.freeze({
+    time_fit: "符合出发时间要求",
+    shorter_duration: "耗时更短",
+    lower_price: "价格更低",
+    earlier_arrival: "到达更早",
+    seat_available: "指定席别当前返回有票",
+    better_overall_fit: "综合条件更合适",
+  });
+
+  function formatTrainTime(value, includeDate = false) {
+    if (typeof value !== "string") return "时间未返回";
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})/.exec(value.trim());
+    if (!match) return "时间未返回";
+    return includeDate ? `${match[2]}-${match[3]} ${match[4]}` : match[4];
+  }
+
+  function formatTrainFetchedAt(value) {
+    if (typeof value !== "string" || !value.trim()) return "时间未返回";
+    const date = new Date(value.trim());
+    if (Number.isNaN(date.getTime())) return "时间未返回";
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+    return values.year && values.month && values.day && values.hour && values.minute
+      ? `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}` : "时间未返回";
+  }
+
+  function formatTrainDuration(minutes) {
+    if (!Number.isFinite(minutes) || minutes < 0) return "耗时未返回";
+    const hours = Math.floor(minutes / 60);
+    const remainder = minutes % 60;
+    if (!hours) return `${remainder}分钟`;
+    return remainder ? `${hours}小时${remainder}分` : `${hours}小时`;
+  }
+
+  function trainSeatStatus(seat) {
+    if (seat && seat.availability === "available") {
+      return seat.remaining_label && seat.remaining_label !== "有" ? seat.remaining_label : "有票";
+    }
+    if (seat && seat.availability === "unavailable") return "无票";
+    return "余票未知";
+  }
+
+  function formatTrainPrice(seat) {
+    return seat && seat.price_cny !== null && seat.price_cny !== undefined && Number.isFinite(Number(seat.price_cny)) && Number(seat.price_cny) > 0
+      ? `¥${seat.price_cny}` : "票价未返回";
+  }
+
+  function trainSeats(option, seatType) {
+    const seats = Array.isArray(option && option.seats) ? option.seats : [];
+    if (seatType) {
+      const requested = seats.find((seat) => seat && seat.seat_name === seatType);
+      return requested ? [requested] : [];
+    }
+    const validSeats = seats.filter((seat) => seat && typeof seat.seat_name === "string" && seat.seat_name.trim());
+    if (!validSeats.length) return [];
+    const preferred = validSeats.find((seat) => seat.seat_name === "二等座") || validSeats[0];
+    return [preferred, ...validSeats.filter((seat) => seat !== preferred)].slice(0, 3);
+  }
+
+  function renderTrainOption(option, { seatType = null, recommended = false } = {}) {
+    if (!option || typeof option !== "object") return null;
+    const card = document.createElement("article");
+    card.className = "train-option-card";
+    const title = document.createElement("h4");
+    title.className = "train-option-title";
+    const trainNumber = document.createElement("span");
+    trainNumber.className = "train-number";
+    trainNumber.textContent = String(option.train_no || "车次未返回");
+    title.append(trainNumber);
+
+    const route = document.createElement("div");
+    route.className = "train-route";
+    const departure = document.createElement("div");
+    departure.className = "train-station";
+    const departureTime = document.createElement("strong");
+    departureTime.className = "train-time";
+    const arrivalTime = document.createElement("strong");
+    arrivalTime.className = "train-time";
+    const crossDay = typeof option.departure_at === "string" && typeof option.arrival_at === "string"
+      && option.departure_at.slice(0, 10) !== option.arrival_at.slice(0, 10);
+    departureTime.textContent = formatTrainTime(option.departure_at, crossDay);
+    arrivalTime.textContent = formatTrainTime(option.arrival_at, crossDay);
+    const departureStation = document.createElement("span");
+    departureStation.textContent = String(option.departure_station || "出发站未返回");
+    departure.append(departureTime, departureStation);
+    const arrival = document.createElement("div");
+    arrival.className = "train-station";
+    const arrivalStation = document.createElement("span");
+    arrivalStation.textContent = String(option.arrival_station || "到达站未返回");
+    arrival.append(arrivalTime, arrivalStation);
+    const duration = document.createElement("span");
+    duration.className = "train-duration";
+    duration.textContent = `↓ ${formatTrainDuration(option.duration_minutes)}`;
+    route.append(departure, duration, arrival);
+
+    const seats = document.createElement("div");
+    seats.className = "train-seats";
+    for (const seat of trainSeats(option, seatType)) {
+      const seatNode = document.createElement("span");
+      seatNode.className = "train-seat";
+      const seatName = document.createElement("strong");
+      seatName.className = "train-seat-name";
+      seatName.textContent = `席别：${String(seat.seat_name || "席别未返回")}`;
+      const price = document.createElement("span");
+      price.className = "train-seat-price";
+      price.textContent = `价格：${formatTrainPrice(seat)}`;
+      const status = document.createElement("span");
+      status.className = `train-status train-status-${seat.availability || "unknown"}`;
+      const availability = document.createElement("span");
+      availability.className = "train-seat-availability";
+      availability.textContent = `余票：${trainSeatStatus(seat)}`;
+      status.append(availability);
+      seatNode.append(seatName, price, status);
+      seats.append(seatNode);
+    }
+    if (!seats.firstChild) {
+      const missing = document.createElement("span");
+      missing.className = "train-seat";
+      missing.textContent = seatType ? `${seatType}：席别未返回` : "席别未返回";
+      seats.append(missing);
+    }
+    card.append(title, route, seats);
+    return card;
+  }
+
+  function renderTrainResult(trainResult) {
+    if (!trainResult || trainResult.status !== "success") return null;
+    const options = Array.isArray(trainResult.options)
+      ? trainResult.options.filter((option) => option && typeof option === "object") : [];
+    const candidates = Array.isArray(trainResult.recommendation_candidates)
+      ? trainResult.recommendation_candidates.filter((option) => option && typeof option === "object") : [];
+    const allOptions = [...options, ...candidates.filter((candidate) => !options.some((option) => option.option_id === candidate.option_id))];
+    if (!allOptions.length) return null;
+    const recommendation = trainResult.recommendation && typeof trainResult.recommendation === "object"
+      ? trainResult.recommendation : null;
+    const selectedId = recommendation && typeof recommendation.selected_option_id === "string"
+      ? recommendation.selected_option_id : null;
+    const selected = allOptions.find((option) => option.option_id === selectedId) || allOptions[0];
+    const query = trainResult.query && typeof trainResult.query === "object" ? trainResult.query : {};
+    const region = document.createElement("article");
+    region.className = "train-result";
+    const heading = document.createElement("h3");
+    heading.textContent = recommendation && selectedId === selected.option_id ? "推荐车次" : "车次结果";
+    const primary = renderTrainOption(selected, { seatType: query.seat_type || null, recommended: heading.textContent === "推荐车次" });
+    if (primary) region.append(heading, primary);
+
+    if (recommendation && Array.isArray(recommendation.reason_codes) && recommendation.reason_codes.length) {
+      const reasons = document.createElement("p");
+      reasons.className = "train-recommendation-reason";
+      reasons.textContent = `推荐理由：${recommendation.reason_codes.map((code) => TRAIN_REASON_LABELS[code]).filter(Boolean).join("，") || "综合条件更合适"}`;
+      region.append(reasons);
+    }
+    const backups = candidates.filter((option) => option.option_id !== selected.option_id).slice(0, 3);
+    if (backups.length) {
+      const backupHeading = document.createElement("h4");
+      backupHeading.className = "train-alternatives-heading";
+      backupHeading.textContent = "其他可选";
+      region.append(backupHeading);
+      for (const option of backups) {
+        const card = renderTrainOption(option, { seatType: query.seat_type || null });
+        if (card) region.append(card);
+      }
+    }
+    const fetchedAt = typeof trainResult.fetched_at === "string" ? trainResult.fetched_at : "";
+    const queryTime = formatTrainFetchedAt(fetchedAt);
+    const time = document.createElement("p");
+    time.className = "train-query-time";
+    time.textContent = `查询时间：${queryTime === "时间未返回" ? "未知" : queryTime}`;
+    const disclaimer = document.createElement("p");
+    disclaimer.className = "train-disclaimer";
+    disclaimer.textContent = "车票价格、余票及车次信息可能实时变化，请以铁路官方最终查询结果为准。";
+    region.append(time, disclaimer);
+    return region;
+  }
+
   function asItinerary(reply) {
     if (typeof reply !== "string") return null;
     try {
@@ -819,6 +997,8 @@
         return;
       }
       addMessage(response.reply, "assistant");
+      const trainResult = renderTrainResult(response.train_result);
+      if (trainResult) elements.messages.append(trainResult);
       state.pendingResult = {
         reply: response.reply, profile: response.profile || {}, itinerary: null,
         trip_id: response.trip_id || tripId,
