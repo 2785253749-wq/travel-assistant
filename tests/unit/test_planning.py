@@ -147,6 +147,41 @@ def test_standalone_multi_day_weather_question_calls_weather_only() -> None:
     knowledge.answer.assert_not_called()
 
 
+def test_dated_fuzhou_weather_question_uses_forecast_instead_of_live_card() -> None:
+    class Classifier:
+        def classify(self, *_args):
+            return IntentResult(intent="weather_query", confidence=1.0)
+
+    class Weather:
+        def __init__(self) -> None:
+            self.city_calls: list[str] = []
+            self.daily_calls: list[tuple[str, date]] = []
+
+        def city_card(self, city_id):
+            self.city_calls.append(city_id)
+            raise AssertionError("带日期的天气查询不应调用实时天气卡片")
+
+        def daily_weather(self, destination, travel_date):
+            self.daily_calls.append((destination, travel_date))
+            return ItineraryWeather(
+                city="福州市",
+                status="available",
+                summary="多云，27–33°C",
+                report_time=datetime(2026, 8, 30, 8, tzinfo=timezone.utc),
+                date=travel_date,
+            )
+
+    weather = Weather()
+    result = SafeTravelAgent(
+        classifier=Classifier(), planner=Mock(), weather=weather
+    ).run("福州8月31日天气怎么样？", trip=None)
+
+    assert result.intent == "weather_query"
+    assert result.reply == "天气预报（福州市，日期：2026-08-31）：多云，27–33°C"
+    assert weather.city_calls == []
+    assert weather.daily_calls == [("福州", date(2026, 8, 31))]
+
+
 def test_each_itinerary_date_uses_provider_report_window_then_seasonal_fallback() -> None:
     base = itinerary_factory(days=[
         ItineraryDay(

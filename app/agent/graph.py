@@ -12,7 +12,7 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypedDict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -874,6 +874,37 @@ class SafeTravelAgent:
             )
         if intent == "weather_query":
             city = _weather_city(message)
+            requested_date = _weather_date(message)
+            if requested_date is not None:
+                try:
+                    forecast = self._weather.daily_weather(city, requested_date)
+                except Exception:
+                    forecast = None
+                if forecast is None:
+                    unavailable = "天气信息暂不可用"
+                    return ChatResult(
+                        f"{city} {requested_date.isoformat()} 的{unavailable}。",
+                        "collecting",
+                        {},
+                        warnings=[unavailable],
+                        intent=intent,
+                    )
+                if forecast.status == "available":
+                    reply = (
+                        f"天气预报（{forecast.city}，日期：{requested_date.isoformat()}）："
+                        f"{forecast.summary}"
+                    )
+                elif forecast.status == "seasonal":
+                    reply = f"非实时天气（{requested_date.isoformat()}）：{forecast.summary}"
+                else:
+                    reply = forecast.summary
+                return ChatResult(
+                    reply,
+                    "collecting",
+                    {},
+                    warnings=[forecast.summary] if forecast.status == "unavailable" else [],
+                    intent=intent,
+                )
             try:
                 card = self._weather.city_card(city)
             except Exception:
@@ -1171,10 +1202,31 @@ def _knowledge_region(message: str) -> str | None:
 
 
 def _weather_city(message: str) -> str:
-    for city in ("厦门", "福建", "云南"):
-        if city in message:
+    aliases = (
+        ("厦门市", "厦门"),
+        ("厦门", "厦门"),
+        ("福州市", "福州"),
+        ("福州", "福州"),
+        ("福建省", "福建"),
+        ("福建", "福建"),
+        ("大理市", "大理"),
+        ("大理", "大理"),
+        ("丽江市", "丽江"),
+        ("丽江", "丽江"),
+        ("云南省", "云南"),
+        ("云南", "云南"),
+    )
+    for alias, city in aliases:
+        if alias in message:
             return city
     return "未知城市"
+
+
+def _weather_date(message: str) -> date | None:
+    """Extract the first explicit calendar date from a weather question."""
+    china_today = datetime.now(timezone(timedelta(hours=8))).date()
+    normalized = RuleTravelExtractor(reference_date=china_today)._normalized_dates(message)
+    return date.fromisoformat(normalized[0]) if normalized else None
 
 
 def _rag_citations(answer: RagAnswer):
