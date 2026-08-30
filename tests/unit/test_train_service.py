@@ -184,6 +184,22 @@ def test_service_filters_to_requested_seat_type() -> None:
     assert [option.train_no for option in result.options] == ["G1"]
 
 
+def test_service_rejects_options_outside_requested_city_station_family() -> None:
+    valid = _option("G1").model_copy(
+        update={"departure_station": "福州南", "arrival_station": "上海虹桥"}
+    )
+    invalid = _option("G2").model_copy(
+        update={"departure_station": "福州南", "arrival_station": "练塘"}
+    )
+    provider = StubTrainProvider(_provider_result((valid, invalid)))
+    service = TrainService(provider=provider, today=lambda: date(2026, 9, 1))
+
+    result = service.search(_query())
+
+    assert [option.train_no for option in result.options] == ["G1"]
+    assert result.options[0].arrival_station == "上海虹桥"
+
+
 def test_service_require_available_excludes_unknown_and_unavailable_seats() -> None:
     provider = StubTrainProvider(
         _provider_result(

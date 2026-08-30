@@ -14,6 +14,21 @@
   const ACTIVITY_SLOT_LABELS = Object.freeze({
     morning: "上午", afternoon: "下午", evening: "晚上",
   });
+
+  function activityPeriodLabel(activity, slot) {
+    const match = typeof activity?.start_time === "string"
+      ? /^(\d{2}):(\d{2})$/.exec(activity.start_time)
+      : null;
+    if (!match) return ACTIVITY_SLOT_LABELS[slot] || slot;
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (hour > 23 || minute > 59) return ACTIVITY_SLOT_LABELS[slot] || slot;
+    const totalMinutes = hour * 60 + minute;
+    if (totalMinutes < 6 * 60) return "凌晨";
+    if (totalMinutes < 12 * 60) return "上午";
+    if (totalMinutes < 18 * 60) return "下午";
+    return "晚上";
+  }
   const ALLOWED_EXTERNAL_HOSTS = new Set([
     "api.open-meteo.com", "geocoding-api.open-meteo.com", "photon.komoot.io",
     "www.12306.cn", "www.ctrip.com", "www.gov.cn", "www.xm.gov.cn",
@@ -771,10 +786,12 @@
       && Boolean(allowedExternalUrl(citation.source_url || citation.source));
   }
 
-  function renderStructuredItinerary(itinerary) {
+  function renderStructuredItinerary(itinerary, tripTransport = null) {
     const container = document.createElement("div");
     const title = itinerary && itinerary.title ? itinerary.title : "行程建议";
     elements.tripTitle.textContent = String(title);
+    const transport = renderTripTransport(tripTransport);
+    if (transport) container.append(transport);
     if (itinerary && itinerary.budget) {
       const budget = document.createElement("section");
       budget.className = "budget-card";
@@ -788,11 +805,20 @@
       ));
       for (const key of [...standardBudgetKeys, ...extraBudgetKeys]) {
         if (Object.prototype.hasOwnProperty.call(itinerary.budget, key)) {
-          appendTextBlock(list, "li", `${BUDGET_LABELS[key] || key}：${itinerary.budget[key]} ${itinerary.budget.currency || "CNY"}`);
+          const source = key === "transport" && tripTransport && typeof tripTransport === "object"
+            ? `（${TRANSPORT_PRICING_LABELS[tripTransport.pricing_status] || "估算"}）` : "";
+          appendTextBlock(list, "li", `${BUDGET_LABELS[key] || key}：${itinerary.budget[key]} ${itinerary.budget.currency || "CNY"}${source}`);
         }
       }
       budget.append(list);
-      appendTextBlock(budget, "p", "以上为预算估算，不是实时价格、库存或余票。", "help-text");
+      appendTextBlock(
+        budget,
+        "p",
+        tripTransport
+          ? "交通来源已标注；住宿、餐饮、门票等仍为估算，不代表实时价格、库存或余票。"
+          : "以上为预算估算，不是实时价格、库存或余票。",
+        "help-text",
+      );
       container.append(budget);
     }
     if (Array.isArray(itinerary && itinerary.notes) && itinerary.notes.length) {
@@ -822,7 +848,7 @@
       for (const slot of ["morning", "afternoon", "evening"]) {
         const activity = day[slot];
         if (!activity) continue;
-        const titleText = `${ACTIVITY_SLOT_LABELS[slot] || slot}：${activity.title || "待确认"} (${activity.start_time || ""}-${activity.end_time || ""})`;
+        const titleText = `${activityPeriodLabel(activity, slot)}：${activity.title || "待确认"} (${activity.start_time || ""}-${activity.end_time || ""})`;
         const item = appendTextBlock(slots, "li", titleText);
         if (Array.isArray(activity.notes)) {
           for (const note of activity.notes) appendTextBlock(item, "p", note, "activity-note");
@@ -931,12 +957,12 @@
     return remainder ? `${hours}小时${remainder}分` : `${hours}小时`;
   }
 
-  function trainSeatStatus(seat) {
+  function trainSeatStatus(seat, unknownLabel = "余票未知") {
     if (seat && seat.availability === "available") {
       return seat.remaining_label && seat.remaining_label !== "有" ? seat.remaining_label : "有票";
     }
     if (seat && seat.availability === "unavailable") return "无票";
-    return "余票未知";
+    return unknownLabel;
   }
 
   function formatTrainPrice(seat) {
@@ -956,7 +982,7 @@
     return [preferred, ...validSeats.filter((seat) => seat !== preferred)].slice(0, 3);
   }
 
-  function renderTrainOption(option, { seatType = null, recommended = false } = {}) {
+  function renderTrainOption(option, { seatType = null, recommended = false, unknownAvailabilityLabel = "余票未知" } = {}) {
     if (!option || typeof option !== "object") return null;
     const card = document.createElement("article");
     card.className = "train-option-card";
@@ -1007,7 +1033,7 @@
       status.className = `train-status train-status-${seat.availability || "unknown"}`;
       const availability = document.createElement("span");
       availability.className = "train-seat-availability";
-      availability.textContent = `余票：${trainSeatStatus(seat)}`;
+      availability.textContent = `余票：${trainSeatStatus(seat, unknownAvailabilityLabel)}`;
       status.append(availability);
       seatNode.append(seatName, price, status);
       seats.append(seatNode);
@@ -1072,6 +1098,60 @@
     return region;
   }
 
+  const TRANSPORT_PRICING_LABELS = Object.freeze({
+    live: "实时车票价格",
+    partial: "部分为估算",
+    estimated: "估算",
+  });
+
+  function tripTransportOption(leg) {
+    return {
+      train_no: leg.train_no,
+      departure_station: leg.origin_station,
+      arrival_station: leg.destination_station,
+      departure_at: leg.departure_at,
+      arrival_at: leg.arrival_at,
+      duration_minutes: leg.duration,
+      seats: [{
+        seat_name: leg.seat_name,
+        price_cny: leg.price,
+        remaining_label: leg.remaining_label,
+        availability: leg.availability,
+      }],
+    };
+  }
+
+  function renderTripTransport(transport) {
+    if (!transport || typeof transport !== "object") return null;
+    const legs = [["去程", transport.outbound], ["返程", transport.return_trip]]
+      .filter(([, leg]) => leg && typeof leg === "object");
+    const warnings = Array.isArray(transport.warnings)
+      ? transport.warnings.filter((warning) => typeof warning === "string" && warning.trim()) : [];
+    if (!legs.length && !warnings.length) return null;
+
+    const section = document.createElement("section");
+    section.className = "trip-transport";
+    appendTextBlock(section, "h3", "推荐交通");
+    for (const [label, leg] of legs) {
+      const wrapper = document.createElement("article");
+      wrapper.className = "trip-transport-leg";
+      appendTextBlock(wrapper, "h4", label);
+      const card = renderTrainOption(tripTransportOption(leg), {
+        seatType: leg.seat_name,
+        unknownAvailabilityLabel: "余票状态未知",
+      });
+      if (card) wrapper.append(card);
+      section.append(wrapper);
+    }
+    if (warnings.length) {
+      const warningList = document.createElement("ul");
+      warningList.className = "trip-transport-warnings";
+      for (const warning of warnings) appendTextBlock(warningList, "li", warning);
+      section.append(warningList);
+    }
+    return section;
+  }
+
   function asItinerary(reply) {
     if (typeof reply !== "string") return null;
     try {
@@ -1085,7 +1165,8 @@
   function renderTrip(trip, options = {}) {
     clearChildren(elements.tripContent);
     const itinerary = trip && trip.itinerary && typeof trip.itinerary === "object" ? trip.itinerary : asItinerary(trip && trip.reply);
-    elements.tripContent.append(itinerary ? renderStructuredItinerary(itinerary) : renderReply(trip && trip.reply));
+    const tripTransport = options.transport || (trip && trip.trip_transport) || null;
+    elements.tripContent.append(itinerary ? renderStructuredItinerary(itinerary, tripTransport) : renderReply(trip && trip.reply));
     state.currentTrip = options.public ? null : trip;
     elements.tripActions.hidden = Boolean(options.public || !state.session);
     elements.save.hidden = Boolean(options.public || (trip && trip.id));
@@ -1122,6 +1203,7 @@
           status: "planned",
           profile: state.profile,
           itinerary: response.itinerary,
+          trip_transport: response.trip_transport,
         });
         setStatus("已根据保存的行程给出解释。", false);
         return;
@@ -1164,7 +1246,9 @@
       const itinerary = response.itinerary && typeof response.itinerary === "object"
         ? response.itinerary : asItinerary(response.reply);
       if (response.stage !== "planned" || !itinerary) {
-        throw Object.assign(new Error("CHAT_UNAVAILABLE"), { code: "CHAT_UNAVAILABLE" });
+        const code = typeof response.error_code === "string" && response.error_code.trim()
+          ? response.error_code : "CHAT_UNAVAILABLE";
+        throw Object.assign(new Error(code), { code });
       }
       state.profile = response.profile || state.profile || {};
       state.pendingResult = {
@@ -1174,7 +1258,7 @@
       showProviderNotice(response.warnings, itinerary);
       renderTrip({
         id: state.pendingResult.trip_id, title: itinerary.title || "行程建议", status: "planned",
-        profile: state.profile, itinerary,
+        profile: state.profile, itinerary, trip_transport: response.trip_transport,
       });
       addMessage("行程已生成，可在下方查看。", "assistant");
       if (state.session && state.pendingResult.trip_id) await refreshHistory();

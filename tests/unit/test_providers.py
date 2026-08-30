@@ -250,6 +250,26 @@ def test_places_second_empty_result_is_a_safe_degradation_after_one_rewrite() ->
     assert parse_qs(urlparse(str(transport.requests[1].url)).query)["q"] == ["杭州 西湖"]
 
 
+def test_places_filters_obvious_business_locations_from_travel_evidence() -> None:
+    transport = RecordingTransport([
+        json_response(
+            {
+                "features": [
+                    {"properties": {"name": "第一三共制药（上海）", "city": "上海"}},
+                    {"properties": {"name": "昌硕科技（上海）有限公司", "city": "上海"}},
+                    {"properties": {"name": "上海博物馆", "city": "上海"}},
+                ]
+            }
+        )
+    ])
+    provider = PlacesProvider(client=httpx.Client(transport=transport))
+
+    result = provider.search(city="上海", query="上海景点")
+
+    assert [place.name for place in result.data] == ["上海博物馆"]
+    assert all("公司" not in evidence.fact and "制药" not in evidence.fact for evidence in result.evidence)
+
+
 def test_weather_timeout_returns_degraded_result() -> None:
     transport = RecordingTransport([httpx.TimeoutException("timed out")])
     provider = WeatherProvider(client=httpx.Client(transport=transport))

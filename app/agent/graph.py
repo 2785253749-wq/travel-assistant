@@ -10,7 +10,8 @@ import json
 import logging
 import re
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from time import monotonic
 from typing import Any, Literal, Protocol, TypedDict
 from datetime import UTC, date, datetime, timedelta, timezone
 from uuid import UUID
@@ -32,11 +33,19 @@ from app.schemas import (
     Itinerary,
     ItineraryWeather,
     ProfileIssue,
+    TripTransportSummary,
     TravelProfile,
     WeatherCard,
 )
 from app.rag.service import RagAnswer, UnavailableKnowledgeAnswerService
 from app.trips.models import Trip
+from app.trips.transport import (
+    TRANSPORT_FALLBACK_WARNING,
+    TripTransportContext,
+    TripTransportResolver,
+    public_transport_summary,
+    render_transport_summary,
+)
 
 
 REQUIRED_FIELDS = ("origin", "destination", "start_date", "end_date", "travelers", "budget_cny")
@@ -81,6 +90,8 @@ class ChatResult:
     intent: Intent | None = None
     persisted_this_request: bool = False
     train_result: Any | None = None
+    transport_context: TripTransportContext | None = None
+    trip_transport: TripTransportSummary | None = None
 
 
 @dataclass(frozen=True)
@@ -309,7 +320,7 @@ class RuleTravelExtractor:
         self.reference_date = reference_date or date.today()
 
     _TRAVELER_PREFIX = (
-        r"(?:(?:[1-9]\d?|[\u4e00-\u4e5d\u4e24\u5341]+)\s*(?:\u4e2a)?\s*"
+        r"(?:(?:[1-9]\d?|[一二两三四五六七八九十]+)\s*(?:\u4e2a)?\s*"
         r"(?:\u4eba|travellers?|travelers?)\s*)?"
     )
     _ROUTE = re.compile(
@@ -331,7 +342,8 @@ class RuleTravelExtractor:
         r"([\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+)\s*\u65e5?"
     )
     _TRAVELERS = re.compile(
-        r"(?<!\d)([1-9]\d?|[\u4e00-\u4e5d\u4e24\u5341]+)\s*(?:\u4e2a)?\s*"
+        r"(?:(?<!\d)(?P<digits>[1-9]\d?)|(?P<chinese>[一二两三四五六七八九十]+))"
+        r"\s*(?:\u4e2a)?\s*"
         r"(?:\u4eba|travellers?|travelers?)",
         re.IGNORECASE,
     )
@@ -353,9 +365,12 @@ class RuleTravelExtractor:
         re.IGNORECASE,
     )
     _DURATION = re.compile(
-        r"(?:[1-9]\d?|[一二两三四五六七八九十]+)\s*天",
+        r"(?:玩|去|待)\s*(?P<days>[1-9]\d?|[一二两三四五六七八九十]+)\s*天|"
+        r"(?P<tour_days>[1-9]\d?|[一二两三四五六七八九十]+)\s*日游|"
+        r"(?P<bare_days>[1-9]\d?|[一二两三四五六七八九十]+)\s*天",
         re.IGNORECASE,
     )
+    _RELATIVE_DATE = re.compile(r"今天|明天|后天")
     _ROUTE_ACTIVITY = re.compile(
         r"(?:自由行|旅游|旅行|游玩|出游|"
         r"玩(?=\s*(?:[1-9]\d?|[一二两三四五六七八九十]+)\s*天))",
@@ -416,7 +431,18 @@ class RuleTravelExtractor:
                 continue
             candidates.append((match.start(), normalized))
 
-        return [normalized for _, normalized in sorted(candidates)]
+        if candidates:
+            return [normalized for _, normalized in sorted(candidates)]
+
+        offsets = {"今天": 0, "明天": 1, "后天": 2}
+        relative_dates = [
+            (
+                match.start(),
+                (self.reference_date + timedelta(days=offsets[match.group(0)])).isoformat(),
+            )
+            for match in self._RELATIVE_DATE.finditer(message)
+        ]
+        return [normalized for _, normalized in sorted(relative_dates)]
 
     @classmethod
     def _route_message(cls, message: str) -> str:
@@ -426,6 +452,7 @@ class RuleTravelExtractor:
             cls._DATE,
             cls._SHORT_DATE,
             cls._CHINESE_DATE,
+            cls._RELATIVE_DATE,
             cls._TRAVELERS,
             cls._BUDGET,
             cls._DURATION,
@@ -445,9 +472,14 @@ class RuleTravelExtractor:
             updates["start_date"] = dates[0]
         if len(dates) > 1:
             updates["end_date"] = dates[1]
+        duration = self._duration_days(message)
+        if duration is not None and dates and len(dates) == 1:
+            updates["end_date"] = (
+                date.fromisoformat(dates[0]) + timedelta(days=duration - 1)
+            ).isoformat()
         travelers = self._TRAVELERS.search(message)
         if travelers:
-            raw_travelers = travelers.group(1)
+            raw_travelers = travelers.group("digits") or travelers.group("chinese")
             updates["travelers"] = (
                 int(raw_travelers)
                 if raw_travelers.isdigit()
@@ -456,7 +488,32 @@ class RuleTravelExtractor:
         budget = self._BUDGET.search(message)
         if budget:
             updates["budget_cny"] = int(budget.group(1))
+        train_seat = self._extract_train_seat(message)
+        if train_seat is not None:
+            updates["train_seat"] = train_seat
         return TravelProfile.model_validate({**profile.model_dump(), **updates})
+
+    def _duration_days(self, message: str) -> int | None:
+        duration = self._DURATION.search(message)
+        if duration is None:
+            return None
+        raw_days = (
+            duration.group("days")
+            or duration.group("tour_days")
+            or duration.group("bare_days")
+        )
+        return int(raw_days) if raw_days.isdigit() else self._chinese_number(raw_days)
+
+    @staticmethod
+    def _extract_train_seat(message: str) -> str | None:
+        for terms, value in (
+            (("商务座", "商务"), "商务座"),
+            (("一等座", "一等"), "一等座"),
+            (("二等座", "二等"), "二等座"),
+        ):
+            if any(term in message for term in terms):
+                return value
+        return None
 
 
 def extract_profile(
@@ -546,6 +603,8 @@ class ModelStructuredPlanner:
                 "Generate only one raw JSON object matching the supplied JSON Schema. "
                 "Use concise, readable Chinese titles and advisory notes. Put every external fact in facts with "
                 "an evidence_id; never put live prices, availability, opening hours, or source metadata in display text. "
+                "When transport_context is present, use its real departure and arrival times to place activities, "
+                "but never create or alter train numbers, stations, times, prices, or availability. "
                 "The facts array may be an empty array. If a fact is included, copy both text and evidence_id exactly "
                 "from one allowed_evidence entry: no translation, paraphrase, summary, combination, or invention. "
                 "If no listed evidence supports a fact, omit it. If repair_codes includes CLAIM_EVIDENCE_MISMATCH, "
@@ -565,6 +624,7 @@ class ModelStructuredPlanner:
                     {"evidence_id": evidence.evidence_id, "fact": evidence.fact}
                     for evidence in _planning_evidence(provider_results)
                 ],
+                "transport_context": _planning_transport_context(provider_results),
             }, ensure_ascii=False)),
         ])
         return response.content if hasattr(response, "content") else response
@@ -600,6 +660,11 @@ class SafeTravelAgent:
         self._train_extractor = train_extractor or TrainQueryExtractor()
         self._train_service = train_service
         self._train_recommendation = train_recommendation or TrainRecommendationService()
+        self._transport_resolver = (
+            TripTransportResolver(train_service, self._train_recommendation)
+            if train_service is not None
+            else None
+        )
 
     def collect(self, message: str, trip: Trip | None) -> ChatResult:
         """Normalize travel details and stop before providers or the planner."""
@@ -712,14 +777,28 @@ class SafeTravelAgent:
                 destination.code or "OUT_OF_SCOPE", intent=intent
             )
         try:
+            planner_preflight_started = monotonic()
             logging.getLogger("app.agent").info(
                 "planning_started",
                 extra=operational_context(intent=intent),
             )
             fetched = self._evidence_provider.fetch(profile)
-            provider_results = getattr(fetched, "results", fetched)
+            transport_context = self._resolve_transport(profile, message)
+            provider_results = _attach_transport_context(
+                fetched,
+                transport_context,
+                profile,
+            )
             booking_links = getattr(fetched, "booking_links", None)
             warnings = list(getattr(fetched, "warnings", ()))
+            warnings.extend(transport_context.warnings)
+            warnings = list(dict.fromkeys(warnings))
+            logging.getLogger("app.agent").info(
+                "planner preflight total",
+                extra=operational_context(
+                    elapsed_seconds=round(monotonic() - planner_preflight_started, 3),
+                ),
+            )
             if not hasattr(self._planner, "invoke") and hasattr(self._planner, "plan"):
                 from app.agent.planning import PlanValidationError, render_itinerary_markdown
 
@@ -755,6 +834,8 @@ class SafeTravelAgent:
                         error_code="PLAN_VALIDATION_FAILED",
                         warnings=warnings,
                         intent=intent,
+                        transport_context=transport_context,
+                        trip_transport=public_transport_summary(transport_context),
                     )
                 itinerary = enrich_itinerary(
                     itinerary,
@@ -765,18 +846,22 @@ class SafeTravelAgent:
                 itinerary = _attach_booking_links(itinerary, booking_links)
                 citations = _itinerary_citations(itinerary)
                 return ChatResult(
-                    render_itinerary_markdown(itinerary),
+                    _render_planned_reply(itinerary, transport_context),
                     "planned",
                     profile.model_dump(),
                     sources=[citation.model_dump(mode="json") for citation in citations],
                     itinerary=itinerary,
                     warnings=warnings,
                     intent=intent,
+                    transport_context=transport_context,
+                    trip_transport=public_transport_summary(transport_context),
                 )
             evidence = tuple(_planning_evidence(provider_results))
             result = self._verify_plan(self._planner.invoke(profile, evidence), evidence, profile)
             result.warnings = warnings
             result.intent = intent
+            result.transport_context = transport_context
+            result.trip_transport = public_transport_summary(transport_context)
             return result
         except ProviderUnavailable:
             raise
@@ -792,6 +877,25 @@ class SafeTravelAgent:
                 error_code="AGENT_UNAVAILABLE",
                 intent=intent,
             )
+
+    def _resolve_transport(
+        self,
+        profile: TravelProfile,
+        message: str,
+    ) -> TripTransportContext:
+        if self._transport_resolver is None:
+            return TripTransportContext()
+        try:
+            return self._transport_resolver.resolve(profile, message)
+        except Exception:
+            logging.getLogger("app.agent").warning(
+                "transport_query_failed",
+                extra=operational_context(
+                    error_code="TRAIN_SERVICE_UNAVAILABLE",
+                    exception_type="TransportResolverError",
+                ),
+            )
+            return TripTransportContext(warnings=[TRANSPORT_FALLBACK_WARNING])
 
     def run(self, message: str, trip: Trip | None, user_id: UUID | None = None) -> ChatResult:
         if _message_contains_secret(message):
@@ -1241,13 +1345,51 @@ def _planning_evidence(value: object) -> list[TrustedEvidence]:
     from app.providers.base import ProviderResult
 
     output: list[TrustedEvidence] = []
-    values = value if isinstance(value, (list, tuple)) else (value,)
+    results = getattr(value, "results", None)
+    values = results if results is not None else (value if isinstance(value, (list, tuple)) else (value,))
     for item in values:
         if isinstance(item, ProviderResult):
             output.extend(item.evidence)
         elif isinstance(item, TrustedEvidence):
             output.append(item)
     return output
+
+
+def _planning_transport_context(value: object) -> dict[str, Any] | None:
+    context = getattr(value, "transport_context", None)
+    if context is None:
+        return None
+    if hasattr(context, "model_dump"):
+        return context.model_dump(mode="json")
+    return None
+
+
+def _attach_transport_context(
+    fetched: object,
+    context: TripTransportContext,
+    profile: TravelProfile,
+) -> object:
+    from app.providers.aggregate import ProviderBundle
+    from app.providers.booking_links import BookingLinkBuilder
+
+    if isinstance(fetched, ProviderBundle):
+        return replace(fetched, transport_context=context)
+    results = getattr(fetched, "results", fetched)
+    booking_links = getattr(fetched, "booking_links", None) or BookingLinkBuilder().build(profile)
+    return ProviderBundle(
+        results=tuple(results) if isinstance(results, (list, tuple)) else (results,),
+        booking_links=booking_links,
+        transport_context=context,
+    )
+
+
+def _render_planned_reply(itinerary: Itinerary, context: TripTransportContext) -> str:
+    from app.agent.planning import render_itinerary_markdown
+
+    reply = render_itinerary_markdown(itinerary)
+    if context.outbound is not None or context.return_option is not None or context.warnings:
+        reply = f"{reply}\n\n{render_transport_summary(context)}"
+    return reply[:CHAT_REPLY_MAX_LENGTH]
 
 
 def _itinerary_citations(itinerary: Any) -> list[Any]:
@@ -1266,6 +1408,8 @@ def enrich_itinerary(
     knowledge: KnowledgeAnswerer,
 ) -> Itinerary:
     """Attach server-produced weather without allowing a weather failure to block a plan."""
+    enrichment_started = monotonic()
+    logging.getLogger("app.planner").info("planner enrichment start")
     days = []
     for day in itinerary.days:
         day_weather: ItineraryWeather | None = None
@@ -1276,7 +1420,15 @@ def enrich_itinerary(
         if day_weather is None:
             day_weather = _seasonal_weather(destination, day.date, knowledge)
         days.append(day.model_copy(update={"weather": day_weather}))
-    return itinerary.model_copy(update={"days": days})
+    enriched = itinerary.model_copy(update={"days": days})
+    logging.getLogger("app.planner").info(
+        "planner enrichment end",
+        extra=operational_context(
+            stage="success",
+            elapsed_seconds=round(monotonic() - enrichment_started, 3),
+        ),
+    )
+    return enriched
 
 
 def _seasonal_weather(

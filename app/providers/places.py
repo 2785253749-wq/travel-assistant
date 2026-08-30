@@ -22,6 +22,24 @@ from app.providers.base import (
 
 PLACES_SOURCE = "https://photon.komoot.io/api/"
 _PLACE_SUFFIX = re.compile(r"(?:景区|风景区|旅游区|公园)$")
+_NON_TOURISM_MARKERS = (
+    "公司",
+    "制药",
+    "药厂",
+    "工厂",
+    "工业园",
+    "产业园",
+    "办公机构",
+    "办公楼",
+)
+_EXPLICIT_NON_TOURISM_MARKERS = (
+    "企业",
+    "工业旅游",
+    "参观公司",
+    "参观企业",
+    "工厂参观",
+    "工厂旅游",
+)
 
 
 @dataclass(frozen=True)
@@ -44,9 +62,12 @@ class PlacesProvider:
         deadline = OperationDeadline.start(self._clock)
         try:
             places = self._search(query, deadline)
+            allow_non_tourism = _allows_non_tourism(query)
+            places = _filter_travel_places(places, allow_non_tourism=allow_non_tourism)
             if not places:
                 rewritten = f"{city.strip()} {_normalized_alias(query)}".strip()
                 places = self._search(rewritten, deadline)
+                places = _filter_travel_places(places, allow_non_tourism=allow_non_tourism)
                 if not places:
                     return ProviderResult(
                         [], PLACES_SOURCE, fetched_at, True,
@@ -94,6 +115,22 @@ class PlacesProvider:
 def _normalized_alias(query: str) -> str:
     normalized = _PLACE_SUFFIX.sub("", query.strip())
     return normalized or query.strip()
+
+
+def _allows_non_tourism(query: str) -> bool:
+    return any(marker in query for marker in _EXPLICIT_NON_TOURISM_MARKERS)
+
+
+def _filter_travel_places(
+    places: list[Place], *, allow_non_tourism: bool = False,
+) -> list[Place]:
+    if allow_non_tourism:
+        return places
+    return [
+        place
+        for place in places
+        if not any(marker in place.name for marker in _NON_TOURISM_MARKERS)
+    ]
 
 
 def _place_evidence(place: Place, fetched_at) -> TrustedEvidence:

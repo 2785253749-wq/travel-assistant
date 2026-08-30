@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+import logging
 import re
 from time import monotonic
-from typing import Any, Callable
+from threading import Event, Lock, Thread
+from typing import Any, Awaitable, Callable, Iterator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
 from app.core.config import Settings
+from app.core.logging import operational_context
 from app.providers.base import (
     OperationDeadline,
     ProviderResult,
@@ -33,6 +38,94 @@ _DURATION_CLOCK = re.compile(r"^(?P<hours>\d{1,3}):(?P<minutes>[0-5]\d)$")
 _DURATION_TEXT = re.compile(
     r"^(?:(?P<hours>\d+)\s*小时)?\s*(?:(?P<minutes>\d+)\s*分)?$"
 )
+_SENSITIVE_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:api[_-]?key|token|secret|password)\b\s*[:=]\s*[^\s,;]+"
+)
+_URL_QUERY = re.compile(r"(?i)(https?://[^\s?]+)\?[^\s]+")
+JUHE_MIN_REQUEST_INTERVAL_SECONDS = 1.05
+
+
+class JuheTrainRateLimiter:
+    """Process-local async gate for Juhe train request starts."""
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        minimum_interval: float = JUHE_MIN_REQUEST_INTERVAL_SECONDS,
+    ) -> None:
+        self._clock = clock
+        self._sleep = sleep
+        self._minimum_interval = minimum_interval
+        self._next_allowed_at = 0.0
+        self._ready = Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock: asyncio.Lock | None = None
+        self._thread = Thread(
+            target=self._run_loop,
+            name="juhe-train-rate-limit",
+            daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout=5):
+            raise RuntimeError("Juhe train rate limiter failed to start")
+
+    def _run_loop(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._lock = asyncio.Lock()
+        self._ready.set()
+        loop.run_forever()
+
+    def _run(self, coroutine: Any) -> Any:
+        if self._loop is None:
+            raise RuntimeError("Juhe train rate limiter is not ready")
+        return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()
+
+    async def _acquire(self) -> None:
+        if self._lock is None:
+            raise RuntimeError("Juhe train rate limiter is not ready")
+        await self._lock.acquire()
+        try:
+            delay = max(0.0, self._next_allowed_at - self._clock())
+            if delay:
+                await self._sleep(delay)
+        except BaseException:
+            self._lock.release()
+            raise
+
+    async def _release(self) -> None:
+        if self._lock is None:
+            raise RuntimeError("Juhe train rate limiter is not ready")
+        completed_at = self._clock()
+        self._next_allowed_at = max(
+            self._next_allowed_at,
+            completed_at + self._minimum_interval,
+        )
+        self._lock.release()
+
+    @contextmanager
+    def request_slot(self) -> Iterator[None]:
+        self._run(self._acquire())
+        try:
+            yield
+        finally:
+            self._run(self._release())
+
+
+_DEFAULT_RATE_LIMITER: JuheTrainRateLimiter | None = None
+_DEFAULT_RATE_LIMITER_LOCK = Lock()
+
+
+def _default_rate_limiter() -> JuheTrainRateLimiter:
+    global _DEFAULT_RATE_LIMITER
+    if _DEFAULT_RATE_LIMITER is None:
+        with _DEFAULT_RATE_LIMITER_LOCK:
+            if _DEFAULT_RATE_LIMITER is None:
+                _DEFAULT_RATE_LIMITER = JuheTrainRateLimiter()
+    return _DEFAULT_RATE_LIMITER
 
 
 class JuheTrainProvider:
@@ -44,6 +137,7 @@ class JuheTrainProvider:
         settings: Settings,
         client: httpx.Client | None = None,
         clock: Callable[[], float] = monotonic,
+        rate_limiter: Any | None = None,
     ) -> None:
         self._key = (
             settings.juhe_train_api_key.get_secret_value().strip()
@@ -53,6 +147,7 @@ class JuheTrainProvider:
         self._timeout_seconds = settings.train_timeout_seconds
         self._client = client or httpx.Client(timeout=self._timeout_seconds)
         self._clock = clock
+        self._rate_limiter = rate_limiter or _default_rate_limiter()
 
     def search(
         self,
@@ -72,6 +167,7 @@ class JuheTrainProvider:
                 JUHE_TRAIN_URL,
                 _request_params(query, self._key),
                 deadline,
+                request_slot=self._rate_limiter.request_slot,
             )
         except httpx.TimeoutException:
             return _failure(fetched_at, "TRAIN_TIMEOUT")
@@ -84,8 +180,11 @@ class JuheTrainProvider:
 
         error_code = payload.get("error_code")
         if error_code is None:
+            if _is_nonzero_business_code(payload.get("resultcode")):
+                _log_business_error(payload, normalized_error_code="TRAIN_INVALID_RESPONSE")
             return _failure(fetched_at, "TRAIN_INVALID_RESPONSE")
         if error_code not in (0, "0"):
+            _log_business_error(payload, normalized_error_code="TRAIN_PROVIDER_ERROR")
             return _failure(fetched_at, "TRAIN_PROVIDER_ERROR")
 
         raw_options = payload.get("result")
@@ -104,6 +203,54 @@ class JuheTrainProvider:
         if not options:
             return _empty(fetched_at, "TRAIN_NO_VALID_OPTIONS")
         return ProviderResult(tuple(options), JUHE_TRAIN_SOURCE, fetched_at)
+
+
+def _is_nonzero_business_code(value: Any) -> bool:
+    return value is not None and value not in (0, "0")
+
+
+def _safe_business_code(payload: dict[str, Any]) -> int | float | str | None:
+    for field in ("error_code", "resultcode"):
+        value = payload.get(field)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return value
+        if isinstance(value, str):
+            value = value.strip()
+            if value:
+                return value[:80]
+    return None
+
+
+def _safe_provider_reason(payload: dict[str, Any]) -> str | None:
+    value = payload.get("reason")
+    if value is None:
+        value = payload.get("message")
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return None
+    reason = str(value).strip()
+    if not reason:
+        return None
+    reason = _SENSITIVE_ASSIGNMENT.sub("<redacted>", reason)
+    reason = _URL_QUERY.sub(r"\1?<redacted>", reason)
+    return reason[:200]
+
+
+def _log_business_error(
+    payload: dict[str, Any],
+    *,
+    normalized_error_code: str,
+) -> None:
+    logging.getLogger("app.provider").warning(
+        "juhe business error",
+        extra=operational_context(
+            provider="juhe_train",
+            error_code=normalized_error_code,
+            provider_business_code=_safe_business_code(payload),
+            provider_reason=_safe_provider_reason(payload),
+        ),
+    )
 
 
 def _request_params(query: TrainQuery, key: str) -> dict[str, str]:

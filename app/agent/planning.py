@@ -3,21 +3,30 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal
+from time import monotonic
 from typing import Any
 
 from pydantic import ValidationError
 
 from app.agent.graph import TrustedEvidence
+from app.core.logging import operational_context
 from app.providers.base import ProviderResult
 from app.schemas import CHAT_REPLY_MAX_LENGTH, Itinerary, SourceCitation, TravelProfile
+from app.trips.transport import TripTransportContext, selected_seat_price
 
 
 _TRUSTED_SOURCE_TYPES = {"official", "government", "trusted_provider"}
 _ACTIVITY_SLOTS = ("morning", "afternoon", "evening")
+_TRANSPORT_BUFFER_MINUTES = 90
+_DAY_LAST_MINUTE = 23 * 60 + 59
+_ACTIVITY_GAP_MINUTES = 30
+_CHINA_TIMEZONE = timezone(timedelta(hours=8))
 
 
 @dataclass(frozen=True)
@@ -85,8 +94,49 @@ class Planner:
     def plan(self, profile: TravelProfile, provider_results: object) -> Itinerary:
         repair_codes: list[str] | None = None
         for attempt in range(2):
-            candidate = self._generate(profile, provider_results, repair_codes)
+            repair_started = monotonic() if repair_codes is not None else None
+            if repair_started is not None:
+                logging.getLogger("app.planner").info(
+                    "planner repair start",
+                    extra=operational_context(attempt=attempt + 1),
+                )
+            try:
+                candidate = self._generate(profile, provider_results, repair_codes)
+            except Exception:
+                if repair_started is not None:
+                    logging.getLogger("app.planner").warning(
+                        "planner repair end",
+                        extra=operational_context(
+                            attempt=attempt + 1,
+                            stage="failure",
+                            elapsed_seconds=round(monotonic() - repair_started, 3),
+                        ),
+                    )
+                raise
+            if repair_started is not None:
+                logging.getLogger("app.planner").info(
+                    "planner repair end",
+                    extra=operational_context(
+                        attempt=attempt + 1,
+                        stage="success",
+                        elapsed_seconds=round(monotonic() - repair_started, 3),
+                    ),
+                )
+            validation_started = monotonic()
+            logging.getLogger("app.planner").info(
+                "planner validation start",
+                extra=operational_context(attempt=attempt + 1),
+            )
             itinerary, issues = self._validate_candidate(candidate, profile, provider_results, self._now)
+            logging.getLogger("app.planner").info(
+                "planner validation end",
+                extra=operational_context(
+                    attempt=attempt + 1,
+                    stage="success" if itinerary is not None and not issues else "failure",
+                    validation_codes=",".join(sorted({issue.code for issue in issues})) or None,
+                    elapsed_seconds=round(monotonic() - validation_started, 3),
+                ),
+            )
             if itinerary is not None and not issues:
                 return itinerary
             if attempt == 0:
@@ -113,6 +163,7 @@ class Planner:
         normalized, claim_issues = _normalize_claims(itinerary, registry)
         if claim_issues:
             return None, claim_issues
+        normalized = _apply_transport_context(normalized, provider_results, profile)
         return normalized, validate_itinerary(normalized, profile, _iter_sources(provider_results), now)
 
 
@@ -128,9 +179,199 @@ def _profile_dates(profile: TravelProfile) -> tuple[date | None, date | None]:
 def _iter_sources(value: object) -> Iterable[TrustedEvidence | ProviderResult[Any]]:
     if isinstance(value, (TrustedEvidence, ProviderResult)):
         return (value,)
+    results = getattr(value, "results", None)
+    if results is not None:
+        return _iter_sources(results)
     if isinstance(value, Iterable) and not isinstance(value, (str, bytes, Mapping)):
         return value
     return ()
+
+
+def _transport_context(value: object) -> TripTransportContext | None:
+    context = getattr(value, "transport_context", None)
+    return context if isinstance(context, TripTransportContext) else context
+
+
+def _apply_transport_context(
+    itinerary: Itinerary,
+    provider_results: object,
+    profile: TravelProfile,
+) -> Itinerary:
+    context = _transport_context(provider_results)
+    if context is None:
+        return itinerary
+    payload = itinerary.model_dump(mode="json")
+    days = payload["days"]
+    if context.outbound is not None:
+        arrival = context.outbound.arrival_at.astimezone(_CHINA_TIMEZONE)
+        day = _day_for_date(days, arrival.date())
+        if day is not None:
+            _constrain_day(day, start_minute=_minutes(arrival.time()) + _TRANSPORT_BUFFER_MINUTES)
+    if context.return_option is not None:
+        departure = context.return_option.departure_at.astimezone(_CHINA_TIMEZONE)
+        day = _day_for_date(days, departure.date())
+        if day is not None:
+            _constrain_day(day, end_minute=_minutes(departure.time()) - _TRANSPORT_BUFFER_MINUTES)
+    _remove_misplaced_train_activity_titles(days, context)
+    _override_transport_budget(payload, context, profile)
+    return Itinerary.model_validate(payload)
+
+
+def _day_for_date(days: list[dict[str, Any]], target: date) -> dict[str, Any] | None:
+    target_text = target.isoformat()
+    return next((day for day in days if day.get("date") == target_text), None)
+
+
+def _minutes(value: time) -> int:
+    return value.hour * 60 + value.minute
+
+
+def _constrain_day(
+    day: dict[str, Any],
+    *,
+    start_minute: int | None = None,
+    end_minute: int | None = None,
+) -> None:
+    activities = [day[slot] for slot in _ACTIVITY_SLOTS]
+    original = [
+        (_minutes(time.fromisoformat(activity["start_time"])), _minutes(time.fromisoformat(activity["end_time"])))
+        for activity in activities
+    ]
+    if (
+        (start_minute is None or all(start >= start_minute for start, _ in original))
+        and (end_minute is None or all(end <= end_minute for _, end in original))
+    ):
+        return
+
+    lower = start_minute if start_minute is not None else 0
+    upper = end_minute if end_minute is not None else _DAY_LAST_MINUTE
+    if upper <= lower:
+        return
+    durations = [end - start for start, end in original]
+    available = upper - lower
+    required = sum(durations) + _ACTIVITY_GAP_MINUTES * (len(durations) - 1)
+    if required > available:
+        compact_duration = max(
+            1,
+            (available - _ACTIVITY_GAP_MINUTES * (len(durations) - 1)) // len(durations),
+        )
+        durations = [min(duration, compact_duration) for duration in durations]
+
+    if start_minute is not None:
+        cursor = lower
+        schedule: list[tuple[int, int]] = []
+        for duration in durations:
+            finish = min(cursor + duration, upper)
+            schedule.append((cursor, finish))
+            cursor = finish + _ACTIVITY_GAP_MINUTES
+    else:
+        cursor = upper
+        schedule = [(0, 0)] * len(durations)
+        for index in range(len(durations) - 1, -1, -1):
+            begin = max(lower, cursor - durations[index])
+            schedule[index] = (begin, cursor)
+            cursor = begin - _ACTIVITY_GAP_MINUTES
+
+    for activity, (start, finish) in zip(activities, schedule, strict=True):
+        activity["start_time"] = _format_minutes(start)
+        activity["end_time"] = _format_minutes(finish)
+
+
+def _format_minutes(value: int) -> str:
+    value = max(0, min(_DAY_LAST_MINUTE, value))
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+
+def _remove_misplaced_train_activity_titles(
+    days: list[dict[str, Any]], context: TripTransportContext,
+) -> None:
+    train_numbers = {
+        option.train_no
+        for option in (context.outbound, context.return_option)
+        if option is not None
+    }
+    if not train_numbers:
+        return
+    for day in days:
+        for slot in _ACTIVITY_SLOTS:
+            activity = day[slot]
+            if not _is_local_activity_window(day, activity, context):
+                continue
+            title = str(activity.get("title", ""))
+            if _describes_train(title, train_numbers):
+                activity["title"] = "抵达后当地活动"
+            activity["notes"] = [
+                note for note in activity.get("notes", [])
+                if not _describes_train(str(note), train_numbers)
+            ]
+
+
+def _is_local_activity_window(
+    day: dict[str, Any], activity: dict[str, Any], context: TripTransportContext,
+) -> bool:
+    try:
+        activity_date = date.fromisoformat(str(day["date"]))
+        start = _minutes(time.fromisoformat(str(activity["start_time"])))
+        end = _minutes(time.fromisoformat(str(activity["end_time"])))
+    except (KeyError, TypeError, ValueError):
+        return False
+    if context.outbound is not None:
+        arrival = context.outbound.arrival_at.astimezone(_CHINA_TIMEZONE)
+        if activity_date == arrival.date() and start >= _minutes(arrival.time()) + _TRANSPORT_BUFFER_MINUTES:
+            return True
+    if context.return_option is not None:
+        departure = context.return_option.departure_at.astimezone(_CHINA_TIMEZONE)
+        if activity_date == departure.date() and end <= _minutes(departure.time()) - _TRANSPORT_BUFFER_MINUTES:
+            return True
+    return False
+
+
+def _describes_train(text: str, train_numbers: set[str]) -> bool:
+    return any(train_no in text for train_no in train_numbers) or (
+        "乘坐" in text and any(term in text for term in ("列车", "高铁", "动车", "火车"))
+    ) or "站出发" in text or ("全程" in text and "站" in text)
+
+
+def _override_transport_budget(
+    payload: dict[str, Any],
+    context: TripTransportContext,
+    profile: TravelProfile,
+) -> None:
+    outbound_requested = getattr(context, "outbound_requested", context.outbound is not None)
+    return_requested = getattr(context, "return_requested", context.return_option is not None)
+    selected = []
+    if outbound_requested:
+        selected.append(context.outbound)
+    if return_requested:
+        selected.append(context.return_option)
+    seat_type = getattr(context, "seat_type", "二等座")
+    if not selected:
+        return
+    traveler_count = profile.travelers or payload["budget"]["traveler_count"]
+    budget = payload["budget"]
+    prices = [selected_seat_price(option, seat_type) for option in selected]
+    known_prices = [price for price in prices if price is not None]
+    if not known_prices:
+        return
+    basis_multiplier = traveler_count if budget["traveler_basis"] == "trip_total" else 1
+    known_transport = sum(known_prices) * basis_multiplier
+    missing_count = len(prices) - len(known_prices)
+    if missing_count:
+        original_estimate = Decimal(str(budget["transport"]))
+        estimate_per_leg = original_estimate / len(prices)
+        known_per_leg = known_transport / len(known_prices)
+        missing_transport = max(estimate_per_leg, known_per_leg) * missing_count
+        transport_amount = known_transport + missing_transport
+    else:
+        transport_amount = known_transport
+    trip_total = transport_amount if budget["traveler_basis"] == "trip_total" else transport_amount * traveler_count
+    budget["transport"] = int(transport_amount)
+    budget["total"] = sum(budget[name] for name in ("transport", "hotel", "food", "tickets", "reserve", "other"))
+    budget["trip_total"] = budget["total"] if budget["traveler_basis"] == "trip_total" else budget["total"] * budget["traveler_count"]
+    estimate = budget["estimate"]
+    estimate["low"] = min(estimate["low"], budget["total"])
+    estimate["point"] = budget["total"]
+    estimate["high"] = max(estimate["high"], budget["total"])
 
 
 def _trusted_registry(sources: Iterable[TrustedEvidence | ProviderResult[Any]], now: Callable[[], datetime]) -> tuple[dict[str, TrustedEvidence], list[PlanIssue]]:
@@ -369,12 +610,25 @@ def render_itinerary_markdown(
         f"日期：{itinerary.start_date.isoformat()} 至 {itinerary.end_date.isoformat()}",
     ]
     slot_labels = {"morning": "上午", "afternoon": "下午", "evening": "晚上"}
+
+    def period_label(activity: Any, slot: str) -> str:
+        try:
+            start = time.fromisoformat(activity.start_time)
+        except (TypeError, ValueError):
+            return slot_labels[slot]
+        minute = _minutes(start)
+        if minute >= 18 * 60:
+            return "晚上"
+        if minute >= 12 * 60:
+            return "下午"
+        return "上午"
+
     for day in itinerary.days:
         lines.extend(("", f"## {day.date.isoformat()}"))
         for slot in _ACTIVITY_SLOTS:
             activity = getattr(day, slot)
             lines.append(
-                f"- {slot_labels[slot]} {activity.start_time}–{activity.end_time}："
+                f"- {period_label(activity, slot)} {activity.start_time}–{activity.end_time}："
                 f"{clipped(activity.title, 90)}"
             )
 

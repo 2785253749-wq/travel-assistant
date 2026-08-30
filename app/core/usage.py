@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 import logging
 from threading import RLock
+from time import monotonic, sleep
 from typing import Any, Callable, Protocol
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -21,6 +22,7 @@ from app.core.logging import operational_context
 
 
 MODEL_CALL_SLOTS_PER_REQUEST = 2
+MODEL_RETRY_BACKOFF_SECONDS = 0.35
 
 
 class ProviderUnavailable(Exception):
@@ -122,37 +124,107 @@ class ModelGateway:
     def invoke(self, messages: Any, *, structured: Any | None = None) -> Any:
         if not self._breaker.allow():
             raise ProviderUnavailable("AI_CIRCUIT_OPEN")
-        try:
-            client = self._factory()
-            if structured is not None:
-                client = client.with_structured_output(structured, method="json_mode")
-            collector = _model_usage.get()
-            if collector is not None:
-                collector.record_attempt()
-            response = client.invoke(messages)
-        except ProviderUnavailable:
-            raise
-        except AppError:
-            raise
-        except Exception as exc:
-            code = classify_provider_error(exc)
-            status = getattr(exc, "status_code", getattr(exc, "status", None))
-            safe_status = status if isinstance(status, int) and 100 <= status <= 599 else None
-            logging.getLogger("app.model").warning(
-                "model_provider_failure",
+        for attempt in range(1, 3):
+            started = monotonic()
+            logging.getLogger("app.model").info(
+                f"model attempt={attempt} start",
                 extra=operational_context(
                     provider="deepseek",
-                    provider_status=safe_status,
-                    error_code=code,
-                    exception_type=type(exc).__name__,
+                    attempt=attempt,
                 ),
             )
-            self._breaker.record_failure(code)
-            raise ProviderUnavailable("AI_RATE_LIMITED" if code == "AI_PROVIDER_RATE_LIMITED" else "AI_UNAVAILABLE") from None
-        self._breaker.record_success()
-        if collector is not None:
-            collector.record_tokens(response)
-        return response
+            try:
+                client = self._factory()
+                if structured is not None:
+                    client = client.with_structured_output(structured, method="json_mode")
+                collector = _model_usage.get()
+                if collector is not None:
+                    collector.record_attempt()
+                response = client.invoke(messages)
+            except ProviderUnavailable:
+                raise
+            except AppError:
+                raise
+            except Exception as exc:
+                code = classify_provider_error(exc)
+                status = _provider_status(exc)
+                safe_status = status if isinstance(status, int) and 100 <= status <= 599 else None
+                elapsed = round(monotonic() - started, 3)
+                logging.getLogger("app.model").warning(
+                    "model_provider_failure",
+                    extra=operational_context(
+                        provider="deepseek",
+                        provider_status=safe_status,
+                        error_code=code,
+                        exception_type=type(exc).__name__,
+                        attempt=attempt,
+                        elapsed_seconds=elapsed,
+                    ),
+                )
+                self._breaker.record_failure(code)
+                if attempt == 1 and _is_retryable_model_error(exc):
+                    logging.getLogger("app.model").warning(
+                        "model attempt=1 transient_failure",
+                        extra=operational_context(
+                            provider="deepseek",
+                            provider_status=safe_status,
+                            error_code=code,
+                            attempt=attempt,
+                            elapsed_seconds=elapsed,
+                        ),
+                    )
+                    sleep(MODEL_RETRY_BACKOFF_SECONDS)
+                    continue
+                logging.getLogger("app.model").warning(
+                    f"model attempt={attempt} failure",
+                    extra=operational_context(
+                        provider="deepseek",
+                        provider_status=safe_status,
+                        error_code=code,
+                        attempt=attempt,
+                        elapsed_seconds=elapsed,
+                    ),
+                )
+                raise ProviderUnavailable("AI_RATE_LIMITED" if code == "AI_PROVIDER_RATE_LIMITED" else "AI_UNAVAILABLE") from None
+            self._breaker.record_success()
+            if collector is not None:
+                collector.record_tokens(response)
+            logging.getLogger("app.model").info(
+                f"model attempt={attempt} success",
+                extra=operational_context(
+                    provider="deepseek",
+                    attempt=attempt,
+                    elapsed_seconds=round(monotonic() - started, 3),
+                ),
+            )
+            return response
+        raise AssertionError("unreachable")
+
+
+def _provider_status(error: Exception) -> int | None:
+    status = getattr(error, "status_code", getattr(error, "status", None))
+    if isinstance(status, int):
+        return status
+    response = getattr(error, "response", None)
+    response_status = getattr(response, "status_code", None)
+    return response_status if isinstance(response_status, int) else None
+
+
+def _is_retryable_model_error(error: Exception) -> bool:
+    name = type(error).__name__.lower()
+    if "authentication" in name:
+        return False
+    status = _provider_status(error)
+    if status is not None:
+        return status in {500, 502, 503, 504}
+    try:
+        import httpx
+    except ImportError:
+        httpx = None
+    retryable_types = (TimeoutError, ConnectionError)
+    if httpx is not None:
+        retryable_types = retryable_types + (httpx.TimeoutException, httpx.RequestError)
+    return isinstance(error, retryable_types)
 
 
 _model_gateways: dict[int, ModelGateway] = {}

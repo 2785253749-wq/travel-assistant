@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
+import logging
+import re
 from typing import Callable, Protocol
 
 from app.providers.base import ProviderResult
@@ -11,6 +13,7 @@ from app.trains.models import (
     TrainSearchResult,
 )
 from app.trains.ranking import get_seat, rank_train_options
+from app.core.logging import operational_context
 
 
 _CHINA_TIMEZONE = timezone(timedelta(hours=8))
@@ -49,6 +52,10 @@ class TrainService:
     def search(self, query: TrainQuery) -> TrainSearchResult:
         normalized_query = _validate_and_normalize(query, self._today())
         provider_result = self._provider.search(normalized_query)
+        logging.getLogger("app.train").info(
+            "train provider result",
+            extra=operational_context(error_code=provider_result.error_code),
+        )
         if provider_result.error_code not in (None, "TRAIN_EMPTY"):
             return TrainSearchResult(
                 query=normalized_query,
@@ -126,11 +133,20 @@ def _filter_options(
     return tuple(
         option
         for option in options
+        if _matches_station_family(option.departure_station, query.departure_station)
+        and _matches_station_family(option.arrival_station, query.arrival_station)
         if _matches_train_types(option, query.train_types)
         and _matches_time_range(option, query.departure_time_range)
         and _matches_seat(option, query.seat_type)
         and _matches_availability(option, query)
     )
+
+
+def _matches_station_family(actual: str, requested: str) -> bool:
+    """Accept a requested city and its named stations, never an unrelated stop."""
+    actual_name = re.sub(r"\s+", "", actual).removesuffix("市")
+    requested_name = re.sub(r"\s+", "", requested).removesuffix("市")
+    return actual_name == requested_name or actual_name.startswith(requested_name)
 
 
 def _matches_train_types(option: TrainOption, train_types: tuple[str, ...] | None) -> bool:
