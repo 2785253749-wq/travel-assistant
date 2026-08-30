@@ -11,8 +11,10 @@ from app.agent.graph import (
     RuleTravelExtractor,
     SafeTravelAgent,
 )
+from app.agent.train_extraction import TrainQueryExtractor
 from app.application.chat import ConfirmationStore, TravelChatApplication
 from app.application.weather import UnavailableWeatherService, WeatherService
+from app.application.train import TrainRecommendationService
 from app.api.auth import CurrentUser, OptionalCurrentUser
 from app.community.repositories import (
     create_public_community_repository,
@@ -45,6 +47,8 @@ from app.infrastructure.weather import SupabaseWeatherQuotaRepository
 from app.providers.aggregate import ProviderEvidenceAggregator
 from app.providers.amap_district import AmapDistrictProvider
 from app.providers.amap_weather import AmapWeatherProvider
+from app.providers.juhe_train import JuheTrainProvider
+from app.trains.service import TrainService
 from app.rag.embedding import EmbeddingHttpClient, EmbeddingQuota, JinaEmbedder
 from app.rag.repository import KnowledgeRepository
 from app.rag.service import (
@@ -650,6 +654,7 @@ def get_weather_service() -> WeatherService | UnavailableWeatherService:
 def build_chat_application(user: Any | None) -> TravelChatApplication:
     """The sole concrete composition root for the public chat use case."""
     providers = get_provider_evidence_aggregator()
+    train_service = TrainService(provider=JuheTrainProvider(settings=get_settings()))
 
     def agent_factory(initial_profile: TravelProfile) -> SafeTravelAgent:
         return SafeTravelAgent(
@@ -660,6 +665,9 @@ def build_chat_application(user: Any | None) -> TravelChatApplication:
             knowledge=get_knowledge_answer_service(),
             weather=get_weather_service(),
             initial_profile=initial_profile,
+            train_extractor=TrainQueryExtractor(),
+            train_service=train_service,
+            train_recommendation=TrainRecommendationService(),
         )
 
     return TravelChatApplication(

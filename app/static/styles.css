@@ -195,6 +195,33 @@ dialog::backdrop { background: rgb(0 0 0 / 45%); }
 .message.user { margin-left: auto; color: #fff; background: var(--brand); }
 .chat-form { flex: 0 0 auto; margin-top: .8rem; }
 
+.train-result { width: min(100%, 42rem); margin: .75rem 0; padding: .9rem; border: 1px solid var(--line); border-radius: 1rem; background: var(--paper); }
+.train-result h3, .train-result h4 { margin: 0; }
+.train-option-card { display: grid; gap: .65rem; margin-top: .7rem; padding: .8rem; border: 1px solid var(--line); border-radius: .85rem; background: #f8fbff; }
+.train-option-title { display: flex; justify-content: space-between; gap: .75rem; color: var(--brand-dark); }
+.train-number { font-weight: 800; }
+.train-route { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: .55rem; }
+.train-station { display: grid; min-width: 0; gap: .2rem; }
+.train-station:last-child { text-align: right; }
+.train-time { white-space: nowrap; }
+.train-station span { overflow-wrap: anywhere; }
+.train-duration { color: var(--muted); font-size: .86rem; white-space: nowrap; }
+.train-seats { display: flex; flex-wrap: wrap; gap: .55rem; }
+.train-seat { display: grid; grid-template-columns: auto auto auto; gap: .5rem; align-items: center; padding: .45rem .6rem; border-radius: .55rem; background: #edf4fb; font-size: .86rem; }
+.train-seat-name { font-weight: 700; }
+.train-seat-price { white-space: nowrap; }
+.train-status { border-radius: 999px; padding: .1rem .35rem; font-size: .78rem; }
+.train-status-available { color: #116b3c; background: #dff5e7; }
+.train-status-unavailable { color: #9a3434; background: #fde5e5; }
+.train-status-unknown { color: var(--muted); background: #e9eef3; }
+.train-recommendation-reason, .train-query-time, .train-disclaimer { margin: .65rem 0 0; color: var(--muted); font-size: .84rem; }
+.train-disclaimer { padding-top: .65rem; border-top: 1px solid var(--line); }
+.train-alternatives-heading { margin-top: .9rem !important; color: var(--brand-dark); font-size: .95rem; }
+
+@media (max-width: 620px) {
+  .train-seat { grid-template-columns: 1fr; gap: .2rem; width: 100%; }
+}
+
 @keyframes assistant-enter { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 
 @media (max-width: 1100px) {
@@ -235,6 +262,8 @@ dialog::backdrop { background: rgb(0 0 0 / 45%); }
   .selected-place-visual { min-height: 7rem; }
   .profile-fields { grid-template-columns: 1fr; }
   .profile-fields dd { margin-bottom: .45rem; }
+  .train-route { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: .3rem; }
+  .train-option-card { padding: .65rem; }
   #explore-page, #trips-page { padding: 1rem; }
   .history-list { grid-template-columns: 1fr; }
 }

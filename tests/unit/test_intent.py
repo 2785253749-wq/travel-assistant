@@ -25,6 +25,7 @@ class FakeIntentModel:
     ("message", "expected"),
     [
         ("从上海去杭州玩三天", "plan_trip"),
+        ("明天福州到上海有哪些高铁", "train_query"),
         ("把第二天改成西湖", "modify_trip"),
         ("为什么推荐灵隐寺", "explain_trip"),
         ("你好", "smalltalk"),
@@ -60,6 +61,7 @@ def test_trip_dependent_intents_start_a_plan_when_no_trip_exists(intent):
     [
         ("厦门今天的天气怎么样", "weather_query"),
         ("厦门去鼓浪屿怎么安排", "travel_knowledge"),
+        ("明天福州到上海查车次", "train_query"),
     ],
 )
 def test_rule_classifier_routes_weather_and_grounded_travel_questions(message, expected):
@@ -75,6 +77,18 @@ def test_rule_classifier_routes_weather_and_grounded_travel_questions(message, e
 )
 def test_rule_classifier_keeps_complete_plan_requests_on_planning_flow(message):
     assert RuleIntentClassifier().classify(message, has_trip=False).intent == "plan_trip"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "明天福州到上海有哪些高铁",
+        "帮我查9月10日福州到上海的车",
+        "上午从福州去上海，二等座有票吗",
+    ],
+)
+def test_rule_classifier_prioritizes_train_queries_over_planning_context(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "train_query"
 
 
 @pytest.mark.parametrize(

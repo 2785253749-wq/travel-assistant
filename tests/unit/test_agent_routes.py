@@ -29,6 +29,7 @@ from app.agent.planning import PlanValidationError, Planner as StructuredPlanner
 from app.providers.aggregate import ProviderBundle
 from app.providers.booking_links import BookingLinkBuilder
 from app.trips.models import Trip
+from app.trains.models import TrainOption, TrainQuery, TrainSearchResult
 
 
 class StubClassifier:
@@ -125,6 +126,54 @@ def test_live_inventory_question_is_refused():
 
     assert result.error_code == "UNVERIFIABLE_REALTIME_REQUEST"
     assert "12306" in result.reply
+
+
+def test_train_query_uses_train_branch_without_planner_or_trip_persistence():
+    query = TrainQuery(
+        departure_station="福州", arrival_station="上海", travel_date=date(2026, 8, 31),
+        train_types=("G",), seat_type="二等座",
+    )
+    option = TrainOption(
+        option_id="G25-2026-08-31", train_no="G25",
+        departure_station="福州", arrival_station="上海",
+        departure_at=datetime(2026, 8, 31, 8, tzinfo=timezone(timedelta(hours=8))),
+        arrival_at=datetime(2026, 8, 31, 12, tzinfo=timezone(timedelta(hours=8))),
+        duration_minutes=240, bookable=True,
+        seats=[{"seat_name": "二等座", "price_cny": 280, "remaining_label": "有", "availability": "available"}],
+    )
+
+    class Extraction:
+        def __init__(self, received_query):
+            self.query = received_query
+
+    class TrainExtractor:
+        def extract(self, _message):
+            return Extraction(query)
+
+    class TrainService:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, received_query):
+            self.calls.append(received_query)
+            return TrainSearchResult(
+                query=received_query, options=[option], recommendation_candidates=[option],
+                fetched_at=datetime(2026, 8, 30, tzinfo=timezone.utc),
+                source="https://www.juhe.cn/docs/api/id/817", status="success",
+            )
+
+    train_service = TrainService()
+    planner = Mock()
+    result = SafeTravelAgent(
+        classifier=StubClassifier("train_query"), extractor=StubExtractor(), planner=planner,
+        train_extractor=TrainExtractor(), train_service=train_service,
+    ).run("明天福州到上海查车次", trip=None)
+
+    assert result.intent == "train_query"
+    assert result.train_result is not None
+    assert "G25" in result.reply
+    assert train_service.calls == [query]
+    planner.invoke.assert_not_called()
 
 
 def test_modify_without_trip_routes_to_creation():

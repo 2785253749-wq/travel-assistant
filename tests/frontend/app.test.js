@@ -38,6 +38,32 @@ function assertBefore(events, first, second) {
   assert.ok(events.indexOf(first) < events.indexOf(second), `${first} must precede ${second}: ${events.join(", ")}`);
 }
 
+function trainResponse(overrides = {}) {
+  return {
+    reply: "已查询到车次。",
+    stage: "collecting",
+    profile: {},
+    train_result: {
+      query: { departure_station: "福州", arrival_station: "上海", travel_date: "2026-08-31" },
+      options: [
+        {
+          option_id: "G25-2026-08-31", train_no: "G25", departure_station: "福州", arrival_station: "上海",
+          departure_at: "2026-08-31T08:35:00+08:00", arrival_at: "2026-08-31T12:48:00+08:00",
+          duration_minutes: 253, bookable: true,
+          seats: [{ seat_name: "二等座", price_cny: 280, remaining_label: "有", availability: "available" }],
+          train_flags: [],
+        },
+      ],
+      recommendation_candidates: [],
+      recommendation: { selected_option_id: "G25-2026-08-31", reason_codes: ["time_fit", "shorter_duration"] },
+      fetched_at: "2026-08-30T19:30:00+08:00",
+      source: "https://www.juhe.cn/docs/api/id/817",
+      status: "success",
+    },
+    ...overrides,
+  };
+}
+
 async function dispatchPointer(element, type, properties) {
   const event = { preventDefault() {}, target: element, currentTarget: element, ...properties };
   for (const listener of element.listeners.get(type) || []) await listener(event);
@@ -185,6 +211,223 @@ test("provider notice is visible only while the Explore view is active", async (
   await harness.elements.get("explore-nav-button").dispatch("click");
   assert.equal(notice.hidden, false);
 
+});
+
+test("ordinary chat responses do not create a train result region", async () => {
+  const harness = createHarness({
+    fetch: async (call) => call.url === "/api/chat"
+      ? jsonResponse(200, { reply: "普通回复", stage: "collecting", profile: {} })
+      : jsonResponse(200, {}),
+  });
+  await settle();
+  harness.elements.get("message-input").value = "你好";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  assert.equal(descendants(harness.elements.get("chat-messages")).some((node) => node.className === "train-result"), false);
+});
+
+test("successful train responses render a recommendation and localized reason codes", async () => {
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, trainResponse()) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "明天福州到上海有哪些高铁";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.ok(region);
+  assert.match(region.textContent, /推荐车次/);
+  assert.match(region.textContent, /G25/);
+  assert.match(region.textContent, /福州/);
+  assert.match(region.textContent, /上海/);
+  assert.match(region.textContent, /08:35/);
+  assert.match(region.textContent, /12:48/);
+  assert.match(region.textContent, /4小时13分/);
+  assert.match(region.textContent, /二等座/);
+  assert.match(region.textContent, /¥280/);
+  assert.match(region.textContent, /有票/);
+  assert.match(region.textContent, /符合出发时间要求/);
+  assert.match(region.textContent, /耗时更短/);
+  assert.match(region.textContent, /查询时间：2026-08-30 19:30/);
+  assert.match(region.textContent, /价格、余票及车次信息可能实时变化/);
+});
+
+test("train cards render the train number only once", async () => {
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, trainResponse()) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  const title = descendants(region).find((node) => node.className === "train-option-title");
+  assert.equal(title.textContent, "G25");
+});
+
+test("train seat fields are separately labeled and prioritize second class", async () => {
+  const result = trainResponse();
+  result.train_result.options[0].seats = [
+    { seat_name: "商务座", price_cny: 473, remaining_label: "18", availability: "available" },
+    { seat_name: "二等座", price_cny: 216, remaining_label: "有", availability: "available" },
+  ];
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  const card = descendants(region).find((node) => node.className === "train-option-card");
+  const seats = descendants(card).filter((node) => node.className === "train-seat");
+  assert.equal(seats.length, 2);
+  assert.equal(seats[0].textContent, "席别：二等座价格：¥216余票：有票");
+  assert.equal(seats[1].textContent, "席别：商务座价格：¥473余票：18");
+  assert.ok(descendants(seats[0]).some((node) => node.className === "train-seat-name"));
+  assert.ok(descendants(seats[0]).some((node) => node.className === "train-seat-price"));
+  assert.ok(descendants(seats[0]).some((node) => node.className === "train-seat-availability"));
+});
+
+test("train cards use the first valid seat when second class is unavailable", async () => {
+  const result = trainResponse();
+  result.train_result.options[0].seats = [
+    { seat_name: "", price_cny: 0, remaining_label: null, availability: "unknown" },
+    { seat_name: "一等座", price_cny: 216, remaining_label: "有", availability: "available" },
+    { seat_name: "商务座", price_cny: 473, remaining_label: "18", availability: "available" },
+  ];
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  const card = descendants(region).find((node) => node.className === "train-option-card");
+  const seats = descendants(card).filter((node) => node.className === "train-seat");
+  assert.equal(seats[0].textContent, "席别：一等座价格：¥216余票：有票");
+});
+
+test("train query time is converted from UTC to China Standard Time", async () => {
+  const result = trainResponse();
+  result.train_result.fetched_at = "2026-08-30T12:23:00Z";
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.match(region.textContent, /查询时间：2026-08-30 20:23/);
+  assert.doesNotMatch(region.textContent, /查询时间：2026-08-30 12:23/);
+});
+
+test("train cards display bounded seats and safe labels for missing price or unknown inventory", async () => {
+  const result = trainResponse();
+  result.train_result.options[0].seats = [
+    { seat_name: "二等座", price_cny: null, remaining_label: null, availability: "unknown" },
+    { seat_name: "一等座", price_cny: 0, remaining_label: "无", availability: "unavailable" },
+  ];
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.ok(region);
+  assert.match(region.textContent, /票价未返回/);
+  assert.match(region.textContent, /余票未知/);
+  assert.match(region.textContent, /无票/);
+  assert.doesNotMatch(region.textContent, /¥None|¥0/);
+});
+
+test("train cards show at most three alternatives and do not repeat the recommendation", async () => {
+  const result = trainResponse();
+  const options = Array.from({ length: 5 }, (_, index) => ({
+    ...result.train_result.options[0],
+    option_id: `G${25 + index}-2026-08-31`, train_no: `G${25 + index}`,
+    departure_at: `2026-08-31T${String(8 + index).padStart(2, "0")}:35:00+08:00`,
+    arrival_at: `2026-08-31T${String(12 + index).padStart(2, "0")}:48:00+08:00`,
+  }));
+  result.train_result.options = options;
+  result.train_result.recommendation_candidates = options;
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.ok(region);
+  const cards = descendants(region).filter((node) => node.className === "train-option-card");
+  assert.equal(cards.length, 4);
+  assert.equal(cards.filter((card) => /G25/.test(card.textContent)).length, 1);
+});
+
+test("train cards can resolve the recommendation from candidates when options omit it", async () => {
+  const result = trainResponse();
+  const selected = result.train_result.options[0];
+  result.train_result.options = [];
+  result.train_result.recommendation_candidates = [selected];
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.ok(region);
+  assert.match(region.textContent, /G25/);
+});
+
+test("train cards make cross-day arrival explicit and keep hostile station text as text", async () => {
+  const result = trainResponse();
+  result.train_result.options[0].departure_station = "<img src=x onerror=alert(1)>";
+  result.train_result.options[0].arrival_at = "2026-09-01T06:20:00+08:00";
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const region = descendants(harness.elements.get("chat-messages")).find((node) => node.className === "train-result");
+  assert.ok(region);
+  assert.match(region.textContent, /08-31 08:35/);
+  assert.match(region.textContent, /09-01 06:20/);
+  assert.match(region.textContent, /<img src=x onerror=alert\(1\)>/);
+  assert.equal(descendants(region).some((node) => node.tagName === "IMG"), false);
+});
+
+test("empty or unavailable train results render only the assistant reply", async () => {
+  const result = trainResponse();
+  result.reply = "这个时间段没有找到符合条件的车次。";
+  result.train_result.status = "unavailable";
+  result.train_result.options = [];
+  result.train_result.recommendation_candidates = [];
+  result.train_result.recommendation = null;
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  assert.match(harness.elements.get("chat-messages").textContent, /没有找到符合条件/);
+  assert.equal(descendants(harness.elements.get("chat-messages")).some((node) => node.className === "train-result"), false);
+});
+
+test("the browser bundle does not contain the server-side train API key setting", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../../app/static/app.js"), "utf8");
+  assert.doesNotMatch(source, /JUHE_TRAIN_API_KEY/);
+  assert.doesNotMatch(source, /apis\.juhe\.cn/);
 });
 
 test("assistant sends on Enter and keeps Shift+Enter for a newline", async () => {

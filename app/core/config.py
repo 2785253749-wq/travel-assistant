@@ -19,12 +19,14 @@ class Settings(BaseSettings):
     amap_security_js_code: SecretStr | None = None
     jina_api_key: SecretStr | None = None
     amap_web_service_key: SecretStr | None = None
+    juhe_train_api_key: SecretStr | None = None
     rag_embedding_model: str = "jina-embeddings-v3"
     rag_similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
     rag_daily_embedding_limit: int = Field(default=100, gt=0)
     weather_daily_limit: int = Field(default=100, gt=0)
     weather_cache_seconds: int = Field(default=1800, gt=0)
     weather_timeout_seconds: float = Field(default=10.0, gt=0.0)
+    train_timeout_seconds: float = Field(default=6.0, gt=0.0)
     district_cache_seconds: int = Field(default=2_592_000, gt=0)
     district_failure_cache_seconds: int = Field(default=300, gt=0)
     district_timeout_seconds: float = Field(default=5.0, gt=0.0)
