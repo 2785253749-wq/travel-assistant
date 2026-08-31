@@ -18,6 +18,7 @@ from app.agent.graph import (
 )
 from app.agent.intent import IntentResult
 from app.agent.safety import assess_message
+from app.agent.safety import REFUSALS
 from app.schemas import (
     CHAT_REPLY_MAX_LENGTH,
     FactClaim,
@@ -244,6 +245,24 @@ def test_composite_trip_request_keeps_explicit_train_seat_for_profile_extraction
     )
 
     assert profile.train_seat == "二等座"
+
+
+def test_unsupported_hotel_transit_question_uses_safe_fallback_without_dependencies():
+    class Guard:
+        def __getattr__(self, name):
+            raise AssertionError(f"unsupported route must not call {name}")
+
+    result = SafeTravelAgent(
+        classifier=RuleIntentClassifier(),
+        extractor=Guard(),
+        planner=Guard(),
+        evidence_provider=Guard(),
+        knowledge=Guard(),
+    ).run("我订的酒店附近有地铁吗", trip=None)
+
+    assert result.intent == "unsupported"
+    assert result.reply == REFUSALS["OUT_OF_SCOPE"]
+    assert "请补充目的地城市" not in result.reply
 
 
 def test_explain_uses_only_existing_itinerary_without_provider_or_model_calls():

@@ -2,6 +2,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def configured_test_baidu_provider(monkeypatch):
+    """Keep chat integration paths independent from a developer's local .env."""
+    monkeypatch.setenv("BAIDU_MAP_AK", "test-baidu-ak")
+
+
 @pytest.fixture
 def client(monkeypatch):
     """Serve the actual app shell without making any external request."""

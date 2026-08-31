@@ -20,6 +20,7 @@ from app.api.profile import router as profile_router
 from app.api.travel_notes import router as travel_notes_router
 from app.api.community_interactions import router as community_interactions_router
 from app.api.community_moderation import router as community_moderation_router
+from app.api.hotels import router as hotels_router
 from app.api.weather import router as weather_router
 
 BASE = Path(__file__).resolve().parent
@@ -138,3 +139,4 @@ app.include_router(community_interactions_router)
 app.include_router(community_moderation_router)
 app.include_router(profile_router)
 app.include_router(weather_router)
+app.include_router(hotels_router)

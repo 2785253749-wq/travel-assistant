@@ -9,7 +9,7 @@ from app.core.usage import ModelGateway, get_model_gateway
 
 Intent = Literal[
     "plan_trip", "modify_trip", "explain_trip", "travel_knowledge",
-    "weather_query", "train_query", "smalltalk", "unsupported"
+    "weather_query", "train_query", "hotel_nearby", "smalltalk", "unsupported"
 ]
 
 

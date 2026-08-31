@@ -20,9 +20,15 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_deepseek import ChatDeepSeek
 
 from app.agent.extraction import ExtractionCandidate, build_extraction_candidate, merge_profile, validate_profile
+from app.agent.hotel_nearby_query import HotelNearbyQueryExtractor
 from app.agent.intent import Intent, IntentResult, classify_intent
 from app.agent.safety import REFUSALS, assess_destination, assess_message
 from app.agent.train_extraction import TrainQueryExtractor
+from app.application.hotel_nearby import (
+    HotelNearbyApplicationRequest,
+)
+from app.application.hotel_nearby_reply import HotelNearbyReplyRenderer
+from app.core.errors import AppError
 from app.application.train import TrainRecommendationService
 from app.core.config import get_settings
 from app.core.logging import operational_context
@@ -39,6 +45,7 @@ from app.schemas import (
 )
 from app.rag.service import RagAnswer, UnavailableKnowledgeAnswerService
 from app.trips.models import Trip
+from app.locations.service import LocationServiceError
 from app.trips.transport import (
     TRANSPORT_FALLBACK_WARNING,
     TripTransportContext,
@@ -270,6 +277,10 @@ class RuleIntentClassifier:
             for term in ("天气", "气温", "温度", "下雨", "降雨", "风力", "风况", "weather")
         ):
             return IntentResult(intent="weather_query", confidence=1.0)
+        if self._is_unsupported_hotel_transit_query(normalized):
+            return IntentResult(intent="unsupported", confidence=1.0)
+        if self._is_hotel_nearby_query(normalized):
+            return IntentResult(intent="hotel_nearby", confidence=1.0)
         if any(
             term in normalized
             for term in (
@@ -286,6 +297,35 @@ class RuleIntentClassifier:
         if greeting in {"你好", "您好", "嗨", "哈喽", "侬好", "hello", "hi"}:
             return IntentResult(intent="smalltalk", confidence=1.0)
         return IntentResult(intent="plan_trip", confidence=1.0)
+
+    @staticmethod
+    def _is_unsupported_hotel_transit_query(message: str) -> bool:
+        return (
+            "酒店" in message
+            and any(term in message for term in ("附近", "周边", "周围"))
+            and any(term in message for term in ("地铁", "公交"))
+        )
+
+    @staticmethod
+    def _is_hotel_nearby_query(message: str) -> bool:
+        nearby = any(term in message for term in ("附近", "周边", "周围"))
+        if not nearby:
+            return False
+
+        if any(term in message for term in ("地铁", "美食", "餐厅", "景点", "公交")):
+            return False
+        if "行业" in message or "介绍" in message:
+            return False
+
+        if "住宿" in message or "住哪里" in message:
+            return True
+        if "酒店" not in message:
+            return False
+        if any(term in message for term in ("找", "查", "推荐", "有什么")):
+            return True
+        nearby_positions = [message.find(term) for term in ("附近", "周边", "周围")]
+        nearby_position = min(position for position in nearby_positions if position >= 0)
+        return nearby_position < message.find("酒店")
 
     @classmethod
     def _has_planning_context(cls, message: str) -> bool:
@@ -662,6 +702,9 @@ class SafeTravelAgent:
         train_extractor: Any | None = None,
         train_service: Any | None = None,
         train_recommendation: TrainRecommendationService | None = None,
+        hotel_nearby_extractor: Any | None = None,
+        hotel_nearby_application: Any | None = None,
+        hotel_nearby_renderer: Any | None = None,
     ) -> None:
         self._classifier = classifier or ModelIntentClassifier()
         self._extractor = extractor or ModelTravelExtractor()
@@ -675,6 +718,9 @@ class SafeTravelAgent:
         self._train_extractor = train_extractor or TrainQueryExtractor()
         self._train_service = train_service
         self._train_recommendation = train_recommendation or TrainRecommendationService()
+        self._hotel_nearby_extractor = hotel_nearby_extractor or HotelNearbyQueryExtractor()
+        self._hotel_nearby_application = hotel_nearby_application
+        self._hotel_nearby_renderer = hotel_nearby_renderer or HotelNearbyReplyRenderer()
         self._transport_resolver = (
             TripTransportResolver(train_service, self._train_recommendation)
             if train_service is not None
@@ -701,6 +747,8 @@ class SafeTravelAgent:
             special = self._special_intent_result(intent, message)
             if special is not None:
                 return special
+            if intent == "hotel_nearby":
+                return self._hotel_nearby_result(message)
             if intent == "train_query":
                 return self._train_query_result(message)
             if intent == "unsupported":
@@ -933,6 +981,8 @@ class SafeTravelAgent:
             special = self._special_intent_result(intent, message)
             if special is not None:
                 return special
+            if intent == "hotel_nearby":
+                return self._hotel_nearby_result(message)
             if intent == "train_query":
                 return self._train_query_result(message)
             if intent == "smalltalk":
@@ -1110,6 +1160,92 @@ class SafeTravelAgent:
                 reply = card.summary
             return ChatResult(reply, "collecting", {}, warnings=warnings, intent=intent)
         return None
+
+    def _hotel_nearby_result(self, message: str) -> ChatResult:
+        extracted = self._hotel_nearby_extractor.extract(message)
+        if extracted.missing_fields:
+            return ChatResult(
+                "请补充要查询的地点，例如“厦门大学附近的酒店”。",
+                "collecting",
+                {},
+                error_code="HOTEL_NEARBY_LOCATION_REQUIRED",
+                intent="hotel_nearby",
+            )
+        if extracted.city in (None, ""):
+            return ChatResult(
+                "请补充地点所在城市，我才能查询附近酒店。",
+                "collecting",
+                {},
+                error_code="HOTEL_NEARBY_CITY_REQUIRED",
+                intent="hotel_nearby",
+            )
+        if extracted.invalid_fields:
+            return ChatResult(
+                "请提供 500 米至 20 公里之间的搜索范围。",
+                "collecting",
+                {},
+                error_code="HOTEL_NEARBY_RADIUS_INVALID",
+                intent="hotel_nearby",
+            )
+
+        if self._hotel_nearby_application is None:
+            return ChatResult(
+                "附近酒店服务暂不可用，请稍后重试。",
+                "collecting",
+                {},
+                error_code="HOTEL_NEARBY_UNAVAILABLE",
+                intent="hotel_nearby",
+            )
+
+        request_kwargs: dict[str, object] = {
+            "location_query": extracted.location_query,
+            "city": extracted.city,
+        }
+        if extracted.radius is not None:
+            request_kwargs["radius"] = extracted.radius
+        request = HotelNearbyApplicationRequest(**request_kwargs)
+        radius = request.radius
+        try:
+            application_result = self._hotel_nearby_application.search(request)
+        except LocationServiceError as exc:
+            if exc.code == "LOCATION_NOT_FOUND":
+                return ChatResult(
+                    f"未找到“{extracted.location_query}”这个地点，请换个名称重试。",
+                    "collecting",
+                    {},
+                    error_code=exc.code,
+                    intent="hotel_nearby",
+                )
+            if exc.code == "LOCATION_AMBIGUOUS":
+                names = [candidate.name for candidate in exc.candidates[:3]]
+                choices = "、".join(names) if names else "更具体的地点"
+                return ChatResult(
+                    f"“{extracted.location_query}”对应多个地点，请选择：{choices}。",
+                    "collecting",
+                    {},
+                    error_code=exc.code,
+                    intent="hotel_nearby",
+                )
+            return self._hotel_nearby_unavailable(exc.code)
+        except AppError as exc:
+            return self._hotel_nearby_unavailable(exc.code)
+
+        return ChatResult(
+            self._hotel_nearby_renderer.render(application_result, radius=radius),
+            "collecting",
+            {},
+            intent="hotel_nearby",
+        )
+
+    @staticmethod
+    def _hotel_nearby_unavailable(error_code: str) -> ChatResult:
+        return ChatResult(
+            "附近酒店服务暂不可用，请稍后重试。",
+            "collecting",
+            {},
+            error_code=error_code,
+            intent="hotel_nearby",
+        )
 
     def _train_query_result(self, message: str) -> ChatResult:
         extracted = self._train_extractor.extract(message)

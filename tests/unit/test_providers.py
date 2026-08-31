@@ -201,9 +201,12 @@ def test_same_profile_concurrent_cache_miss_is_single_flight() -> None:
     assert bundles[0] is bundles[1]
 
 
-def test_chat_composition_reuses_the_provider_aggregator_between_requests() -> None:
+def test_chat_composition_reuses_the_provider_aggregator_between_requests(
+    monkeypatch,
+) -> None:
     from app import composition
 
+    monkeypatch.setenv("BAIDU_MAP_AK", "test-baidu-ak")
     provider_dependency = getattr(composition, "get_provider_evidence_aggregator", None)
     if provider_dependency is not None:
         provider_dependency.cache_clear()

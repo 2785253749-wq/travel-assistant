@@ -11,8 +11,11 @@ from app.agent.graph import (
     RuleTravelExtractor,
     SafeTravelAgent,
 )
+from app.agent.hotel_nearby_query import HotelNearbyQueryExtractor
 from app.agent.train_extraction import TrainQueryExtractor
 from app.application.chat import ConfirmationStore, TravelChatApplication
+from app.application.hotel_nearby import HotelNearbyApplication
+from app.application.hotel_nearby_reply import HotelNearbyReplyRenderer
 from app.application.weather import UnavailableWeatherService, WeatherService
 from app.application.train import TrainRecommendationService
 from app.api.auth import CurrentUser, OptionalCurrentUser
@@ -47,8 +50,12 @@ from app.infrastructure.weather import SupabaseWeatherQuotaRepository
 from app.providers.aggregate import ProviderEvidenceAggregator
 from app.providers.amap_district import AmapDistrictProvider
 from app.providers.amap_weather import AmapWeatherProvider
+from app.providers.baidu_hotel import BaiduHotelProvider
+from app.providers.baidu_location import BaiduLocationProvider
 from app.providers.juhe_train import JuheTrainProvider
 from app.trains.service import TrainService
+from app.hotels.service import HotelService
+from app.locations.service import LocationService
 from app.rag.embedding import EmbeddingHttpClient, EmbeddingQuota, JinaEmbedder
 from app.rag.repository import KnowledgeRepository
 from app.rag.service import (
@@ -651,10 +658,63 @@ def get_weather_service() -> WeatherService | UnavailableWeatherService:
     return build_weather_service()
 
 
+def build_location_service(*, settings: Settings | None = None) -> LocationService:
+    settings = settings or get_settings()
+    api_key = (
+        settings.baidu_map_ak.get_secret_value()
+        if settings.baidu_map_ak is not None
+        else None
+    )
+    return LocationService(
+        provider=BaiduLocationProvider(api_key=api_key),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_location_service() -> LocationService:
+    return build_location_service()
+
+
+def build_hotel_service(*, settings: Settings | None = None) -> HotelService:
+    settings = settings or get_settings()
+    api_key = (
+        settings.baidu_map_ak.get_secret_value()
+        if settings.baidu_map_ak is not None
+        else None
+    )
+    return HotelService(
+        provider=BaiduHotelProvider(
+            api_key=api_key,
+            timeout=settings.hotel_timeout_seconds,
+        )
+    )
+
+
+@lru_cache(maxsize=1)
+def get_hotel_service() -> HotelService:
+    return build_hotel_service()
+
+
+def build_hotel_nearby_application(
+    *, settings: Settings | None = None
+) -> HotelNearbyApplication:
+    settings = settings or get_settings()
+    return HotelNearbyApplication(
+        location_service=build_location_service(settings=settings),
+        hotel_service=build_hotel_service(settings=settings),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_hotel_nearby_application() -> HotelNearbyApplication:
+    return build_hotel_nearby_application()
+
+
 def build_chat_application(user: Any | None) -> TravelChatApplication:
     """The sole concrete composition root for the public chat use case."""
     providers = get_provider_evidence_aggregator()
     train_service = TrainService(provider=JuheTrainProvider(settings=get_settings()))
+    hotel_nearby_application = get_hotel_nearby_application()
 
     def agent_factory(initial_profile: TravelProfile) -> SafeTravelAgent:
         return SafeTravelAgent(
@@ -668,6 +728,9 @@ def build_chat_application(user: Any | None) -> TravelChatApplication:
             train_extractor=TrainQueryExtractor(),
             train_service=train_service,
             train_recommendation=TrainRecommendationService(),
+            hotel_nearby_extractor=HotelNearbyQueryExtractor(),
+            hotel_nearby_application=hotel_nearby_application,
+            hotel_nearby_renderer=HotelNearbyReplyRenderer(),
         )
 
     return TravelChatApplication(

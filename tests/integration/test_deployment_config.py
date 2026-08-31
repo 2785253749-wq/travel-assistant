@@ -98,6 +98,14 @@ def test_render_uses_free_plan_port_and_platform_secrets():
     assert env["TRUSTED_CLIENT_IP_HEADER"]["value"] == "cf-connecting-ip"
 
 
+def test_render_declares_baidu_hotel_configuration():
+    config = _load_yaml("render.yaml")
+    env = {item["key"]: item for item in config["services"][0]["envVars"]}
+
+    assert env["BAIDU_MAP_AK"]["sync"] is False
+    assert env["HOTEL_TIMEOUT_SECONDS"]["value"] == 10.0
+
+
 def test_deployment_document_describes_amap_key_and_offline_fallback():
     text = Path("docs/deployment/free-tier.md").read_text(encoding="utf-8")
 

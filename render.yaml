@@ -40,6 +40,10 @@ services:
         sync: false
       - key: AMAP_WEB_SERVICE_KEY
         sync: false
+      - key: BAIDU_MAP_AK
+        sync: false
+      - key: HOTEL_TIMEOUT_SECONDS
+        value: 10.0
       - key: JUHE_TRAIN_API_KEY
         sync: false
       - key: SUPABASE_URL
