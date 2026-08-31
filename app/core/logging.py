@@ -48,6 +48,11 @@ _OPERATIONAL_FIELDS = (
     "exception_type",
     "failure_stage",
     "validation_codes",
+    "candidate_type",
+    "candidate_kind",
+    "schema_error_count",
+    "schema_error_locations",
+    "schema_error_types",
 )
 
 

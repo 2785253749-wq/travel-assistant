@@ -188,7 +188,7 @@ def test_production_model_seam_repairs_one_non_display_error(monkeypatch):
     assert result.error_code is None
     assert len(chat_model.messages) == 2
     second_request = json.loads(chat_model.messages[1][1].content)
-    assert second_request["repair_codes"] == ["SCHEMA_INVALID"]
+    assert second_request["repair_codes"] == ["SCHEMA_INVALID:budget:value_error"]
 
 
 def test_production_model_seam_counts_both_paid_repair_calls_and_tokens(monkeypatch):

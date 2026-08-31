@@ -339,7 +339,130 @@ def test_planner_repairs_once_then_fails_closed() -> None:
         Planner(generate).plan(profile_factory(), [])
 
     assert calls[0] is None
-    assert calls[1] == ["SCHEMA_INVALID"]
+    assert calls[1] == ["SCHEMA_INVALID:budget:value_error"]
+
+
+def test_planner_repair_receives_missing_field_schema_hint(caplog) -> None:
+    invalid = itinerary_factory().model_dump(mode="json")
+    del invalid["budget"]["traveler_count"]
+    valid = itinerary_factory().model_dump(mode="json")
+    calls: list[list[str] | None] = []
+
+    def generate(_profile: TravelProfile, _providers: object, repair_codes: list[str] | None) -> dict:
+        calls.append(repair_codes)
+        return invalid if repair_codes is None else valid
+
+    with caplog.at_level("WARNING", logger="app.planner"):
+        planned = Planner(generate).plan(profile_factory(), [])
+
+    assert planned.title == "Hangzhou | 2-day itinerary"
+    assert calls == [None, ["SCHEMA_INVALID:budget.traveler_count:missing"]]
+    record = next(record for record in caplog.records if record.message == "planner schema validation failed")
+    assert record.candidate_type == "dict"
+    assert record.schema_error_count == 1
+    assert record.schema_error_locations == "budget.traveler_count"
+    assert record.schema_error_types == "missing"
+
+
+def test_planner_repair_receives_nested_time_schema_hint() -> None:
+    invalid = itinerary_factory().model_dump(mode="json")
+    invalid["days"][0]["afternoon"]["start_time"] = "9:00"
+    valid = itinerary_factory().model_dump(mode="json")
+    calls: list[list[str] | None] = []
+
+    def generate(_profile: TravelProfile, _providers: object, repair_codes: list[str] | None) -> dict:
+        calls.append(repair_codes)
+        return invalid if repair_codes is None else valid
+
+    Planner(generate).plan(profile_factory(), [])
+
+    assert calls == [None, ["SCHEMA_INVALID:days.0.afternoon.start_time:string_pattern_mismatch"]]
+
+
+def test_planner_repair_receives_nested_missing_schema_hint() -> None:
+    invalid = itinerary_factory().model_dump(mode="json")
+    del invalid["days"][0]["afternoon"]
+    valid = itinerary_factory().model_dump(mode="json")
+    calls: list[list[str] | None] = []
+
+    def generate(_profile: TravelProfile, _providers: object, repair_codes: list[str] | None) -> dict:
+        calls.append(repair_codes)
+        return invalid if repair_codes is None else valid
+
+    Planner(generate).plan(profile_factory(), [])
+
+    assert calls == [None, ["SCHEMA_INVALID:days.0.afternoon:missing"]]
+
+
+def test_planner_bounds_schema_repair_hints_to_ten() -> None:
+    invalid = itinerary_factory().model_dump(mode="json")
+    for day in invalid["days"]:
+        for slot in ("morning", "afternoon", "evening"):
+            del day[slot]["start_time"]
+            del day[slot]["end_time"]
+    valid = itinerary_factory().model_dump(mode="json")
+    calls: list[list[str] | None] = []
+
+    def generate(_profile: TravelProfile, _providers: object, repair_codes: list[str] | None) -> dict:
+        calls.append(repair_codes)
+        return invalid if repair_codes is None else valid
+
+    Planner(generate).plan(profile_factory(), [])
+
+    assert calls[0] is None
+    assert calls[1] is not None
+    assert len(calls[1]) == 10
+    assert all(hint.startswith("SCHEMA_INVALID:") for hint in calls[1])
+
+
+def test_planner_logs_malformed_json_without_candidate_contents(caplog) -> None:
+    malformed = '{"title":"model-output-sentinel"'
+
+    with caplog.at_level("WARNING", logger="app.planner"):
+        with pytest.raises(PlanValidationError) as exc_info:
+            Planner(lambda *_: malformed).plan(profile_factory(), [])
+
+    assert exc_info.value.code == "PLAN_VALIDATION_FAILED"
+    record = next(record for record in caplog.records if record.message == "planner schema validation failed")
+    assert record.candidate_type == "str"
+    assert record.candidate_kind == "json_decode_error"
+    assert record.schema_error_count == 0
+    assert "model-output-sentinel" not in caplog.text
+
+
+def test_planner_repairs_non_mapping_candidate_with_safe_container_hint(caplog) -> None:
+    calls: list[list[str] | None] = []
+
+    def generate(_profile: TravelProfile, _providers: object, repair_codes: list[str] | None) -> list[object]:
+        calls.append(repair_codes)
+        return []
+
+    with caplog.at_level("WARNING", logger="app.planner"):
+        with pytest.raises(PlanValidationError) as exc_info:
+            Planner(generate).plan(profile_factory(), [])
+
+    record = next(record for record in caplog.records if record.message == "planner schema validation failed")
+    assert record.candidate_type == "list"
+    assert record.candidate_kind == "invalid_container"
+    assert calls == [None, ["SCHEMA_INVALID"]]
+    assert {issue.code for issue in exc_info.value.issues} == {"SCHEMA_INVALID"}
+
+
+def test_planner_still_fails_closed_after_schema_repair_remains_invalid() -> None:
+    invalid = itinerary_factory().model_dump(mode="json")
+    del invalid["budget"]["traveler_count"]
+    calls: list[list[str] | None] = []
+
+    def generate(_profile: TravelProfile, _providers: object, repair_codes: list[str] | None) -> dict:
+        calls.append(repair_codes)
+        return invalid
+
+    with pytest.raises(PlanValidationError) as exc_info:
+        Planner(generate).plan(profile_factory(), [])
+
+    assert exc_info.value.code == "PLAN_VALIDATION_FAILED"
+    assert {issue.code for issue in exc_info.value.issues} == {"SCHEMA_INVALID"}
+    assert calls == [None, ["SCHEMA_INVALID:budget.traveler_count:missing"]]
 
 
 def test_per_person_budget_is_compared_as_a_trip_total() -> None:
