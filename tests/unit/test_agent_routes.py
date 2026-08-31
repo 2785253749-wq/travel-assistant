@@ -213,6 +213,39 @@ def test_production_rule_classifier_reaches_all_five_intents(message, expected):
     assert RuleIntentClassifier().classify(message, has_trip=False).intent == expected
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            "帮我规划2026-09-01两个人从福州去上海玩两天，预算6000元",
+            "plan_trip",
+        ),
+        (
+            "帮我规划2026-09-01两个人从福州去上海玩两天，预算6000元，优先高铁二等座",
+            "plan_trip",
+        ),
+        (
+            "帮我规划2026-09-01两个人从福州去上海玩两天，预算6000元，优先高铁二等座优先高铁二等座",
+            "plan_trip",
+        ),
+        ("查一下2026-09-02上海到福州的高铁二等座", "train_query"),
+    ],
+)
+def test_composite_trip_request_has_priority_over_train_keywords(message, expected):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == expected
+
+
+def test_composite_trip_request_keeps_explicit_train_seat_for_profile_extraction():
+    from app.agent.graph import RuleTravelExtractor
+
+    profile = RuleTravelExtractor(reference_date=date(2026, 8, 30)).extract(
+        "帮我规划2026-09-01两个人从福州去上海玩两天，预算6000元，优先高铁二等座",
+        TravelProfile(),
+    )
+
+    assert profile.train_seat == "二等座"
+
+
 def test_explain_uses_only_existing_itinerary_without_provider_or_model_calls():
     profile = TravelProfile(
         origin="上海",

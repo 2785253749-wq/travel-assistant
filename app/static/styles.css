@@ -164,8 +164,13 @@ h3 { margin: .05rem 0 .15rem; font-size: 1.05rem; }
 .profile-fields dd { margin: 0; overflow-wrap: anywhere; }
 .trip-heading { display: flex; justify-content: space-between; gap: 1rem; }
 .itinerary-days { display: grid; gap: .75rem; }
-.day-card, .budget-card, .source-list, .search-links { margin-top: .75rem; padding: .8rem; border-radius: .75rem; background: var(--surface); }
+.day-card, .budget-card, .trip-transport, .source-list, .search-links { margin-top: .75rem; padding: .8rem; border-radius: .75rem; background: var(--surface); }
 .day-card ul, .source-list { padding-left: 1.2rem; }
+.trip-transport { border: 1px solid var(--line); }
+.trip-transport > h3 { margin-bottom: .2rem; }
+.trip-transport-leg { margin-top: .7rem; }
+.trip-transport-leg h4 { margin: 0; color: var(--brand-dark); }
+.trip-transport-warnings { margin: .8rem 0 0; padding-left: 1.2rem; color: var(--muted); }
 .itinerary-weather { width: fit-content; margin: .55rem 0; padding: .35rem .6rem; border-radius: 999px; color: #1558a6; background: var(--surface-blue); font-size: .92rem; font-weight: 700; }
 .source-list a, .search-links a { color: #064fa6; overflow-wrap: anywhere; }
 .empty-state { padding: 1rem; border: 1px solid #b9d6ff; border-radius: .9rem; color: var(--ink); background: var(--surface-blue); }

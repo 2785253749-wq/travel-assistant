@@ -38,6 +38,8 @@ services:
         sync: false
       - key: AMAP_SECURITY_JS_CODE
         sync: false
+      - key: AMAP_WEB_SERVICE_KEY
+        sync: false
       - key: JUHE_TRAIN_API_KEY
         sync: false
       - key: SUPABASE_URL

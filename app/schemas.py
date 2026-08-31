@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 from uuid import UUID
@@ -42,6 +43,8 @@ ProfileDisplayName = Annotated[str, Field(max_length=PROFILE_DISPLAY_NAME_MAX_LE
 ProfileBio = Annotated[str, Field(max_length=PROFILE_BIO_MAX_LENGTH)]
 ProfileHomeCity = Annotated[str, Field(max_length=PROFILE_HOME_CITY_MAX_LENGTH)]
 TravelStyle = Literal["美食", "人文", "自然", "亲子", "户外", "休闲"]
+TrainSeatPreference = Literal["二等座", "一等座", "商务座"]
+TripTransportPricingStatus = Literal["live", "partial", "estimated"]
 JsonObject = dict[str, Any]
 
 class TravelProfile(StrictSchema):
@@ -49,6 +52,7 @@ class TravelProfile(StrictSchema):
     destination: ProfileLocation | None = None
     start_date: ProfileDate | None = None
     end_date: ProfileDate | None = None
+    train_seat: TrainSeatPreference | None = Field(default=None, exclude_if=lambda value: value is None)
     # Keep a hard transport/resource bound here while leaving the product limit
     # (1-6) to validate_profile(), which returns stable field-level issue codes.
     travelers: int | None = Field(default=None, ge=1, le=100)
@@ -64,6 +68,7 @@ class RawTravelProfile(StrictSchema):
     destination: ProfileLocation | None = None
     start_date: ProfileDate | None = None
     end_date: ProfileDate | None = None
+    train_seat: TrainSeatPreference | None = Field(default=None, exclude_if=lambda value: value is None)
     travelers: int | None = Field(default=None, ge=-100, le=100)
     budget_cny: int | None = Field(default=None, ge=0, le=10_000_000)
     preferences: list[ProfileListItem] = Field(default_factory=list, max_length=20)
@@ -85,15 +90,43 @@ class ChatRequest(StrictSchema):
     action: Literal["collect", "confirm"] = "collect"
     trip_id: UUID | None = None
 
+
+class TripTransportLegSummary(StrictSchema):
+    """Public display-only transport facts selected by the backend."""
+
+    train_no: str = Field(min_length=1, max_length=20)
+    origin_station: str = Field(min_length=1, max_length=80)
+    destination_station: str = Field(min_length=1, max_length=80)
+    departure_at: datetime
+    arrival_at: datetime
+    duration: int | None = Field(default=None, ge=0, le=7_200)
+    seat_name: str = Field(min_length=1, max_length=40)
+    price: Decimal | None = Field(default=None, ge=0)
+    remaining_label: str | None = Field(default=None, max_length=40)
+    availability: Literal["available", "unavailable", "unknown"]
+    source: str | None = Field(default=None, min_length=8, max_length=2_048, pattern=r"^https://")
+    fetched_at: datetime | None = None
+
+
+class TripTransportSummary(StrictSchema):
+    """Small public transport summary; never exposes raw TrainOption data."""
+
+    outbound: TripTransportLegSummary | None = None
+    return_trip: TripTransportLegSummary | None = None
+    pricing_status: TripTransportPricingStatus = "estimated"
+    warnings: list[WarningText] = Field(default_factory=list, max_length=20)
+
 class ChatResponse(StrictSchema):
     reply: str = Field(min_length=1, max_length=CHAT_REPLY_MAX_LENGTH)
     stage: Literal["collecting", "confirming", "planned"]
+    error_code: str | None = Field(default=None, min_length=1, max_length=80)
     profile: TravelProfile
     itinerary: Itinerary | None = None
     trip_id: UUID | None = None
     sources: list[SourceCitation] | None = Field(default=None, max_length=100)
     warnings: list[WarningText] | None = Field(default=None, max_length=40)
     train_result: TrainSearchResult | None = None
+    trip_transport: TripTransportSummary | None = None
 
 
 class SourceCitation(StrictSchema):

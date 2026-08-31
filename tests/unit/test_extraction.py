@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -37,6 +37,154 @@ def test_rule_extractor_reads_common_chinese_route_synonyms(message):
 
     assert profile.origin == "上海"
     assert profile.destination == "南京"
+
+
+@pytest.mark.parametrize(
+    ("message", "origin", "destination"),
+    [
+        ("从福州去上海", "福州", "上海"),
+        ("从福州到上海", "福州", "上海"),
+        ("福州去上海", "福州", "上海"),
+        ("福州到上海", "福州", "上海"),
+        ("明天两个人从福州去上海玩两天，预算6000元", "福州", "上海"),
+    ],
+)
+def test_rule_extractor_splits_chinese_routes_at_city_boundaries(message, origin, destination):
+    profile = RuleTravelExtractor().extract(message, TravelProfile())
+
+    assert profile.origin == origin
+    assert profile.destination == destination
+
+
+@pytest.mark.parametrize(
+    ("message", "start_date", "end_date", "travelers", "budget"),
+    [
+        (
+            "帮我规划明天两个人从福州去上海玩两天，预算6000元",
+            "2026-08-31",
+            "2026-09-01",
+            2,
+            6000,
+        ),
+        (
+            "后天三个人福州去上海玩3天，预算8000",
+            "2026-09-01",
+            "2026-09-03",
+            3,
+            8000,
+        ),
+        (
+            "明天福州去上海两日游，两人，预算6000",
+            "2026-08-31",
+            "2026-09-01",
+            2,
+            6000,
+        ),
+    ],
+)
+def test_rule_extractor_extracts_relative_dates_duration_and_travelers(
+    message, start_date, end_date, travelers, budget
+):
+    profile = RuleTravelExtractor(reference_date=date(2026, 8, 30)).extract(
+        message,
+        TravelProfile(),
+    )
+
+    assert profile.origin == "福州"
+    assert profile.destination == "上海"
+    assert profile.start_date == start_date
+    assert profile.end_date == end_date
+    assert profile.travelers == travelers
+    assert profile.budget_cny == budget
+
+
+@pytest.mark.parametrize(
+    ("relative_day", "expected"),
+    [
+        ("今天", "2026-08-30"),
+        ("明天", "2026-08-31"),
+        ("后天", "2026-09-01"),
+    ],
+)
+def test_rule_extractor_resolves_relative_start_dates(relative_day, expected):
+    profile = RuleTravelExtractor(reference_date=date(2026, 8, 30)).extract(
+        f"{relative_day}福州去上海玩两天",
+        TravelProfile(),
+    )
+
+    assert profile.start_date == expected
+    assert profile.end_date == (date.fromisoformat(expected) + timedelta(days=1)).isoformat()
+
+
+def test_rule_extractor_prefers_explicit_end_date_over_duration():
+    profile = RuleTravelExtractor(reference_date=date(2026, 8, 30)).extract(
+        "福州去上海，2026-09-10到2026-09-12，玩两天",
+        TravelProfile(),
+    )
+
+    assert profile.start_date == "2026-09-10"
+    assert profile.end_date == "2026-09-12"
+
+
+@pytest.mark.parametrize(
+    ("traveler_text", "expected"),
+    [("1个人", 1), ("2个人", 2), ("3个人", 3), ("两人", 2), ("三人", 3)],
+)
+def test_rule_extractor_reads_supported_traveler_phrases(traveler_text, expected):
+    profile = RuleTravelExtractor().extract(
+        f"{traveler_text}从福州去上海",
+        TravelProfile(),
+    )
+
+    assert profile.travelers == expected
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("2026-09-01两个人从福州去上海玩两天", 2),
+        ("2026-09-01 两个人从福州去上海玩两天", 2),
+        ("2026-09-01，2个人从福州去上海玩两天", 2),
+        ("2026-09-01三人从福州去上海玩3天", 3),
+    ],
+)
+def test_rule_extractor_reads_travelers_after_explicit_date(message, expected):
+    profile = RuleTravelExtractor(reference_date=date(2026, 8, 31)).extract(
+        message,
+        TravelProfile(),
+    )
+
+    assert profile.travelers == expected
+
+
+def test_rule_extractor_reads_complete_trip_when_date_and_travelers_are_adjacent():
+    profile = RuleTravelExtractor(reference_date=date(2026, 8, 31)).extract(
+        "帮我规划2026-09-01两个人从福州去上海玩两天，预算6000元",
+        TravelProfile(),
+    )
+
+    assert profile.origin == "福州"
+    assert profile.destination == "上海"
+    assert profile.start_date == "2026-09-01"
+    assert profile.end_date == "2026-09-02"
+    assert profile.travelers == 2
+    assert profile.budget_cny == 6000
+
+
+@pytest.mark.parametrize(
+    ("duration_text", "expected_end_date"),
+    [("去两天", "2026-09-01"), ("待3天", "2026-09-02"), ("3日游", "2026-09-02")],
+)
+def test_rule_extractor_derives_end_date_from_supported_duration_phrases(
+    duration_text, expected_end_date
+):
+    profile = RuleTravelExtractor(reference_date=date(2026, 8, 30)).extract(
+        f"明天福州去上海{duration_text}",
+        TravelProfile(),
+    )
+
+    assert profile.start_date == "2026-08-31"
+    assert profile.end_date == expected_end_date
 
 
 def test_rule_extractor_does_not_treat_compact_date_range_as_route():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import monotonic
@@ -84,20 +85,22 @@ def request_json(
     url: str,
     params: dict[str, str],
     deadline: OperationDeadline | None = None,
+    request_slot: Callable[[], AbstractContextManager[None]] | None = None,
 ) -> dict:
     """Fetch JSON with explicit timeouts and exactly one transient retry."""
     operation_deadline = deadline or OperationDeadline.start()
     for attempt in range(2):
         try:
-            request_timeout = operation_deadline.httpx_timeout()
-            response = operation_deadline.run(
-                lambda: client.get(
-                    url,
-                    params=params,
-                    headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-                    timeout=request_timeout,
+            with request_slot() if request_slot is not None else nullcontext():
+                request_timeout = operation_deadline.httpx_timeout()
+                response = operation_deadline.run(
+                    lambda: client.get(
+                        url,
+                        params=params,
+                        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+                        timeout=request_timeout,
+                    )
                 )
-            )
         except httpx.TimeoutException:
             raise
         except httpx.RequestError:

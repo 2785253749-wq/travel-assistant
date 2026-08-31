@@ -64,6 +64,39 @@ function trainResponse(overrides = {}) {
   };
 }
 
+function tripTransportResponse(overrides = {}) {
+  return {
+    reply: "行程已生成。",
+    stage: "planned",
+    profile: { origin: "福州", destination: "上海", travelers: 2 },
+    itinerary: {
+      title: "上海两日行程",
+      budget: {
+        transport: 1400, hotel: 1500, food: 1000, tickets: 500, reserve: 0, other: 0,
+        total: 4400, trip_total: 4400, traveler_count: 2, currency: "CNY",
+      },
+      days: [],
+    },
+    trip_transport: {
+      outbound: {
+        train_no: "G88", origin_station: "福州", destination_station: "上海虹桥",
+        departure_at: "2026-08-31T08:15:00+08:00", arrival_at: "2026-08-31T12:38:00+08:00",
+        duration: 263, seat_name: "二等座", price: 350, availability: "available",
+        source: "https://www.juhe.cn/docs/api/id/817", fetched_at: "2026-08-30T19:30:00+08:00",
+      },
+      return_trip: {
+        train_no: "G89", origin_station: "上海虹桥", destination_station: "福州",
+        departure_at: "2026-09-01T18:20:00+08:00", arrival_at: "2026-09-01T22:35:00+08:00",
+        duration: 255, seat_name: "二等座", price: 350, availability: "available",
+        source: "https://www.juhe.cn/docs/api/id/817", fetched_at: "2026-08-30T19:30:00+08:00",
+      },
+      pricing_status: "live",
+      warnings: [],
+    },
+    ...overrides,
+  };
+}
+
 async function dispatchPointer(element, type, properties) {
   const event = { preventDefault() {}, target: element, currentTarget: element, ...properties };
   for (const listener of element.listeners.get(type) || []) await listener(event);
@@ -344,6 +377,163 @@ test("train cards display bounded seats and safe labels for missing price or unk
   assert.match(region.textContent, /余票未知/);
   assert.match(region.textContent, /无票/);
   assert.doesNotMatch(region.textContent, /¥None|¥0/);
+});
+
+test("confirmation keeps the backend error code instead of replacing it with CHAT_UNAVAILABLE", async () => {
+  const profile = {
+    origin: "福州", destination: "上海", start_date: "2026-08-31", end_date: "2026-09-01",
+    travelers: 2, budget_cny: 6000,
+  };
+  let chatCalls = 0;
+  const harness = createHarness({ fetch: async (call) => {
+    if (call.url !== "/api/chat") return jsonResponse(200, {});
+    chatCalls += 1;
+    return chatCalls === 1
+      ? jsonResponse(200, { reply: "请确认", stage: "confirming", profile })
+      : jsonResponse(200, {
+        reply: "暂时不可用", stage: "collecting", profile, error_code: "AI_CIRCUIT_OPEN",
+        warnings: ["AI_CIRCUIT_OPEN"],
+      });
+  } });
+  await settle();
+  harness.elements.get("message-input").value = "生成行程";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+  await harness.elements.get("confirm-profile-button").dispatch("click");
+  await settle();
+
+  assert.match(harness.elements.get("status-message").textContent, /规划服务正在保护性恢复/);
+});
+
+test("complete itineraries render outbound and return recommended transport before the budget", async () => {
+  const result = tripTransportResponse();
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "生成行程";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const content = harness.elements.get("trip-content");
+  const transport = descendants(content).find((node) => node.className === "trip-transport");
+  const budget = descendants(content).find((node) => node.className === "budget-card");
+  assert.ok(transport);
+  assert.ok(budget);
+  assert.ok(transport.parentNode.children.indexOf(transport) < transport.parentNode.children.indexOf(budget));
+  assert.match(transport.textContent, /推荐交通/);
+  assert.match(transport.textContent, /去程/);
+  assert.match(transport.textContent, /返程/);
+  assert.match(transport.textContent, /G88/);
+  assert.match(transport.textContent, /G89/);
+  assert.match(transport.textContent, /二等座/);
+  assert.match(transport.textContent, /¥350/);
+  assert.match(transport.textContent, /有票/);
+});
+
+test("complete itineraries do not create an empty return card", async () => {
+  const result = tripTransportResponse();
+  result.trip_transport.return_trip = null;
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "生成行程";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const transport = descendants(harness.elements.get("trip-content"))
+    .find((node) => node.className === "trip-transport");
+  assert.ok(transport);
+  assert.match(transport.textContent, /去程/);
+  assert.doesNotMatch(transport.textContent, /返程/);
+  assert.equal(descendants(transport).filter((node) => node.className === "trip-transport-leg").length, 1);
+});
+
+test("complete itineraries render the backend-selected seat and price", async (t) => {
+  for (const seat of ["二等座", "一等座", "商务座"]) {
+    await t.test(seat, async () => {
+      const result = tripTransportResponse();
+      result.trip_transport.outbound.seat_name = seat;
+      result.trip_transport.outbound.price = seat === "一等座" ? 550 : seat === "商务座" ? 900 : 350;
+      result.trip_transport.return_trip.seat_name = seat;
+      result.trip_transport.return_trip.price = seat === "一等座" ? 520 : seat === "商务座" ? 880 : 350;
+      const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+        ? jsonResponse(200, result) : jsonResponse(200, {}) });
+      await settle();
+      harness.elements.get("message-input").value = "生成行程";
+      await harness.elements.get("chat-form").dispatch("submit");
+      await settle();
+
+      const transport = descendants(harness.elements.get("trip-content"))
+        .find((node) => node.className === "trip-transport");
+      assert.match(transport.textContent, new RegExp(seat));
+      assert.match(transport.textContent, new RegExp(`¥${result.trip_transport.outbound.price}`));
+      if (seat !== "二等座") assert.doesNotMatch(transport.textContent, /席别：二等座/);
+    });
+  }
+});
+
+test("unknown transport availability is not rendered as available", async () => {
+  const result = tripTransportResponse();
+  result.trip_transport.outbound.availability = "unknown";
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "生成行程";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const transport = descendants(harness.elements.get("trip-content"))
+    .find((node) => node.className === "trip-transport");
+  assert.match(transport.textContent, /余票状态未知/);
+  const outbound = descendants(transport).find((node) => node.className === "trip-transport-leg");
+  assert.doesNotMatch(outbound.textContent, /有票/);
+});
+
+test("transport pricing status distinguishes live and partial fares", async (t) => {
+  for (const [status, label] of [["live", "实时车票价格"], ["partial", "部分为估算"], ["estimated", "估算"]]) {
+    await t.test(status, async () => {
+      const result = tripTransportResponse();
+      result.trip_transport.pricing_status = status;
+      const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+        ? jsonResponse(200, result) : jsonResponse(200, {}) });
+      await settle();
+      harness.elements.get("message-input").value = "生成行程";
+      await harness.elements.get("chat-form").dispatch("submit");
+      await settle();
+      assert.match(harness.elements.get("trip-content").textContent, new RegExp(label));
+    });
+  }
+});
+
+test("transport warning renders without an empty train card", async () => {
+  const result = tripTransportResponse();
+  result.trip_transport = { outbound: null, return_trip: null, pricing_status: "estimated", warnings: ["实时车次暂时无法确认，本次交通时间和费用为规划参考。"] };
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "生成行程";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+
+  const transport = descendants(harness.elements.get("trip-content"))
+    .find((node) => node.className === "trip-transport");
+  assert.ok(transport);
+  assert.match(transport.textContent, /实时车次暂时无法确认/);
+  assert.equal(descendants(transport).some((node) => node.className === "train-option-card"), false);
+});
+
+test("transport rendering uses safe DOM APIs and keeps independent train results intact", async () => {
+  const source = fs.readFileSync(path.join(__dirname, "../../app/static/app.js"), "utf8");
+  assert.doesNotMatch(source, /innerHTML/);
+
+  const result = trainResponse();
+  const harness = createHarness({ fetch: async (call) => call.url === "/api/chat"
+    ? jsonResponse(200, result) : jsonResponse(200, {}) });
+  await settle();
+  harness.elements.get("message-input").value = "查车";
+  await harness.elements.get("chat-form").dispatch("submit");
+  await settle();
+  assert.ok(descendants(harness.elements.get("chat-messages")).some((node) => node.className === "train-result"));
 });
 
 test("train cards show at most three alternatives and do not repeat the recommendation", async () => {
@@ -2232,6 +2422,26 @@ test("readable itinerary renders notes facts assumptions and server booking sear
   assert.deepEqual(bookingHosts, [
     "www.12306.cn", "www.ctrip.com", "www.ctrip.com",
   ]);
+});
+
+test("itinerary activity period labels follow the activity start time", async () => {
+  const itinerary = {
+    title: "上海两日行程",
+    days: [{
+      date: "2026-08-31",
+      morning: { title: "抵达后当地活动", start_time: "14:33", end_time: "17:21", notes: [], citations: [] },
+    }],
+    citations: [],
+  };
+  const harness = createHarness({ hash: "#share=opaque", fetch: async () => jsonResponse(200, {
+    id: "trip-1", title: itinerary.title, status: "planned", profile: {}, itinerary, updated_at: null,
+  }) });
+
+  await settle();
+
+  const content = harness.elements.get("trip-content");
+  assert.match(content.textContent, /下午：抵达后当地活动 \(14:33-17:21\)/);
+  assert.doesNotMatch(content.textContent, /上午：抵达后当地活动/);
 });
 
 test("provider warning without canonical citation time says the update time is unknown", async () => {

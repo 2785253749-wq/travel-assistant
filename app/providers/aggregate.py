@@ -15,6 +15,7 @@ from app.providers.free_weather import WEATHER_SOURCE, WeatherProvider
 from app.providers.places import PLACES_SOURCE, PlacesProvider
 from app.core.logging import operational_context
 from app.schemas import TravelProfile
+from app.trips.transport import TripTransportContext
 
 
 PROVIDER_CACHE_TTL_SECONDS = 300.0
@@ -27,14 +28,21 @@ class ProviderBundle:
 
     results: tuple[ProviderResult[Any], ...]
     booking_links: BookingLinks
+    transport_context: TripTransportContext | None = None
 
     @property
     def warnings(self) -> tuple[str, ...]:
-        return tuple(
+        provider_warnings = tuple(
             result.error_code
             for result in self.results
             if result.degraded and result.error_code is not None
         )
+        transport_warnings = (
+            tuple(self.transport_context.warnings)
+            if self.transport_context is not None
+            else ()
+        )
+        return provider_warnings + transport_warnings
 
 
 class ProviderEvidenceAggregator:

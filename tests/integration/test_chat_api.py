@@ -70,6 +70,39 @@ def test_chat_api_serializes_train_result_without_raw_provider_payload(monkeypat
     assert "raw" not in payload["train_result"]
 
 
+def test_chat_api_serializes_compact_trip_transport_without_train_internals(monkeypatch):
+    from app.main import app
+    from app.api import chat as chat_api
+    from app.agent.graph import ChatResult
+    from app.schemas import TripTransportSummary
+
+    summary = TripTransportSummary.model_validate({
+        "outbound": {
+            "train_no": "G25", "origin_station": "福州", "destination_station": "上海虹桥",
+            "departure_at": "2026-08-31T08:15:00+08:00", "arrival_at": "2026-08-31T12:38:00+08:00",
+            "duration": 263, "seat_name": "一等座", "price": 550, "availability": "available",
+            "source": "https://www.juhe.cn/docs/api/id/817", "fetched_at": "2026-08-30T19:30:00+08:00",
+        },
+        "return_trip": None, "pricing_status": "live", "warnings": [],
+    })
+    monkeypatch.setattr(
+        chat_api, "chat",
+        lambda *args, **kwargs: ChatResult("已生成", "planned", {}, trip_transport=summary),
+    )
+
+    response = TestClient(app).post(
+        "/api/chat", json={"message": "生成行程", "thread_id": "trip-transport-summary"}
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["trip_transport"]["outbound"]["train_no"] == "G25"
+    assert payload["trip_transport"]["outbound"]["seat_name"] == "一等座"
+    assert payload["trip_transport"]["pricing_status"] == "live"
+    assert "seats" not in payload["trip_transport"]["outbound"]
+    assert "option_id" not in payload["trip_transport"]["outbound"]
+
+
 def test_chat_api_bounds_and_deduplicates_generated_citations_and_warnings(monkeypatch):
     """A direct JSONResponse must not bypass the public response contract."""
     from app.main import app
@@ -125,6 +158,25 @@ def test_chat_api_returns_safe_error_without_exception_detail(monkeypatch):
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "CHAT_UNAVAILABLE"
     assert "secret" not in response.text
+
+
+def test_chat_api_preserves_provider_error_code_in_a_safe_response(monkeypatch):
+    from app.core.usage import ProviderUnavailable
+    from app.main import app
+    from app.api import chat as chat_api
+
+    def unavailable_chat(*_args, **_kwargs):
+        raise ProviderUnavailable("AI_UNAVAILABLE")
+
+    monkeypatch.setattr(chat_api, "chat", unavailable_chat)
+    response = TestClient(app).post(
+        "/api/chat",
+        json={"message": "confirm", "thread_id": "thread-provider-code"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["error_code"] == "AI_UNAVAILABLE"
+    assert response.json()["warnings"] == ["AI_UNAVAILABLE"]
 
 
 def test_chat_api_logs_only_stable_error_metadata(monkeypatch, caplog):
@@ -870,6 +922,7 @@ def test_http_production_path_plans_persists_reopens_modifies_and_degrades(monke
     from app.providers.places import PlacesProvider
     from app.schemas import TravelProfile
     from app.composition import get_development_repository
+    from app.trains.service import TrainService
 
     user = AuthenticatedUser(
         UUID("11111111-1111-1111-1111-111111111111"),
@@ -944,6 +997,10 @@ def test_http_production_path_plans_persists_reopens_modifies_and_degrades(monke
             )
         ),
     )
+    def fake_train_search(self, query):
+        raise TimeoutError("offline train fixture")
+
+    monkeypatch.setattr(TrainService, "search", fake_train_search)
 
     candidates = iter(
         [
@@ -986,7 +1043,11 @@ def test_http_production_path_plans_persists_reopens_modifies_and_degrades(monke
         assert planned.status_code == 200
         first = planned.json()
         assert first["stage"] == "planned"
-        assert first["warnings"] == ["PLACES_TIMEOUT"]
+        assert first["warnings"] == [
+            "PLACES_TIMEOUT",
+            "去程实时车次暂时无法确认，请后续核对官方渠道。",
+            "返程实时车次暂时无法确认，请后续核对官方渠道。",
+        ]
         assert first["sources"][0]["evidence_id"] == evidence_id
         assert first["itinerary"]["budget"]["trip_total"] == 3000
         assert first["trip_id"]

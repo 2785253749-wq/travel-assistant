@@ -122,28 +122,32 @@ def _json_chat_response(
     *,
     reply: str,
     stage: str,
+    error_code: str | None = None,
     profile: TravelProfile,
     itinerary=None,
     trip_id=None,
     sources: list[dict] | None = None,
     warnings: list[str] | None = None,
     train_result=None,
+    trip_transport=None,
 ) -> JSONResponse:
     """Validate the public model before returning an explicit response object."""
     payload = ChatResponse.model_validate(
         {
             "reply": reply,
             "stage": stage,
+            "error_code": error_code,
             "profile": profile,
             "itinerary": itinerary,
             "trip_id": trip_id,
             "sources": _bounded_citations(sources or []),
             "warnings": (warnings or [])[:40] or None,
             "train_result": train_result,
+            "trip_transport": trip_transport,
         }
     )
     content = payload.model_dump(mode="json")
-    for optional_field in ("itinerary", "trip_id", "sources", "warnings", "train_result"):
+    for optional_field in ("error_code", "itinerary", "trip_id", "sources", "warnings", "train_result", "trip_transport"):
         if content[optional_field] is None:
             del content[optional_field]
     return JSONResponse(
@@ -240,6 +244,7 @@ def api_chat(
                     response,
                     reply="AI provider is temporarily unavailable.",
                     stage="collecting",
+                    error_code=code,
                     profile=TravelProfile(),
                     warnings=[code],
                 )
@@ -258,6 +263,7 @@ def api_chat(
                     response,
                     reply=result.reply,
                     stage=result.stage,
+                    error_code=result.error_code,
                     profile=TravelProfile.model_validate(result.profile),
                     warnings=["AI_PROVIDER_UNAVAILABLE"],
                 )
@@ -275,12 +281,14 @@ def api_chat(
                 response,
                 reply=result.reply,
                 stage=result.stage,
+                error_code=result.error_code,
                 profile=TravelProfile.model_validate(result.profile),
                 itinerary=result.itinerary,
                 trip_id=result.trip_id,
                 sources=result.sources,
                 warnings=result.warnings,
                 train_result=result.train_result,
+                trip_transport=result.trip_transport,
             )
         except AppError as exc:
             logging.getLogger("app.api.chat").info(
@@ -309,6 +317,7 @@ def api_chat(
                 response,
                 reply="AI provider is temporarily unavailable.",
                 stage="collecting",
+                error_code=code,
                 profile=TravelProfile(),
                 warnings=[code],
             )

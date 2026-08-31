@@ -324,6 +324,111 @@ def test_failed_model_attempt_is_committed_instead_of_rolled_back():
     assert events == [("admit",), ("commit", 0, 0, 1)]
 
 
+def test_confirm_retries_model_without_refetching_providers_or_transport():
+    from app.agent.graph import NullWeatherService, SafeTravelAgent
+    from app.providers.aggregate import ProviderEvidenceAggregator
+    from app.providers.base import ProviderResult
+    from datetime import UTC, datetime
+
+    profile = TravelProfile(
+        origin="上海",
+        destination="成都",
+        start_date="2026-10-01",
+        end_date="2026-10-02",
+        travelers=2,
+        budget_cny=5000,
+    )
+    itinerary = Itinerary.model_validate_json(
+        Path("tests/fixtures/task7_itinerary.json").read_text(encoding="utf-8")
+    )
+    provider_calls = {"weather": 0, "places": 0}
+    train_calls = []
+    model_calls = []
+
+    class Weather:
+        def forecast(self, _destination, _start, _end):
+            provider_calls["weather"] += 1
+            return ProviderResult(
+                {"forecast": "fixture"},
+                "https://api.open-meteo.com/v1/forecast",
+                datetime.now(UTC),
+            )
+
+    class Places:
+        def search(self, _city, _query):
+            provider_calls["places"] += 1
+            return ProviderResult(
+                [],
+                "https://photon.komoot.io/api/",
+                datetime.now(UTC),
+            )
+
+    class Train:
+        def search(self, _query):
+            train_calls.append(1)
+            raise TimeoutError("fake train timeout")
+
+    class Model:
+        def invoke(self, _messages):
+            model_calls.append(1)
+            if len(model_calls) == 1:
+                error = RuntimeError("fake transient model failure")
+                error.status_code = 503
+                raise error
+            return SimpleNamespace(content="ok", usage_metadata={})
+
+    gateway = ModelGateway(lambda: Model())
+
+    class Planner:
+        def plan(self, _profile, _provider_results):
+            gateway.invoke([])
+            return itinerary
+
+    class Reservation:
+        def admit_model_call(self):
+            pass
+
+        def commit(self, *_args, **_kwargs):
+            pass
+
+        def rollback(self):
+            raise AssertionError("successful retry must not roll back")
+
+    class Guard:
+        def reserve(self, _subject):
+            return Reservation()
+
+    store = ConfirmationStore()
+    store.put("anon:retry", "thread-retry", None, profile, "规划成都")
+    application = TravelChatApplication(
+        agent_factory=lambda initial: SafeTravelAgent(
+            planner=Planner(),
+            evidence_provider=ProviderEvidenceAggregator(
+                weather=Weather(), places=Places()
+            ),
+            train_service=Train(),
+            weather=NullWeatherService(),
+            initial_profile=initial,
+        ),
+        usage_guard=Guard(),
+        confirmation_store=store,
+    )
+
+    result = application.confirm(
+        user_id=None,
+        subject="anon:retry",
+        quota_subject="anon:retry",
+        thread_id="thread-retry",
+        trip_id=None,
+        message="确认",
+    )
+
+    assert result.stage == "planned"
+    assert len(model_calls) == 2
+    assert provider_calls == {"weather": 1, "places": 1}
+    assert len(train_calls) == 2
+
+
 def test_usage_commit_failure_after_atomic_persistence_does_not_turn_success_into_503():
     user_id = UUID("11111111-1111-1111-1111-111111111111")
     profile = TravelProfile(

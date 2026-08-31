@@ -446,6 +446,155 @@ def test_gateway_logs_a_safe_provider_status_without_the_vendor_body(caplog):
     assert "do-not-log" not in caplog.text
 
 
+def test_gateway_retries_one_transient_503_within_the_existing_usage_reservation():
+    class VendorError(Exception):
+        status_code = 503
+
+    class Model:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                raise VendorError()
+            return SimpleNamespace(
+                content="ok",
+                usage_metadata={"input_tokens": 2, "output_tokens": 3},
+            )
+
+    model = Model()
+    repository = InMemoryUsageRepository()
+    guard = UsageGuard(
+        repository=repository,
+        user_daily_limit=10,
+        global_daily_limit=10,
+        enabled=True,
+        provider_configured=True,
+    )
+    reservation = guard.reserve("retry-user")
+
+    with model_usage_scope(reservation) as usage:
+        response = ModelGateway(lambda: model).invoke([])
+        reservation.commit(usage.input_tokens, usage.output_tokens, usage.calls)
+
+    assert response.content == "ok"
+    assert model.calls == 2
+    assert usage.calls == 2
+    daily = repository.get_daily("retry-user", datetime.now(UTC).date())
+    assert daily.model_calls == 2
+    assert daily.pending == 0
+
+
+def test_gateway_retries_one_timeout_then_succeeds(monkeypatch):
+    monkeypatch.setattr("app.core.usage.sleep", lambda _seconds: None)
+
+    class Model:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("transient")
+            return SimpleNamespace(content="ok", usage_metadata={})
+
+    model = Model()
+    response = ModelGateway(lambda: model).invoke([])
+
+    assert response.content == "ok"
+    assert model.calls == 2
+
+
+def test_gateway_logs_each_retry_attempt_without_model_payload(caplog, monkeypatch):
+    monkeypatch.setattr("app.core.usage.sleep", lambda _seconds: None)
+
+    class VendorError(Exception):
+        status_code = 503
+
+    class Model:
+        calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                raise VendorError("provider body api_key=do-not-log")
+            return SimpleNamespace(content="ok", usage_metadata={})
+
+    model = Model()
+    with caplog.at_level("INFO", logger="app.model"):
+        ModelGateway(lambda: model).invoke([])
+
+    messages = [record.message for record in caplog.records]
+    assert "model attempt=1 start" in messages
+    assert "model attempt=1 transient_failure" in messages
+    assert "model attempt=2 start" in messages
+    assert "model attempt=2 success" in messages
+    assert "do-not-log" not in caplog.text
+
+
+def test_gateway_stops_after_two_transient_failures(monkeypatch):
+    monkeypatch.setattr("app.core.usage.sleep", lambda _seconds: None)
+
+    class VendorError(Exception):
+        status_code = 503
+
+    class Model:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            raise VendorError()
+
+    model = Model()
+    with pytest.raises(ProviderUnavailable) as error:
+        ModelGateway(lambda: model).invoke([])
+
+    assert error.value.code == "AI_UNAVAILABLE"
+    assert model.calls == 2
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404])
+def test_gateway_does_not_retry_authentication_or_other_client_errors(status_code):
+    class VendorError(Exception):
+        pass
+
+    class Model:
+        calls = 0
+
+        def invoke(self, _messages):
+            self.calls += 1
+            error = VendorError()
+            error.status_code = status_code
+            raise error
+
+    model = Model()
+    with pytest.raises(ProviderUnavailable) as error:
+        ModelGateway(lambda: model).invoke([])
+    assert error.value.code == "AI_UNAVAILABLE"
+    assert model.calls == 1
+
+
+def test_gateway_does_not_retry_structured_output_setup_validation_error():
+    factory_calls = []
+
+    class Model:
+        def with_structured_output(self, _schema, method):
+            assert method == "json_mode"
+            raise ValueError("invalid structured output schema")
+
+    def factory():
+        factory_calls.append(1)
+        return Model()
+
+    with pytest.raises(ProviderUnavailable) as error:
+        ModelGateway(factory).invoke([], structured=object())
+
+    assert error.value.code == "AI_UNAVAILABLE"
+    assert factory_calls == [1]
+
+
 def test_circuit_breaker_opens_after_consecutive_upstream_failures():
     breaker = ProviderCircuitBreaker(failure_threshold=2)
 
