@@ -60,8 +60,8 @@ def test_production_accepts_missing_optional_rag_and_weather_keys():
         app_env="production",
         supabase_url="https://project.supabase.co",
         supabase_anon_key="anon",
-        supabase_service_key="service",
-        anon_session_signing_secret=valid_secret(),
+        supabase_service_key="your_supabase_service_key_here",
+        anon_session_signing_secret="your_anon_session_signing_secret_here",
     )
     assert settings.jina_api_key is None
     assert settings.amap_web_service_key is None
