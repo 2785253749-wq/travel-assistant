@@ -68,6 +68,92 @@ def test_rule_classifier_routes_weather_and_grounded_travel_questions(message, e
     assert RuleIntentClassifier().classify(message, has_trip=False).intent == expected
 
 
+def test_rule_classifier_routes_nearby_hotel_request_to_hotel_nearby():
+    assert (
+        RuleIntentClassifier()
+        .classify("帮我找厦门大学附近的酒店", has_trip=False)
+        .intent
+        == "hotel_nearby"
+    )
+
+
+def test_rule_classifier_routes_bare_nearby_hotel_expression_to_hotel_nearby():
+    assert (
+        RuleIntentClassifier()
+        .classify("鼓浪屿附近酒店", has_trip=False)
+        .intent
+        == "hotel_nearby"
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "厦门大学周边酒店",
+        "泉州站周围酒店",
+        "厦门大学附近的酒店",
+        "厦门大学周边住宿",
+        "泉州站附近住哪里",
+        "鼓浪屿附近有什么酒店",
+        "帮我查泉州站周围的酒店",
+        "推荐厦门大学附近住宿",
+    ],
+)
+def test_rule_classifier_routes_nearby_hotel_examples_to_hotel_nearby(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "hotel_nearby"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "找厦门的酒店",
+        "厦门大学在哪里",
+        "推荐厦门景点",
+        "厦门大学附近有什么好吃的",
+        "厦门大学附近有什么景点",
+        "我订的酒店附近有地铁吗",
+        "酒店附近有地铁吗",
+        "厦门酒店怎么样",
+        "介绍一下厦门大学附近的酒店行业",
+    ],
+)
+def test_rule_classifier_does_not_route_non_nearby_hotel_questions_to_hotel_nearby(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent != "hotel_nearby"
+
+
+@pytest.mark.parametrize("message", ["我订的酒店附近有地铁吗", "酒店附近有公交吗"])
+def test_rule_classifier_routes_unsupported_hotel_transit_questions_to_unsupported(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "unsupported"
+
+
+def test_rule_classifier_keeps_hotel_restaurant_question_out_of_hotel_nearby():
+    assert (
+        RuleIntentClassifier()
+        .classify("酒店附近有什么餐厅", has_trip=False)
+        .intent
+        != "hotel_nearby"
+    )
+
+
+def test_rule_classifier_keeps_train_queries_distinct_from_nearby_hotel_queries():
+    classifier = RuleIntentClassifier()
+
+    assert classifier.classify("查泉州到厦门的动车", has_trip=False).intent == "train_query"
+    assert classifier.classify("泉州站附近住哪里", has_trip=False).intent == "hotel_nearby"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "厦门有哪些酒店文化特色",
+        "旅游住宿一般怎么选择",
+        "厦门旅游需要注意什么",
+    ],
+)
+def test_rule_classifier_keeps_general_hotel_knowledge_on_knowledge_route(message):
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "travel_knowledge"
+
+
 @pytest.mark.parametrize(
     "message",
     [

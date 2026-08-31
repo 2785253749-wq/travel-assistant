@@ -36,6 +36,7 @@ _KNOWN_INTENTS = {
     "travel_knowledge",
     "weather_query",
     "train_query",
+    "hotel_nearby",
     "smalltalk",
     "unsupported",
 }
