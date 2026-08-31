@@ -27,6 +27,7 @@ _TRANSPORT_BUFFER_MINUTES = 90
 _DAY_LAST_MINUTE = 23 * 60 + 59
 _ACTIVITY_GAP_MINUTES = 30
 _EARLY_RETURN_CUTOFF_MINUTES = 6 * 60
+_SCHEMA_ERROR_LIMIT = 10
 _CHINA_TIMEZONE = timezone(timedelta(hours=8))
 
 
@@ -35,6 +36,7 @@ class PlanIssue:
     code: str
     field: str
     message: str
+    repair_hints: tuple[str, ...] = ()
 
 
 class PlanValidationError(Exception):
@@ -141,7 +143,7 @@ class Planner:
             if itinerary is not None and not issues:
                 return itinerary
             if attempt == 0:
-                repair_codes = sorted({issue.code for issue in issues})
+                repair_codes = _repair_codes(issues)
                 continue
             raise PlanValidationError(issues)
         raise AssertionError("unreachable")
@@ -150,13 +152,28 @@ class Planner:
     def _validate_candidate(
         candidate: object, profile: TravelProfile, provider_results: object, now: Callable[[], datetime],
     ) -> tuple[Itinerary | None, list[PlanIssue]]:
+        candidate_type = type(candidate).__name__
         try:
             payload = json.loads(candidate) if isinstance(candidate, str) else candidate
+            candidate_type = type(payload).__name__
             if not isinstance(payload, Mapping):
-                raise ValueError("itinerary response must be a JSON object")
+                return None, [_schema_issue(
+                    candidate_type,
+                    candidate_kind="invalid_container",
+                )]
             itinerary = Itinerary.model_validate(_canonicalize_display_payload(payload, profile))
-        except (ValidationError, ValueError, TypeError, json.JSONDecodeError):
-            return None, [PlanIssue("SCHEMA_INVALID", "itinerary", "The itinerary must match the public JSON schema.")]
+        except json.JSONDecodeError:
+            return None, [_schema_issue(
+                candidate_type,
+                candidate_kind="json_decode_error",
+            )]
+        except ValidationError as exc:
+            return None, [_schema_issue(candidate_type, validation_error=exc)]
+        except (ValueError, TypeError):
+            return None, [_schema_issue(
+                candidate_type,
+                candidate_kind="schema_validation_error",
+            )]
         registry, source_issues = _trusted_registry(_iter_sources(provider_results), now)
         if source_issues:
             return None, source_issues
@@ -166,6 +183,64 @@ class Planner:
             return None, claim_issues
         normalized = _apply_transport_context(normalized, provider_results, profile)
         return normalized, validate_itinerary(normalized, profile, _iter_sources(provider_results), now)
+
+
+def _repair_codes(issues: Iterable[PlanIssue]) -> list[str]:
+    issues = list(issues)
+    hints = [hint for issue in issues for hint in issue.repair_hints]
+    if hints:
+        return hints[:_SCHEMA_ERROR_LIMIT]
+    return sorted({issue.code for issue in issues})
+
+
+def _schema_issue(
+    candidate_type: str,
+    *,
+    candidate_kind: str | None = None,
+    validation_error: ValidationError | None = None,
+) -> PlanIssue:
+    locations: list[str] = []
+    error_types: list[str] = []
+    hints: list[str] = []
+    if validation_error is not None:
+        for error in validation_error.errors()[:_SCHEMA_ERROR_LIMIT]:
+            location = _safe_schema_location(error.get("loc"))
+            error_type = _safe_schema_error_type(error.get("type"))
+            locations.append(location)
+            error_types.append(error_type)
+            hints.append(f"SCHEMA_INVALID:{location}:{error_type}")
+
+    fields: dict[str, object] = {
+        "candidate_type": candidate_type,
+        "schema_error_count": len(hints),
+        "schema_error_locations": ",".join(locations) or None,
+        "schema_error_types": ",".join(error_types) or None,
+    }
+    if candidate_kind is not None:
+        fields["candidate_kind"] = candidate_kind
+    logging.getLogger("app.planner").warning(
+        "planner schema validation failed",
+        extra=operational_context(**fields),
+    )
+    return PlanIssue(
+        "SCHEMA_INVALID",
+        "itinerary",
+        "The itinerary must match the public JSON schema.",
+        repair_hints=tuple(hints),
+    )
+
+
+def _safe_schema_location(location: object) -> str:
+    if not isinstance(location, (tuple, list)):
+        return "itinerary"
+    parts = [str(part) for part in location if isinstance(part, (str, int))]
+    return ".".join(parts) or "itinerary"
+
+
+def _safe_schema_error_type(error_type: object) -> str:
+    if isinstance(error_type, str) and re.fullmatch(r"[a-z0-9_]+", error_type):
+        return error_type
+    return "unknown"
 
 
 def _profile_dates(profile: TravelProfile) -> tuple[date | None, date | None]:
@@ -558,6 +633,9 @@ def _canonicalize_display_payload(payload: Mapping[object, object], profile: Tra
         day = dict(raw_day)
         for slot in _ACTIVITY_SLOTS:
             raw_activity = raw_day.get(slot)
+            if raw_activity is None:
+                day.pop(slot, None)
+                continue
             if not isinstance(raw_activity, Mapping):
                 raise ValueError("each itinerary activity must be a JSON object")
             activity = dict(raw_activity)
