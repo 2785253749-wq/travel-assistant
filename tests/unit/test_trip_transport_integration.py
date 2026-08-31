@@ -461,6 +461,52 @@ def test_real_train_activity_uses_train_times_and_is_not_started_at_buffer_time(
     assert planned.days[0].morning.notes == []
 
 
+def test_early_return_does_not_time_travel_or_use_outbound_activity_semantics() -> None:
+    return_option = _option(
+        option_id="G3091-return",
+        train_no="G3091",
+        departure_station="上海虹桥",
+        arrival_station="福州",
+        departure_at=datetime(2026, 10, 2, 6, 20, tzinfo=CHINA_TZ),
+        arrival_at=datetime(2026, 10, 2, 12, 1, tzinfo=CHINA_TZ),
+    )
+    context = _transport_context(return_option=return_option)
+    candidate = _safe_itinerary().model_dump(mode="json")
+    candidate["days"][1]["morning"].update(
+        {
+            "title": "游览豫园",
+            "start_time": "09:00",
+            "end_time": "12:00",
+        }
+    )
+    candidate["days"][1]["afternoon"].update(
+        {
+            "title": "抵达后当地活动",
+            "start_time": "13:00",
+            "end_time": "16:00",
+        }
+    )
+    candidate["days"][1]["evening"].update(
+        {
+            "title": "抵达福州，结束行程",
+            "start_time": "16:30",
+            "end_time": "18:00",
+        }
+    )
+
+    planned = Planner(lambda *_: candidate).plan(
+        _profile(end_date="2026-10-02"),
+        _provider_input(context),
+    )
+
+    return_day = planned.days[1]
+    activities = (return_day.morning, return_day.afternoon, return_day.evening)
+    assert all(activity.end_time <= "04:50" for activity in activities)
+    assert all("抵达福州" not in activity.title for activity in activities)
+    assert all("抵达后当地活动" not in activity.title for activity in activities)
+    assert any("站" in activity.title and "乘车" in activity.title for activity in activities)
+
+
 def test_buffered_activity_at_1401_is_rendered_as_afternoon_not_morning() -> None:
     context = _transport_context(outbound=_outbound())
     candidate = _safe_itinerary().model_dump(mode="json")

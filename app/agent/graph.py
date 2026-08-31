@@ -246,6 +246,12 @@ class RuleIntentClassifier:
             for term in ("作业", "裁员", "写代码", "编程", "homework", "write my")
         ):
             return IntentResult(intent="unsupported", confidence=1.0)
+        # A complete trip request owns routing even when it includes a rail
+        # preference such as “高铁二等座”.  Keep this deliberately narrower
+        # than the generic planning-context check so date-only train lookups
+        # still reach the train-query branch below.
+        if self._has_explicit_trip_planning_signal(normalized):
+            return IntentResult(intent="plan_trip", confidence=1.0)
         if any(
             term in normalized
             for term in ("火车", "高铁", "动车", "列车", "车次", "火车票", "高铁票", "动车票", "二等座", "一等座", "商务座", "余票", "有票吗", "有哪些车", "的车", "查车", "最快的车", "最便宜的车")
@@ -289,6 +295,13 @@ class RuleIntentClassifier:
             or cls._PLAN_TRAVELERS.search(message) is not None
             or cls._PLAN_BUDGET.search(message) is not None
             or cls._PLAN_CONTEXT.search(message) is not None
+        )
+
+    @classmethod
+    def _has_explicit_trip_planning_signal(cls, message: str) -> bool:
+        return cls._has_planning_context(message) and (
+            any(term in message for term in ("规划", "行程", "预算", "出游", "旅行", "游玩", "玩", "日游", "安排", "生成"))
+            or re.search(r"\d+\s*天", message) is not None
         )
 
 

@@ -26,6 +26,7 @@ _ACTIVITY_SLOTS = ("morning", "afternoon", "evening")
 _TRANSPORT_BUFFER_MINUTES = 90
 _DAY_LAST_MINUTE = 23 * 60 + 59
 _ACTIVITY_GAP_MINUTES = 30
+_EARLY_RETURN_CUTOFF_MINUTES = 6 * 60
 _CHINA_TIMEZONE = timezone(timedelta(hours=8))
 
 
@@ -211,7 +212,9 @@ def _apply_transport_context(
         departure = context.return_option.departure_at.astimezone(_CHINA_TIMEZONE)
         day = _day_for_date(days, departure.date())
         if day is not None:
-            _constrain_day(day, end_minute=_minutes(departure.time()) - _TRANSPORT_BUFFER_MINUTES)
+            cutoff = _minutes(departure.time()) - _TRANSPORT_BUFFER_MINUTES
+            _constrain_day(day, end_minute=cutoff)
+            _normalize_early_return_day(day, context.return_option, cutoff)
     _remove_misplaced_train_activity_titles(days, context)
     _override_transport_budget(payload, context, profile)
     return Itinerary.model_validate(payload)
@@ -282,6 +285,25 @@ def _format_minutes(value: int) -> str:
     return f"{value // 60:02d}:{value % 60:02d}"
 
 
+def _normalize_early_return_day(
+    day: dict[str, Any], return_option: Any, cutoff: int,
+) -> None:
+    """Replace impossible early-return sightseeing with departure preparation."""
+    if cutoff > _EARLY_RETURN_CUTOFF_MINUTES:
+        return
+    station = str(getattr(return_option, "departure_station", "车站")).strip() or "车站"
+    station_label = station if station.endswith("站") else f"{station}站"
+    titles = (
+        f"前往{station_label}并办理乘车准备",
+        "办理返程乘车手续",
+        "候车，准备乘坐返程列车",
+    )
+    for slot, title in zip(_ACTIVITY_SLOTS, titles, strict=True):
+        activity = day[slot]
+        activity["title"] = title
+        activity["notes"] = []
+
+
 def _remove_misplaced_train_activity_titles(
     days: list[dict[str, Any]], context: TripTransportContext,
 ) -> None:
@@ -293,6 +315,11 @@ def _remove_misplaced_train_activity_titles(
     if not train_numbers:
         return
     for day in days:
+        # Early return days are rewritten into deterministic departure
+        # preparation below.  Do not run outbound-arrival cleanup afterward,
+        # or it would turn “候车” back into “抵达后当地活动”.
+        if context.return_option is not None and _is_early_return_day(day, context.return_option):
+            continue
         for slot in _ACTIVITY_SLOTS:
             activity = day[slot]
             if not _is_local_activity_window(day, activity, context):
@@ -304,6 +331,18 @@ def _remove_misplaced_train_activity_titles(
                 note for note in activity.get("notes", [])
                 if not _describes_train(str(note), train_numbers)
             ]
+
+
+def _is_early_return_day(day: dict[str, Any], return_option: Any) -> bool:
+    try:
+        activity_date = date.fromisoformat(str(day["date"]))
+        departure = return_option.departure_at.astimezone(_CHINA_TIMEZONE)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+    return (
+        activity_date == departure.date()
+        and _minutes(departure.time()) - _TRANSPORT_BUFFER_MINUTES <= _EARLY_RETURN_CUTOFF_MINUTES
+    )
 
 
 def _is_local_activity_window(
