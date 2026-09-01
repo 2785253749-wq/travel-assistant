@@ -10,6 +10,7 @@ from app.rag_v2.models import (
     ChunkType,
     DestinationLevel,
     EmbeddingInput,
+    ManifestInput,
 )
 
 
@@ -19,9 +20,11 @@ __all__ = [
     "canonical_embedding_text",
     "content_hash",
     "embedding_input_hash",
+    "manifest_hash",
     "metadata_hash",
     "normalize_content",
     "normalize_text",
+    "canonical_manifest_json",
 ]
 
 
@@ -126,3 +129,60 @@ def canonical_embedding_text(value: EmbeddingInput) -> str:
 
 def embedding_input_hash(value: EmbeddingInput) -> str:
     return _sha256_hex(canonical_embedding_text(value))
+
+
+_CHUNK_TYPE_ORDER = {
+    ChunkType.overview: 0,
+    ChunkType.highlights: 1,
+    ChunkType.transport: 2,
+    ChunkType.visit_advice: 3,
+    ChunkType.seasonal: 4,
+}
+
+
+def canonical_manifest_json(manifest: ManifestInput) -> str:
+    profile = manifest.embedding_profile
+    attractions = []
+    for attraction in sorted(manifest.attractions, key=lambda item: str(item.attraction_id)):
+        chunks = []
+        for chunk in sorted(
+            attraction.chunks,
+            key=lambda item: (_CHUNK_TYPE_ORDER[item.chunk_type], item.ordinal, item.chunk_key),
+        ):
+            chunks.append(
+                {
+                    "chunk_key": chunk.chunk_key,
+                    "chunk_type": chunk.chunk_type.value,
+                    "ordinal": chunk.ordinal,
+                    "content_hash": chunk.content_hash,
+                    "embedding_input_hash": chunk.embedding_input_hash,
+                    "source_label": chunk.source_label,
+                    "source_url": chunk.source_url,
+                    "source_type": chunk.source_type,
+                    "reviewed_on": chunk.reviewed_on.isoformat(),
+                }
+            )
+        attractions.append(
+            {
+                "attraction_id": str(attraction.attraction_id),
+                "metadata_hash": attraction.metadata_hash,
+                "chunks": chunks,
+            }
+        )
+
+    payload = {
+        "schema_version": manifest.schema_version,
+        "dataset_key": manifest.dataset_key,
+        "embedding_profile": {
+            "model": profile.model,
+            "task": profile.task.value,
+            "dimensions": profile.dimensions,
+            "input_schema_version": profile.input_schema_version,
+        },
+        "attractions": attractions,
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def manifest_hash(manifest: ManifestInput) -> str:
+    return _sha256_hex(canonical_manifest_json(manifest))

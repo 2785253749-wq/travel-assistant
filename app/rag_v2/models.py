@@ -83,6 +83,43 @@ class EmbeddingProfile(RagV2Schema):
     input_schema_version: str
 
 
+class ManifestChunk(RagV2Schema):
+    chunk_key: str
+    chunk_type: ChunkType
+    ordinal: int
+    content_hash: str
+    embedding_input_hash: str
+    source_label: str
+    source_url: str
+    source_type: str
+    reviewed_on: date
+
+
+class ManifestAttraction(RagV2Schema):
+    attraction_id: UUID
+    metadata_hash: str
+    chunks: tuple[ManifestChunk, ...]
+
+
+class ManifestInput(RagV2Schema):
+    schema_version: Literal["rag-v2-manifest-v1"]
+    dataset_key: str
+    embedding_profile: EmbeddingProfile
+    attractions: tuple[ManifestAttraction, ...]
+
+    @model_validator(mode="after")
+    def validate_document_embedding_profile(self) -> "ManifestInput":
+        profile = self.embedding_profile
+        if (
+            profile.model != "jina-embeddings-v3"
+            or profile.task is not EmbeddingTask.passage
+            or profile.dimensions != 1024
+            or profile.input_schema_version != "rag-v2-embedding-input-v1"
+        ):
+            raise ValueError("manifest requires the approved RAG V2 document embedding profile")
+        return self
+
+
 class SourceProvenance(RagV2Schema):
     source_type: str
     source_label: str
