@@ -68,6 +68,8 @@ question ── Jina query embedding ── metadata prefilter ── pgvector
 
 Stage 10B 不把 V2 接入 `app/composition.py`，不增加 runtime flag，不增加 Planner 分支。V2 interface 的存在不等于线上 consumer 的存在。
 
+SemanticChunk 的严格领域模型归属为 `app/rag_v2/models.py`；SemanticChunker、chunk_key_for 和所有 semantic splitting 行为归属为 `app/rag_v2/chunking.py`。
+
 ## 3. Corpus lifecycle
 
 一个 `dataset_key` 代表一条可独立激活的 corpus 轨道，例如未来可使用 `travel-attractions-cn`；`version_label` 代表该轨道中的一个不可变资料版本；`manifest_hash` 代表该版本输入 manifest 的 canonical SHA-256。
@@ -323,9 +325,83 @@ status
 
 每个 attraction 的 section 顺序固定为：`overview`、`highlights`、`transport`、`visit_advice`、`seasonal`。每个 chunk 只包含一个 attraction 的一个 semantic section，绝不把两个景点写入同一 chunk。
 
-section 先按标题、段落和语义边界组成。Stage 10B 的 4000 Unicode code-point chunk budget 是 `UNVALIDATED DEFAULT`，只是 engineering safety budget，不是已经由真实 retrieval quality 证明的最佳 chunk size。只有 section 超过该 budget 时才 split；split 顺序为段落边界、中文/英文句末标点、分句边界、空白边界。单个过长句子才允许在最近的 clause/whitespace 边界继续切分。不得把简单的 `1200 chars hard slice` 作为主 chunking 方法，也不得用它作为无条件 fallback。Stage 10C 的 frozen corpus + real Jina + real pgvector E2E 可以依据 measured retrieval quality 调整该 budget；Stage 10B 不引入 token-aware dependency 或复杂 tokenizer。
+`SemanticChunk` 是 `app/rag_v2/models.py` 中的严格领域模型，字段顺序和类型固定为：
 
-每个 chunk 的 provenance 必须同时有实际来源页面的 `source_label`、`source_url`、`source_type`、`reviewed_on`。一个 chunk 只有一个明确来源；复杂来源图谱留待真实需求出现后再设计。
+```python
+chunk_key: str
+attraction_id: UUID
+chunk_type: ChunkType
+ordinal: int
+normalized_content: str
+content_hash: str
+embedding_input_hash: str
+source_label: str
+source_url: str
+source_type: str
+reviewed_on: date
+```
+
+它继承 `RagV2Schema`，禁止 extra fields，且 `ordinal >= 0`。Task 6 不新增 hash 格式校验；模型不包含 vector、database ID、runtime status 或 runtime timestamps。
+
+Task 6 的 public chunking API 固定为：
+
+```python
+CHUNK_KEY_SCHEMA_VERSION = "rag-v2-chunk-key-v1"
+DEFAULT_CHUNK_BUDGET = 4000
+
+def chunk_key_for(
+    *,
+    attraction_id: UUID,
+    chunk_type: ChunkType,
+    ordinal: int,
+) -> str: ...
+
+class SemanticChunker:
+    def __init__(self, max_code_points: int = DEFAULT_CHUNK_BUDGET) -> None: ...
+
+    def chunk(
+        self,
+        section: SemanticSection,
+        *,
+        attraction: AttractionVersionMetadata,
+    ) -> tuple[SemanticChunk, ...]: ...
+```
+
+`SemanticChunker(max_code_points=...)` 要求 `max_code_points > 0`；非正值必须抛出 `ValueError`。`chunk_key_for(...)` 要求 `ordinal >= 0`；负 ordinal 必须抛出 `ValueError`，不得生成负 ordinal 的 logical key。
+
+`DEFAULT_CHUNK_BUDGET = 4000` 使用 Unicode code points，即 Python `len(text)`；它是 `UNVALIDATED DEFAULT`，不是经过 retrieval 实验验证的最优值。Task 6 不使用 token、UTF-8 byte count 或 tokenizer。
+
+原始 section 的处理顺序固定为：先将 CRLF/CR 统一为 LF，同时保留 paragraph 信息；再以一个或多个 blank 或 whitespace-only line（`line.strip() == ""`）识别 paragraph boundary。随后计算 `whole_normalized = normalize_content(line_ending_canonicalized_text)`。如果 `whole_normalized == ""`，必须抛出 `ValueError`；不能返回空 tuple 或发出空 chunk。不能在 paragraph detection 前丢弃 blank lines，因为既有 `normalize_content` 会删除 blank lines。
+
+如果 `len(whole_normalized) <= max_code_points`，必须只发出一个 ordinal 为 `0` 的 semantic chunk，即使原始 section 包含多个 paragraph。只有当 `len(whole_normalized) > max_code_points` 时才激活 semantic splitting hierarchy；此时如果存在多个 paragraph，paragraph 是第一层 split，且每个 paragraph 使用既有 `normalize_content` 独立处理。
+
+对于任一 oversized semantic unit，递归规则固定为：使用最高层剩余 boundary；若该层产生两个或更多 meaningful children，则分别独立处理；不超预算的 child 直接成为 final fragment；超预算的 child 下降到下一层；不得返回上一层重新合并或 repack children。分割优先级固定为 paragraph → sentence → clause → whitespace，且任何层级都不得 greedy repack 或为填满预算而合并相邻 siblings。
+
+对于 oversized paragraph，sentence terminators 仅为 `。！？.!?`，terminator 保留在左侧 segment。对于 oversized sentence，clause delimiters 仅为 `，,；;：:`，delimiter 保留在左侧 segment。若 clause 仍超预算，才使用 whitespace boundary；whitespace 是 boundary 而非 substantive content，不得单独发出 whitespace chunk。每个 whitespace child 使用既有 `normalize_content` canonicalize；如果 resulting non-whitespace atomic token 仍超预算，必须抛出 `ValueError`。不得使用 character hard slice、1200-character fallback、truncate、silent oversized output 或 tokenizer。
+
+空白 canonicalization 后没有 substantive content、section 与 attraction 的 `attraction_id` 不一致，或 atomic unit 超过 budget 且没有合法 paragraph/sentence/clause/whitespace boundary，均必须抛出 `ValueError`。不得返回空 chunk 或静默丢弃内容。
+
+每个最终 unit 按确定性 emission order 从 ordinal `0` 开始递增；ordinal 是同一 `attraction_id + chunk_type` 内的 logical storage position。每个 child 必须保留 section 的 `attraction_id`、`chunk_type`、`source_label`、`source_url`、`source_type` 和 `reviewed_on`，并且输出 chunk 满足 `len(normalized_content) <= max_code_points`。
+
+每个最终 unit 必须使用现有 canonical APIs 填充 hash：`content_hash(normalized_content)`，以及用 attraction 的 canonical name/destination 和 section 的 chunk type/content 调用 `build_embedding_input(...)` 后得到的 `embedding_input_hash(embedding_input)`。如果同一 logical position 的 `normalized_content` 改变，则 `chunk_key` 不变、`content_hash` 改变，且 canonical embedding input 改变时 `embedding_input_hash` 改变。如果只改变 `source_label`、`source_url`、`source_type` 或 `reviewed_on`，则 `chunk_key`、`content_hash` 和 `embedding_input_hash` 都不变；provenance 只在后续 manifest identity/manifest_hash 中参与。不得创建第二套 embedding-input serialization，不调用 Jina，不创建 vector。
+
+内容保留的通用测试不比较 raw source bytes。令 `strip_ws` 只移除 Unicode whitespace，则必须满足：
+
+```python
+strip_ws(normalize_content(section.content)) == strip_ws(
+    "".join(chunk.normalized_content for chunk in chunks)
+)
+```
+
+该 invariant 必须检测 substantive text、punctuation 的丢失或重复；boundary whitespace 的 canonicalization 可以不同。boundary-specific tests 还必须断言 ordered child contents，包括 sentence terminator 和 clause delimiter 保留在左侧 child。
+
+`chunk_key` 固定格式为：
+
+```text
+rag-v2-chunk-key-v1|<attraction_id>|<chunk_type>|<ordinal>
+```
+
+UUID 使用标准小写字符串，ChunkType 使用 `.value`，ordinal 使用十进制字符串。chunk_key 只依赖 schema version、attraction_id、chunk_type 和 ordinal；不依赖 content、任何 hash、provenance、embedding profile 或 vector。它是 logical/storage identity，不是 vector reuse identity。Task 6 的 chunker 必须纯函数式、deterministic，不能 mutate 输入，也不能依赖时间、随机数或 process hash。
 
 ## 8. Incremental update decision table
 
