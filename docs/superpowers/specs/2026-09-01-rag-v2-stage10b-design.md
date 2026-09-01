@@ -72,11 +72,19 @@ Stage 10B 不把 V2 接入 `app/composition.py`，不增加 runtime flag，不�
 
 一个 `dataset_key` 代表一条可独立激活的 corpus 轨道，例如未来可使用 `travel-attractions-cn`；`version_label` 代表该轨道中的一个不可变资料版本；`manifest_hash` 代表该版本输入 manifest 的 canonical SHA-256。
 
+### 3.1 `manifest_hash` canonicalization
+
+manifest hash schema version 固定为 `rag-v2-manifest-v1`。Manifest canonical representation 是一个 UTF-8 JSON object，包含显式 schema version、stable attraction ordering、stable version metadata ordering 和 stable chunk ordering。canonicalization 先执行字符串 normalization，再对 aliases 和 tags 去重、normalize、排序；attractions 按 stable `attraction_id` ascending 排序；每个 attraction 的 version metadata 使用固定 key order；chunks 按 `chunk_type` 的固定 section order、ordinal ascending、chunk_key ascending 的确定顺序排列。
+
+JSON 使用 `ensure_ascii = false`、compact separators、固定 key order 和 UTF-8 encoding，最后计算 SHA-256 并保存 lowercase hex。YAML object 的偶然 key 顺序、source file path、filesystem enumeration order、database result order、import timestamp 和 staging `corpus_version_id` 都不得影响 manifest_hash。相同逻辑 corpus 即使输入文件遍历顺序不同，也必须产生相同 manifest_hash。
+
 导入顺序固定为：创建 `staging` 版本 → 写入并验证 attraction versions/chunks → 完成 hash/profile/来源检查 → 将失败版本标记为 `failed` 或执行原子激活。任何校验失败都不得部分激活。
 
 同一个 `dataset_key` 同时最多有一个 `active` corpus。数据库使用 partial unique index `unique (dataset_key) where status = 'active'` 保证该不变量；应用层不得用先查后写替代约束。
 
 激活锁定同一 `dataset_key` 的状态行，在一个数据库事务内完成：当前 `active` → `superseded`，目标 `staging` → `active`，设置 `activated_at` 和 `superseded_at`。任一更新、校验或约束失败，整个 transaction rollback；不得出现新旧都 active 或两者都被错误标记的中间提交。
+
+Importer/application validation 只是 early-failure optimization；其结果不是 activation RPC 信任的 persisted proof，也不写入可能 stale 的 `validated = true` 布尔值。最终 validation trust boundary 是 activation RPC 本身。RPC 必须在执行状态切换的同一 transaction 内重新验证 database invariants：`p_dataset_key` 与目标 corpus 一致；目标当前为 `staging` 且不是 `active`、`superseded` 或 `failed`；corpus 至少有合法的 version rows/chunks；included attraction versions 满足 required metadata；所有 active retrieval 所需 chunks 为 `embedded` 且 `embedding is not null`；embedding model、task、dimensions 和 profile 合法；required provenance 非空；FK 和 corpus ownership 合法；不存在任何无法进入 active retrieval 的非法 row state。只有全部检查通过，才允许执行 active → superseded、staging → active。
 
 `superseded` corpus 保留完整数据，供审计、回滚诊断和增量比较使用，但 active retrieval 永远不读取 superseded 或 failed corpus。
 
@@ -112,6 +120,8 @@ V2 只采用以下四张业务表。所有 ID/code 都按本节明确的类型�
 - `created_at timestamptz not null`
 - `retired_at timestamptz null`
 - `merged_into_attraction_id uuid null references rag_attractions(attraction_id)`
+
+数据库一致性约束固定为：`lifecycle_status = 'active'` 时 `retired_at is null` 且 `merged_into_attraction_id is null`；`lifecycle_status = 'retired'` 时 `retired_at is not null` 且 `merged_into_attraction_id is null`；`lifecycle_status = 'merged'` 时 `merged_into_attraction_id is not null`。数据库还必须禁止 `merged_into_attraction_id = attraction_id`，因此 entity 不能 self-merge。复杂 merge cycle 不要求由单个 SQL CHECK 完全解决；identity/registry service 在 merge command 中至少验证 target != source、target 不是已知 source descendant、target entity 存在。Stage 10B 不增加 graph subsystem。
 
 该表禁止保存 `canonical_name`、`aliases`、destination、category、tags、coordinates、content、source、content_hash。稳定 ID 由显式 entity registry/allocation 产生，不能简单由当前景点名称 hash 产生。
 
@@ -198,6 +208,8 @@ V2 不定义 `city_code` 作为唯一概念，统一使用：
 
 所有 code 都是 string，保留前导零的能力。当前 `destination_level` 只实现真实需要的行政层级：`province`、`prefecture_city`、`autonomous_prefecture`、`county_city`。Stage 10B 不加入没有真实 consumer 的 `tourism_region`。Stage 10B 不改变当前产品对“大理”的范围语义；大理仍按 `532900` 的 autonomous prefecture 语义建模，真实城市覆盖在 Stage 10C 校准。
 
+`destination_code` 和 `province_code` 都必须通过当前 administrative destination validation contract：类型为 string，不转换为 integer，并匹配 `^\d{6}$`。当前 mapping 中的行政 code 都是六位数字；不满足该 regex 的输入拒绝进入 domain model、version row 或 manifest。若 `latitude` 非空，必须满足 `-90 <= latitude <= 90`；若 `longitude` 非空，必须满足 `-180 <= longitude <= 180`。这些是行政 code 和坐标的 domain validation，不引入 `tourism_region`。
+
 destination filter 的匹配是 exact code + exact level；province filter 是 exact province code；两者同时存在时使用 AND。没有 destination filter 时不得把 province corpus 自动解释成某个城市 corpus。
 
 ## 6. Stable attraction and chunk identity
@@ -220,7 +232,7 @@ rag-v2-chunk-key-v1|<attraction_id>|<chunk_type>|<ordinal>
 
 字段顺序、ASCII `|` separator、UTF-8 encoding 固定。它基于 chunk-key schema version、stable attraction ID、chunk type 和 ordinal；正文变化不能改变 logical identity。
 
-ordinal 在 `attraction_id + chunk_type` 范围内独立从 `0` 编号：`overview:0`、`overview:1`、`transport:0` 可以同时存在。transport 增减不能重新编号 overview。若 section 中间删除一个 chunk，后续 ordinal 保持其原 logical identity；重新组织 section 是新的 chunk-key schema 或显式内容重排变更，而不是隐式全量重编号。
+ordinal 表示某个 `attraction_id + chunk_type` 在当前 canonical chunking algorithm 下的 deterministic fragment position：`overview:0`、`overview:1`、`transport:0` 可以同时存在，不同 chunk_type 独立编号。若某个 section 前面的 fragment 新增、删除或语义重排，导致后续 fragment ordinal 改变，则这些后续 fragment 视为 logical chunk replacement：旧 chunk 从新 corpus removed，新 chunk created，再根据 embedding_input_hash 和 embedding profile 决定是否重新 embedding。Stage 10B 不引入 persistent fragment ID；这是接受的 YAGNI trade-off。
 
 ### 6.3 `content_hash`
 
@@ -273,7 +285,7 @@ status
 
 每个 attraction 的 section 顺序固定为：`overview`、`highlights`、`transport`、`visit_advice`、`seasonal`。每个 chunk 只包含一个 attraction 的一个 semantic section，绝不把两个景点写入同一 chunk。
 
-section 先按标题、段落和语义边界组成。只有 section 超过 Stage 10B 固定的 4000 Unicode code-point chunk budget 时才 split；split 顺序为段落边界、中文/英文句末标点、分句边界、空白边界。单个过长句子才允许在最近的 clause/whitespace 边界继续切分。不得把简单的 `1200 chars hard slice` 作为主 chunking 方法，也不得用它作为无条件 fallback。
+section 先按标题、段落和语义边界组成。Stage 10B 的 4000 Unicode code-point chunk budget 是 `UNVALIDATED DEFAULT`，只是 engineering safety budget，不是已经由真实 retrieval quality 证明的最佳 chunk size。只有 section 超过该 budget 时才 split；split 顺序为段落边界、中文/英文句末标点、分句边界、空白边界。单个过长句子才允许在最近的 clause/whitespace 边界继续切分。不得把简单的 `1200 chars hard slice` 作为主 chunking 方法，也不得用它作为无条件 fallback。Stage 10C 的 frozen corpus + real Jina + real pgvector E2E 可以依据 measured retrieval quality 调整该 budget；Stage 10B 不引入 token-aware dependency 或复杂 tokenizer。
 
 每个 chunk 的 provenance 必须同时有实际来源页面的 `source_label`、`source_url`、`source_type`、`reviewed_on`。一个 chunk 只有一个明确来源；复杂来源图谱留待真实需求出现后再设计。
 
@@ -336,7 +348,9 @@ question
 
 这三个值必须标记为 `UNVALIDATED DEFAULT`。它们不是生产质量结论，Stage 10C 的 frozen corpus + frozen queries + real Jina + real pgvector E2E 后才可校准。
 
-候选排序先按 cosine score descending，再按 `attraction_id` ascending、`chunk_key` ascending 做 deterministic tie-break。threshold 过滤 score `< 0.70` 的候选。content hash dedup 每个 normalized content 只保留最高分一条。attraction diversity 以最高分顺序选择，默认同一 attraction 只贡献一个 final evidence chunk；若候选不足，再按分数顺序补足而不跨 active corpus。
+score contract 固定为 pgvector cosine distance：数据库计算 `embedding <=> p_query_embedding`，RPC 对外返回 `score = 1 - (embedding <=> p_query_embedding)`。因此 higher score 表示 more similar；SQL RPC 和 Python retrieval service 必须使用同一 score semantic。threshold 保留规则为 `score >= threshold`，初始规则是 `score >= 0.70`。score 的排序方向固定为 `score DESC`，随后按 `attraction_id ASC`、`chunk_key ASC` 做 deterministic tie-break。
+
+候选按上述 score contract 排序。content hash dedup 每个 normalized content 只保留最高分一条。attraction diversity 以最高分顺序选择，默认同一 attraction 只贡献一个 final evidence chunk；若候选不足，再按分数顺序补足而不跨 active corpus。
 
 destination filter、province filter、attraction filter 都在 vector distance 前作为 metadata prefilter；过滤条件同时存在时使用 AND。查询只允许命中 `status = 'active'` 的 corpus、`included` attraction version 和 `embedded` chunk。没有 active corpus、没有足够分数、embedding 失败或 RPC 失败都返回 safe empty/refusal result，不回退到旧 V2 混合检索。
 
@@ -388,6 +402,8 @@ activate_rag_v2_corpus(
 ```
 
 函数必须锁定该 dataset 的 corpus lifecycle rows，确认目标是 `staging`、manifest/rows/profile 校验已完成，然后在单事务内执行 old active → superseded、new staging → active，并设置对应 timestamps。函数失败抛出错误并 rollback 全部变更。只有 service_role 可 execute。
+
+其中“manifest/rows/profile 校验已完成”不是读取 importer 写入的 persisted proof。activation RPC 必须在同一 transaction 内重新执行第 3 节列出的 database invariants，包括 dataset ownership、staging-only 状态、合法 version rows/chunks、included metadata、embedded 非空 vectors、合法 embedding profile、完整 provenance、FK ownership 和 active retrieval 可用状态；全部通过后才可切换状态。
 
 ### 11.3 Legacy compatibility
 
@@ -469,7 +485,7 @@ Stage 10C acceptance targets 固定为：
 
 ### Stage 10B-1：Domain models, identity, hashing, semantic chunking
 
-实现严格 models、stable identity registry seam、三类 canonical hash、五种 semantic sections、sentence-aware split 和增量 decision table 的纯逻辑。为每个 interface 添加 deterministic unit coverage；不接线上 consumer。
+实现严格 models、stable identity registry seam、三类 canonical hash、manifest canonicalization、六位行政 code/coordinate validation、五种 semantic sections、sentence-aware split 和增量 decision table 的纯逻辑。为每个 interface 添加 deterministic unit coverage；不接线上 consumer。
 
 ### Stage 10B-2：SQL schema, RPC, repository
 
@@ -495,8 +511,13 @@ Stage 10C acceptance targets 固定为：
 
 - 未解析 placeholder：0。
 - 四表的 primary/unique identity 已固定；`rag_corpus_versions` 为 `corpus_version_id` 主键并以 `(dataset_key, version_label)` 唯一，`rag_attraction_versions` 为 `(corpus_version_id, attraction_id)` 主键，`rag_attraction_chunks` 为 `(corpus_version_id, chunk_key)` 主键并有 section ordinal 唯一约束。
-- lifecycle 已固定：corpus 缺失不触发 retired；retired 和 merged 只能由显式 lifecycle 操作产生；merge 必须写 `merged_into_attraction_id`。
+- lifecycle 已固定：corpus 缺失不触发 retired；retired 和 merged 只能由显式 lifecycle 操作产生；merge 必须写 `merged_into_attraction_id`，且 active/retired/merged 的 timestamp、target 和 self-merge constraints 已明确。
 - V2 destination identity 只使用 `destination_code + destination_level + destination_name`，全部 code 为 string；没有将省级 corpus 当作城市 corpus 的隐式 fallback。
+- destination/province code 的 `^\d{6}$` validation 和 latitude/longitude bounds 已明确。
+- activation RPC 是最终 validation trust boundary；importer validation 不被视为 persisted proof，RPC 在 transaction 内重新验证 database invariants。
+- `manifest_hash` 的 schema version、固定排序、canonical JSON、UTF-8 SHA-256 规则和不影响 hash 的输入已明确。
+- chunk ordinal 变化被明确视为 logical replacement；4000 code-point budget 已标记为 `UNVALIDATED DEFAULT`。
+- retrieval score 已固定为 `1 - (embedding <=> p_query_embedding)`，并统一 `score >= threshold` 规则和 tie-break。
 - 未实现无真实 consumer 的 `tourism_region`。
 - 离线测试、controlled real E2E、Render online smoke 的证据边界已分离；离线指标不代表线上质量。
 - Render manifest 声明与 Dashboard secret 配置已分离；`JINA_API_KEY` manifest change 明确推迟到 Stage 10B-4。
