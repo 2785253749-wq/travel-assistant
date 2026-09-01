@@ -62,7 +62,7 @@ question ── Jina query embedding ── metadata prefilter ── pgvector
 | `app/rag_v2/hashing.py` | content、embedding input、metadata 的 canonical serialization 和 SHA-256 | 无外部副作用 |
 | `app/rag_v2/chunking.py` | semantic section 组织和 sentence-aware split | 无外部副作用 |
 | `app/rag_v2/incremental.py` | 新旧 corpus 比较和 embedding reuse/recompute decision | 只接收已规范化模型 |
-| `app/rag_v2/repository.py` | staging、version row、chunk upsert、active retrieval、activation | Supabase service-role adapter |
+| `app/rag_v2/repository.py` | staging、version snapshot/chunk persistence、active retrieval candidate access、activation | Supabase service-role adapter |
 | 现有 `app/rag/embedding.py` 的兼容扩展 | Jina transport 的 query/passage task、profile 和响应校验 | `JinaEmbeddingTransport` |
 | `app/rag_v2/retrieval.py` | query embedding、RPC 调用、threshold、content dedup、attraction diversity | repository + embedding interfaces |
 
@@ -122,7 +122,7 @@ top-level 必须是 `schema_version = rag-v2-manifest-v1`、`dataset_key`、`emb
 
 同一个 `dataset_key` 同时最多有一个 `active` corpus。数据库使用 partial unique index `unique (dataset_key) where status = 'active'` 保证该不变量；应用层不得用先查后写替代约束。
 
-激活锁定同一 `dataset_key` 的状态行，在一个数据库事务内完成：当前 `active` → `superseded`，目标 `staging` → `active`，设置 `activated_at` 和 `superseded_at`。任一更新、校验或约束失败，整个 transaction rollback；不得出现新旧都 active 或两者都被错误标记的中间提交。
+激活使用 compare-and-swap：调用方可传入 expected active corpus ID；在锁定同一 `dataset_key` 的 lifecycle rows 后，RPC 必须先重读当前 active 并比较 expected，再在同一数据库事务内完成当前 `active` → `superseded`、目标 `staging` → `active`，设置 `activated_at` 和 `superseded_at`。expected 为 null 只允许 first activation（当前无 active）；不允许 last-writer-wins。任一更新、校验或约束失败，整个 transaction rollback；不得出现新旧都 active 或两者都被错误标记的中间提交。
 
 Importer/application validation 只是 early-failure optimization；其结果不是 activation RPC 信任的 persisted proof，也不写入可能 stale 的 `validated = true` 布尔值。最终 validation trust boundary 是 activation RPC 本身。RPC 必须在执行状态切换的同一 transaction 内重新验证 database invariants：`p_dataset_key` 与目标 corpus 一致；目标当前为 `staging` 且不是 `active`、`superseded` 或 `failed`；corpus 至少有合法的 version rows/chunks；included attraction versions 满足 required metadata；所有 active retrieval 所需 chunks 为 `embedded` 且 `embedding is not null`；embedding model、task、dimensions 和 profile 合法；required provenance 非空；FK 和 corpus ownership 合法；不存在任何无法进入 active retrieval 的非法 row state。只有全部检查通过，才允许执行 active → superseded、staging → active。
 
@@ -130,50 +130,48 @@ Importer/application validation 只是 early-failure optimization；其结果不
 
 ## 4. Database model
 
-V2 只采用以下四张业务表。所有 ID/code 都按本节明确的类型和 identity 使用，不能以未定义的等价键替代。
+V2 严格采用以下四张业务表：`rag_corpus_versions`、`rag_attractions`、`rag_attraction_versions`、`rag_attraction_chunks`。本 migration 只新增 V2 对象；`knowledge_chunks`、`match_knowledge_chunks` 及其既有 migration 保持不变，不允许通过 ALTER、替换或兼容层改写 legacy 行为。
 
 ### 4.1 `rag_corpus_versions`
 
-职责是 dataset version lifecycle。主键固定为 `corpus_version_id uuid primary key`，由数据库生成或由导入器预分配；它不是资料内容 hash。
+该表负责 dataset version lifecycle。`corpus_version_id` 由 application/importer 预先分配，数据库不提供 UUID default；它不是内容 hash。
 
-字段：
+精确字段为：
 
-- `corpus_version_id uuid primary key`
+- `corpus_version_id uuid not null`，primary key
 - `dataset_key text not null`
 - `version_label text not null`
 - `manifest_hash text not null`
-- `status text not null check (status in ('staging', 'active', 'superseded', 'failed'))`
-- `created_at timestamptz not null`
+- `status text not null default 'staging'`
+- `created_at timestamptz not null default now()`
 - `activated_at timestamptz null`
 - `superseded_at timestamptz null`
 
-唯一约束为 `(dataset_key, version_label)`；`manifest_hash` 使用 lowercase SHA-256 hex。`status = 'active'` 的每个 dataset_key 由 partial unique index 限制为最多一行。状态时间的语义固定为：staging 只有 `created_at`，active 必须有 `activated_at`，superseded 必须有 `superseded_at`，failed 不得被 active RPC 选中。
+`(dataset_key, version_label)` 唯一。另有 partial unique index：`(dataset_key) where status = 'active'`，因此每个 dataset 最多一个 active corpus。`status` 只允许 `staging`、`active`、`superseded`、`failed`；合法转移只有 `staging -> active`、`staging -> failed`、`active -> superseded`。`failed -> *`、`superseded -> *`、`active -> staging` 和 `active -> failed` 都必须拒绝。
+
+`corpus_version_id`、`dataset_key`、`version_label`、`manifest_hash`、`created_at` 在 insert 后 immutable；只有 lifecycle 字段可按上述合法转移更新。`manifest_hash` 必须匹配 `^[0-9a-f]{64}$`，但不要求全局唯一。
+
+Corpus 创建/重试的 idempotency 固定如下：不存在对应 `(dataset_key, version_label)` 时创建 staging；存在且 hash 相同并为 staging 时复用现有 ID；存在且 hash 相同并为 active/superseded 时返回现有 ID，支持已完成操作的重放；存在且 hash 相同但为 failed 时拒绝，必须使用新的 version label/new corpus version 重试；hash 不同一律 conflict/reject，绝不能在相同 version label 下静默替换内容。
 
 ### 4.2 `rag_attractions`
 
-该表只保存稳定业务 entity identity，不保存任何 corpus-specific metadata 或正文。
+该表只保存稳定业务 entity identity，不保存 corpus-specific metadata、正文或 provenance。精确字段为：
 
-字段：
-
-- `attraction_id uuid primary key`
-- `lifecycle_status text not null check (lifecycle_status in ('active', 'retired', 'merged'))`
-- `created_at timestamptz not null`
+- `attraction_id uuid not null`，primary key
+- `lifecycle_status text not null default 'active'`
+- `created_at timestamptz not null default now()`
 - `retired_at timestamptz null`
-- `merged_into_attraction_id uuid null references rag_attractions(attraction_id)`
+- `merged_into_attraction_id uuid null references rag_attractions(attraction_id) on delete restrict on update restrict`
 
-数据库一致性约束固定为：`lifecycle_status = 'active'` 时 `retired_at is null` 且 `merged_into_attraction_id is null`；`lifecycle_status = 'retired'` 时 `retired_at is not null` 且 `merged_into_attraction_id is null`；`lifecycle_status = 'merged'` 时 `merged_into_attraction_id is not null`。数据库还必须禁止 `merged_into_attraction_id = attraction_id`，因此 entity 不能 self-merge。复杂 merge cycle 不要求由单个 SQL CHECK 完全解决；identity/registry service 在 merge command 中至少验证 target != source、target 不是已知 source descendant、target entity 存在。Stage 10B 不增加 graph subsystem。
+一致性约束固定为：active 必须 `retired_at is null` 且 merge target 为 null；retired 必须 `retired_at is not null` 且 merge target 为 null；merged 必须有 merge target。self-merge 必须拒绝。正常 lifecycle 只允许 `active -> retired` 和 `active -> merged`，不允许隐式恢复 retired/merged。复杂 merge graph cycle 是 service-level known-descendant validation 的责任，不增加 recursive SQL graph subsystem。
 
-该表禁止保存 `canonical_name`、`aliases`、destination、category、tags、coordinates、content、source、content_hash。稳定 ID 由显式 entity registry/allocation 产生，不能简单由当前景点名称 hash 产生。
-
-景点改名只新增或更新其 versioned metadata，`attraction_id` 不变。景点 merge 将来源 entity 标记为 `merged`，写入 `merged_into_attraction_id` 指向保留 entity；目标 entity 保持自己的 stable ID。景点真正 retired 只能通过显式 lifecycle 操作写入 `retired` 和 `retired_at`。
-
-一个 attraction 从新 corpus 中消失，只表示它没有出现在该 `corpus_version_id` 的 version rows 中，不表示 `lifecycle_status = 'retired'`。corpus absence 与 entity lifecycle 永远分离。
+该表不含 `canonical_name`、aliases、destination、category、tags、coordinates、content、provenance、hashes。稳定 ID 来自显式 entity registry/allocation，不能由当前景点名称 hash 代替。改名只改变 versioned metadata；corpus 中缺少某 attraction 也不表示它 retired。
 
 ### 4.3 `rag_attraction_versions`
 
-该表保存某个 corpus 中某个 stable attraction 的完整 versioned metadata。
+该表保存某一 corpus 中某一 stable attraction 的 immutable metadata snapshot。主键和逻辑 identity 为 `(corpus_version_id, attraction_id)`，分别 foreign key 到 corpus 与 stable attraction，均使用 `on delete restrict on update restrict`。
 
-主键和唯一 identity 固定为 `(corpus_version_id, attraction_id)`，并分别引用 `rag_corpus_versions` 和 `rag_attractions`。字段为：
+精确字段为：
 
 - `corpus_version_id uuid not null`
 - `attraction_id uuid not null`
@@ -189,24 +187,24 @@ V2 只采用以下四张业务表。所有 ID/code 都按本节明确的类型�
 - `tags jsonb not null`
 - `latitude numeric null`
 - `longitude numeric null`
-- `status text not null check (status in ('included', 'suppressed'))`
+- `status text not null`
 - `metadata_hash text not null`
 
-只有 `status = 'included'` 且其 corpus 为 active 的 rows 可被 retrieval RPC 使用。`aliases` 和 `tags` 的存储顺序不具有语义；hash 时按第 7 节排序。`status = 'suppressed'` 仍属于该版本，可用于审核，但不产生检索候选。
+`status` 只允许 `included`、`suppressed`。`destination_code` 与 `province_code` 必须匹配 `^\d{6}$`；`destination_level` 只允许 `province`、`prefecture_city`、`autonomous_prefecture`、`county_city`；`metadata_hash` 必须匹配 `^[0-9a-f]{64}$`。只有 active corpus 中的 included rows 参与检索；suppressed rows 保留用于审核但不产生候选。这里不保存 provenance；provenance 只属于 chunk。
+
+不得依赖 SQL silent defaults 填充 canonical metadata；importer 必须显式提供 aliases、tags、status，即使值为空或看似默认值。snapshot 只能在 parent corpus 为 staging 时 INSERT；UPDATE 永远禁止；DELETE 仅在 parent corpus 为 staging 时允许。错误 metadata 必须在 staging 中 delete/reinsert，或放弃整个 corpus。corpus 一旦 active、superseded 或 failed，其所有 version rows immutable；数据库必须通过 trigger/equivalent enforcement，而不是仅依赖 repository convention。
 
 ### 4.4 `rag_attraction_chunks`
 
-一个 chunk 只能属于一个 attraction，并且必须属于同一 corpus 的 attraction version。通过复合 foreign key `(corpus_version_id, attraction_id)` 引用 `rag_attraction_versions(corpus_version_id, attraction_id)`，避免跨 corpus 归属。
+chunk 必须属于同一 corpus 的 attraction version。复合 foreign key `(corpus_version_id, attraction_id)` 引用 `rag_attraction_versions(corpus_version_id, attraction_id)`，使用 `on delete restrict on update restrict`。主键/逻辑 identity 为 `(corpus_version_id, chunk_key)`；另有 unique `(corpus_version_id, attraction_id, chunk_type, ordinal)`。
 
-主键和 logical storage identity 固定为 `(corpus_version_id, chunk_key)`。在此基础上增加唯一约束 `(corpus_version_id, attraction_id, chunk_type, ordinal)`，防止同一 section 的 ordinal 冲突。
-
-字段：
+精确字段为：
 
 - `corpus_version_id uuid not null`
 - `attraction_id uuid not null`
 - `chunk_key text not null`
-- `chunk_type text not null check (chunk_type in ('overview', 'highlights', 'transport', 'visit_advice', 'seasonal'))`
-- `ordinal integer not null check (ordinal >= 0)`
+- `chunk_type text not null`
+- `ordinal integer not null`
 - `content text not null`
 - `content_hash text not null`
 - `embedding_input_hash text not null`
@@ -216,12 +214,20 @@ V2 只采用以下四张业务表。所有 ID/code 都按本节明确的类型�
 - `source_type text not null`
 - `reviewed_on date not null`
 - `embedding_model text not null`
-- `embedding_task text not null check (embedding_task = 'retrieval.passage')`
-- `embedding_dimensions integer not null check (embedding_dimensions = 1024)`
+- `embedding_task text not null`
+- `embedding_dimensions integer not null`
 - `embedding vector(1024) null`
-- `status text not null check (status in ('pending', 'embedded', 'failed', 'excluded'))`
+- `status text not null`
+- `embedding_error_code text null`
+- `embedding_error_message text null`
 
-`status = 'embedded'` 必须同时有非空 embedding，`pending`/`failed`/`excluded` 不得进入 active retrieval。`source_url` 是实际内容来源页面，不能根据 `source_label` 猜省级根 URL。Stage 10B 不设计 multi-source graph；每个 chunk 保持一个明确 source label、URL、type 和 reviewed date。
+`chunk_type` 只允许 `overview`、`highlights`、`transport`、`visit_advice`、`seasonal`；`ordinal >= 0`；`content_hash` 与 `embedding_input_hash` 都必须匹配 lowercase `^[0-9a-f]{64}$`。固定 document profile 为 `embedding_model = 'jina-embeddings-v3'`、`embedding_task = 'retrieval.passage'`、`embedding_dimensions = 1024`、`embedding_input_schema_version = 'rag-v2-embedding-input-v1'`。不增加 generic row timestamps。
+
+状态只允许 `pending`、`embedded`、`failed`、`excluded`。pending 必须无 vector 且 error code/message 均为 null；embedded 必须有 vector 且 errors 均为 null；failed 必须无 vector、有非空 error code，error message 可为 null；excluded 必须无 vector 且 errors 均为 null。failed/excluded 保留在库中，二者都不可检索。错误字段只保存 concise diagnostic，不得保存完整 provider response、stack trace、secret 或 sensitive payload；10B-2 不增加 `retry_count`、`next_retry_at`、`provider_request_id`。
+
+所有 chunk identity/content/profile/provenance 字段在 staging 期间也 immutable：`corpus_version_id`、`attraction_id`、`chunk_key`、`chunk_type`、`ordinal`、`content`、`content_hash`、`embedding_input_hash`、`embedding_input_schema_version`、`source_label`、`source_url`、`source_type`、`reviewed_on`、`embedding_model`、`embedding_task`、`embedding_dimensions`。staging UPDATE 只允许 status、embedding、embedding_error_code、embedding_error_message，并且只能走合法状态转移：`pending -> embedded`、`pending -> failed`、`failed -> pending`；不允许 `failed -> embedded`、`embedded -> *`、`excluded -> *`。retry 是先清空 errors 将 failed 变为 pending，再由 Stage 10B-3 执行 provider，结果为 embedded 或 failed。单 chunk failure 不使 corpus failed；corpus failed 是 terminal。parent corpus active/superseded/failed 后，所有 chunk mutation 均禁止；DELETE 只在 parent staging 时允许。
+
+`source_url` 必须是实际内容来源页面，不能从 `source_label` 猜根 URL；每个 chunk 保持一个明确 source label、URL、type 和 reviewed date，不在 10B-2 建立 multi-source graph。
 
 ## 5. Destination identity
 
@@ -484,7 +490,7 @@ chunk row 永远保存 passage profile；query vector 是一次 retrieval 请求
 
 ## 10. Retrieval V2 contract
 
-逻辑流程固定为：
+完整 Retrieval V2 流程固定为：
 
 ```text
 question
@@ -499,7 +505,7 @@ question
   → final evidence chunks
 ```
 
-初始参数固定为：
+后续 retrieval service 的初始参数固定为：
 
 - `candidate_k = 40`
 - `final_k = 6`
@@ -507,21 +513,31 @@ question
 
 这三个值必须标记为 `UNVALIDATED DEFAULT`。它们不是生产质量结论，Stage 10C 的 frozen corpus + frozen queries + real Jina + real pgvector E2E 后才可校准。
 
-score contract 固定为 pgvector cosine distance：数据库计算 `embedding <=> p_query_embedding`，RPC 对外返回 `score = 1 - (embedding <=> p_query_embedding)`。因此 higher score 表示 more similar；SQL RPC 和 Python retrieval service 必须使用同一 score semantic。threshold 保留规则为 `score >= threshold`，初始规则是 `score >= 0.70`。score 的排序方向固定为 `score DESC`，随后按 `attraction_id ASC`、`chunk_key ASC` 做 deterministic tie-break。
+score contract 固定为 pgvector cosine distance：数据库计算 `embedding <=> p_query_embedding`，candidate RPC 对外返回 `score = 1 - (embedding <=> p_query_embedding)`。因此 higher score 表示 more similar；SQL RPC 和 Python retrieval service 必须使用同一 score semantic。threshold 保留规则为 `score >= threshold`，初始规则是 `score >= 0.70`。score 的排序方向固定为 `score DESC`，随后按 `attraction_id ASC`、`chunk_key ASC` 做 deterministic tie-break。
 
 候选按上述 score contract 排序。content hash dedup 每个 normalized content 只保留最高分一条。attraction diversity 以最高分顺序选择，默认同一 attraction 只贡献一个 final evidence chunk；若候选不足，再按分数顺序补足而不跨 active corpus。
 
-destination filter、province filter、attraction filter 都在 vector distance 前作为 metadata prefilter；过滤条件同时存在时使用 AND。查询只允许命中 `status = 'active'` 的 corpus、`included` attraction version 和 `embedded` chunk。没有 active corpus、没有足够分数、embedding 失败或 RPC 失败都返回 safe empty/refusal result，不回退到旧 V2 混合检索。
+database candidate RPC 负责 destination/province/attraction exact filters、active-only scope、candidate_k、cosine score 和 deterministic candidate order；它不负责 threshold、content_hash dedup、attraction diversity 或 final_k。后续 retrieval service 才执行这些 ranking/policy steps，并将没有 active corpus、没有足够分数、embedding/provider/RPC failure 转换为 safe empty/refusal result；不得回退到 legacy 混合检索。
 
 V2 不使用 LLM reranker。Planner grounding 不是本阶段的 consumer。
 
 ## 11. SQL, RLS and RPC contract
 
-四张 V2 业务表全部启用 RLS。对 `public`、`anon`、`authenticated` 撤销直接读取、插入、更新、删除权限；只有后端 `service_role` 通过受控 repository/RPC 使用这些表。RLS 不得被误解为允许匿名调用 retrieval RPC。
+四张 V2 业务表全部启用 RLS。对 `public`、`anon`、`authenticated` 撤销直接 select/insert/update/delete 权限；后端 persistence 只使用 `service_role`。不设计 owner-scoped end-user policies，也不允许 frontend client 直接访问 V2 表。精确 GRANT/REVOKE 语法属于 implementation-plan 细节，但安全结果是本节 contract。
 
-### 11.1 Retrieval RPC
+### 11.1 Database enforcement and staging semantics
 
-未来 SQL migration 固定提供以下受保护函数 interface：
+SQL CHECK 必须覆盖 enum-like statuses、destination levels、六位行政 code、lowercase 64-hex hashes、ordinal、固定 task/dimensions/input schema、vector/status/error consistency 和 attraction lifecycle。Postgres trigger 或等价机制必须执行 parent corpus status lookup、OLD 与 NEW immutable-field comparison、snapshot/chunk mutation guard 及 legal lifecycle transitions。不能只依赖 Python repository；service-role 直接写入也必须被 PostgreSQL 拒绝。
+
+具体 migration/constraint/index/trigger 的名称不是 architecture contract；只要满足本节语义，implementation plan 可以选择 deterministic naming。
+
+staging 允许 partial/incomplete：version rows 可以不完整，chunks 可以 pending/failed；staging 永远不进入 runtime retrieval，也不等价于 validated。application/importer 可以 early validate，但 activation RPC 是最终 DB trust boundary。放弃整版时使用 `staging -> failed` 并保留 rows 供诊断；failed corpus immutable 且不能 resurrect。Chunk failed 在 parent staging 期间可按 `failed -> pending` 恢复，单个 chunk failure 不会把 corpus 自动置 failed。
+
+Python Stage 10B-1 是唯一的 canonical manifest serialization/hash owner。Postgres 不实现第二套 serializer/hash；activation SQL 不重新计算 canonical manifest SHA-256。数据库只负责 relational/state/profile/hash-format/provenance invariants，避免 Python/SQL drift。
+
+### 11.2 Retrieval RPC interface
+
+未来 SQL migration 固定提供以下受保护函数 interface，返回列必须恰好如下，不添加 ranking-policy fields：
 
 ```text
 match_rag_v2_chunks(
@@ -547,26 +563,57 @@ match_rag_v2_chunks(
 )
 ```
 
-RPC 内部只解析 `dataset_key` 的唯一 active corpus，并在 vector distance 前 join version metadata 执行 filters。`p_candidate_k` 必须为正整数，调用方初始传 40，数据库设置安全上限 100；函数不读取 superseded、staging、failed corpus。匿名和 authenticated 没有 execute 权限；只有 service_role 可执行。
+RPC 负责解析 `dataset_key` 的 active corpus，要求恰好一个 active；0 个返回 empty rows，超过 1 个是 invariant violation/error，绝不能任意选一行。它必须在 vector distance 前 join `rag_attraction_versions`，只保留 included version、stable attraction active、embedded 且 embedding 非 null 的 chunks，并应用精确 metadata filters、cosine distance 和 deterministic order。staging、superseded、failed 不可搜索。RPC 不负责 destination/name resolution、Jina query embedding、threshold、dedup、diversity、final_k、evidence formatting 或 Planner。
 
-### 11.2 Activation RPC
+可选 filter 的 NULL 表示不筛选；非 NULL 时对 `destination_code`、`destination_level`、`province_code`、`attraction_id` 做 exact equality。无 fuzzy、prefix、alias、case folding、inference 或 contradiction repair；冲突的 exact filters 返回 zero。`p_candidate_k = 40` 是 `UNVALIDATED DEFAULT`；安全范围为 `1 <= p_candidate_k <= 200`，超出必须 reject，不得 clamp。
 
-未来 SQL migration 固定提供：
+score 固定为 `1 - (embedding <=> p_query_embedding)`，返回 real；排序固定为 score DESC、`attraction_id ASC`、`chunk_key ASC`。10B-2 不做 SQL threshold、content_hash dedup、attraction diversity 或 final_k。该函数为 `SECURITY INVOKER`、read-only、无 state mutation；只有 service_role 有 execute 权限。
+
+### 11.3 Activation RPC and CAS
+
+未来 SQL migration 固定提供以下函数 interface：
 
 ```text
 activate_rag_v2_corpus(
   p_dataset_key text,
-  p_corpus_version_id uuid
+  p_corpus_version_id uuid,
+  p_expected_active_corpus_version_id uuid default null
 ) -> void
 ```
 
-函数必须锁定该 dataset 的 corpus lifecycle rows，确认目标是 `staging`、manifest/rows/profile 校验已完成，然后在单事务内执行 old active → superseded、new staging → active，并设置对应 timestamps。函数失败抛出错误并 rollback 全部变更。只有 service_role 可 execute。
+`p_expected_active_corpus_version_id is null` 时，只允许当前没有 active corpus 的 first activation；非 NULL 时，当前 active 必须恰好等于该 UUID，否则 conflict/raise。不得 last-writer-wins。
 
-其中“manifest/rows/profile 校验已完成”不是读取 importer 写入的 persisted proof。activation RPC 必须在同一 transaction 内重新执行第 3 节列出的 database invariants，包括 dataset ownership、staging-only 状态、合法 version rows/chunks、included metadata、embedded 非空 vectors、合法 embedding profile、完整 provenance、FK ownership 和 active retrieval 可用状态；全部通过后才可切换状态。
+activation 在同一 transaction 内执行：锁定 dataset lifecycle rows，解析当前 active，比较 expected，验证目标属于 dataset 且为 staging，执行最终 invariant gate，然后 current active -> superseded、target staging -> active，设置 `activated_at`/`superseded_at` 并 commit。任一步失败都 rollback。partial unique active index 是最终并发保护。
 
-### 11.3 Legacy compatibility
+最终 invariant gate 必须要求：目标 dataset ownership 正确；至少一个 included attraction version；每个 included version 至少一个 embedded chunk；required chunk 不得 pending/failed（excluded 可存在且不阻塞）；每个 embedded chunk vector 非空；embedding profile 恰为 jina-embeddings-v3、retrieval.passage、1024、rag-v2-embedding-input-v1；hash 为 lowercase 64 hex；provenance 满足 `btrim(source_label) <> ''` 且 source_url/source_type 非空、reviewed_on 非 null；不做 SQL URL parser 或 URL canonicalization；destination/admin code/domain checks 有效；每个 included version 的 stable attraction lifecycle 为 active；FK、unique、check 均有效。此 gate 不要求 SQL 重算 manifest hash，也不要求 expected attraction/chunk counts。
 
-Stage 10B 不修改 `knowledge_chunks`、`match_knowledge_chunks` 或其既有 migration/RLS/grants。旧表继续服务旧 production retrieval；V2 新表和新 RPC 不向旧接口写数据，也不从旧向量建立 V2 evidence。
+activation 是幂等的：target 已经是 current active 时成功 no-op，支持 network retry；target 为 superseded/failed、dataset 不匹配或 terminal state resurrect 时拒绝。activation RPC 为 `SECURITY DEFINER`，固定 `SET search_path = public`，仅 service_role 有 execute 权限；不信任 caller 提交的 DB state/profile/hash，必须在 transaction 内重读并验证。
+
+### 11.4 Retrieval storage, indexes and pgvector
+
+destination fields 只存于 `rag_attraction_versions`，不在 chunks denormalize；retrieval 必须先完成 metadata join/filter 再计算 vector distance。规划的 B-tree indexes 为 `(corpus_version_id, destination_code, destination_level)`、`(corpus_version_id, province_code)`；已有 `(corpus_version_id, attraction_id)` key 支持 attraction lookup，不因猜测另建 attraction index，除非后续 query-plan evidence 证明需要。
+
+V2 embedding 固定 `vector(1024)`，使用 `vector_cosine_ops`，默认 HNSW；不得复制 legacy IVFFlat tuning。HNSW 参数未 benchmark-validated，初始使用 defaults。vector index 只包含 `embedding is not null and status = 'embedded'` 的 searchable vectors。若 pgvector/Postgres 对 partial predicate 存在兼容性问题，implementation plan 必须显式暴露该问题，不得静默改变 retrieval semantics。可另加 `(corpus_version_id, status)` helper B-tree；不能建立跨 corpus table 的 active-status partial vector index，因为 active status 在另一张表。
+
+### 11.5 Thin Python repository boundary
+
+Stage 10B-2 只引入 persistence-focused `RagV2Repository`，不拥有 Jina、chunking、hashing、incremental decision、import orchestration 或 Planner。logical methods 为：
+
+- corpus：`create_corpus_version`、`get_corpus_version`、`mark_corpus_failed`
+- stable attraction：`get_attraction`、`insert_attraction`、`update_attraction_lifecycle`
+- version snapshot：`insert_attraction_versions`
+- chunks：`insert_chunks`、`mark_chunk_embedded`、`mark_chunk_embedding_failed`、`reset_chunk_embedding_for_retry`
+- DB-controlled：`activate_corpus`、`match_chunks`
+
+implementation plan 再定义 exact signatures/types，但不得借此扩大边界；不提供 generic public `execute_sql`、table accessor 或 raw client。
+
+Direct persistence 负责 create/read corpus、mark failed、read/create stable attraction、受 guard 保护的 lifecycle mutation、insert versions、insert chunks 和 embedding lifecycle updates。activation 与 vector candidate retrieval 只能通过 RPC，activation 不得在 Python 中拆成多个 updates 重实现。
+
+staging persistence 不要求 giant transaction，batch writes 可以 incremental commit；activation 的 lifecycle switch、CAS comparison 和 final validation 必须由 activation RPC 在 atomic transaction 中拥有。
+
+### 11.6 Legacy compatibility
+
+Stage 10B 不修改 `knowledge_chunks`、`match_knowledge_chunks`、migration 008 或 legacy app/rag models、repository、embedding/service、`app/composition.py`、`KnowledgeAnswerService`、`/api/chat`。旧表继续服务旧 production retrieval；V2 新表和新 RPC 不向旧接口写数据，也不从 legacy vectors 建立 V2 evidence。V2 是 additive-only，不能进行 Planner/runtime cutover。
 
 ## 12. Stage 10B runtime boundary
 
@@ -648,7 +695,7 @@ Stage 10C acceptance targets 固定为：
 
 ### Stage 10B-2：SQL schema, RPC, repository
 
-新增四表 migration、constraints、indexes、RLS/grants、retrieval RPC、activation RPC 和 service-role repository adapter；保留旧 `knowledge_chunks`/`match_knowledge_chunks` 不变。覆盖 staging、failed、activation rollback、active-only retrieval 和 legacy isolation。
+新增四表 migration、constraints/triggers、indexes/pgvector、RLS/grants、CAS activation RPC、candidate retrieval RPC 和 thin service-role `RagV2Repository`；覆盖 staging/failed、snapshot/chunk mutation guards、activation rollback、active-only retrieval、security 和 legacy isolation。只建立 persistence boundary，不实现 Jina/provider execution、query embedding、ranking policy、import orchestration 或 Planner/runtime wiring。
 
 ### Stage 10B-3：Jina query/passage and Retrieval V2
 
@@ -668,17 +715,18 @@ Stage 10C acceptance targets 固定为：
 
 ## 17. Final self-review
 
-- 未解析 placeholder：0。
-- 四表的 primary/unique identity 已固定；`rag_corpus_versions` 为 `corpus_version_id` 主键并以 `(dataset_key, version_label)` 唯一，`rag_attraction_versions` 为 `(corpus_version_id, attraction_id)` 主键，`rag_attraction_chunks` 为 `(corpus_version_id, chunk_key)` 主键并有 section ordinal 唯一约束。
-- lifecycle 已固定：corpus 缺失不触发 retired；retired 和 merged 只能由显式 lifecycle 操作产生；merge 必须写 `merged_into_attraction_id`，且 active/retired/merged 的 timestamp、target 和 self-merge constraints 已明确。
-- V2 destination identity 只使用 `destination_code + destination_level + destination_name`，全部 code 为 string；没有将省级 corpus 当作城市 corpus 的隐式 fallback。
-- destination/province code 的 `^\d{6}$` validation 和 latitude/longitude bounds 已明确。
-- activation RPC 是最终 validation trust boundary；importer validation 不被视为 persisted proof，RPC 在 transaction 内重新验证 database invariants。
-- `manifest_hash` 的 schema version、固定排序、canonical JSON、UTF-8 SHA-256 规则和不影响 hash 的输入已明确。
-- manifest canonical object 已固定为 `schema_version`、`dataset_key`、`embedding_profile`、`attractions` 四个 top-level keys，且 vectors/status/timestamps/staging IDs 被排除。
-- chunk ordinal 变化被明确视为 logical replacement；vector reuse 只由 embedding identity tuple 决定，4000 code-point budget 已标记为 `UNVALIDATED DEFAULT`。
-- retrieval score 已固定为 `1 - (embedding <=> p_query_embedding)`，并统一 `score >= threshold` 规则和 tie-break。
-- 未实现无真实 consumer 的 `tourism_region`。
-- 离线测试、controlled real E2E、Render online smoke 的证据边界已分离；离线指标不代表线上质量。
-- Render manifest 声明与 Dashboard secret 配置已分离；`JINA_API_KEY` manifest change 明确推迟到 Stage 10B-4。
-- Stage 10B 没有第四城市、全国导入、Planner 用户行为变更或现有 production retrieval 改动。
+本次 Stage 10B-2 database contract self-review 结果：Critical = None；Important = None；Minor = None。以下事项已逐项核对：
+
+- 无 placeholder/TBD；Task 1–7 已批准的 manifest identity、models、hashing、semantic chunking、incremental tuple、legacy boundary 未被改写。
+- 四张表、primary/unique identity、foreign key `restrict` 行为和所有固定字段/default/profile 已明确；稳定 attraction 表没有混入 versioned metadata、正文、provenance 或 hashes。
+- corpus lifecycle、idempotency、staging partial/incomplete 语义、failed/superseded terminal 语义及 version/chunk mutation guards 已明确；没有 upsert 或静默覆盖语义。
+- attraction lifecycle、self-merge、retired/merged 不隐式恢复和 service-level known-descendant cycle validation 已明确。
+- destination/admin code、destination levels、hash formats、chunk status/vector/error consistency、provenance 和固定 passage profile 的 DB enforcement 已明确。
+- activation 只有带 expected-active CAS 的三参数 interface；同 transaction 执行 lock、compare、final invariant gate、switch 和 timestamps；activation no-op/reject/rollback 语义已明确，没有 last-writer-wins。
+- activation 不读取 importer 的 `validated = true` proof，不由 SQL 重算 canonical manifest hash；Python Stage 10B-1 仍是唯一 canonical manifest serializer/hash owner。
+- retrieval RPC 的 exact signature/return columns、active corpus 解析、metadata join/filter、candidate_k `40` UNVALIDATED DEFAULT、安全范围 `1..200`、cosine score 和 tie-break 已明确；threshold/dedup/diversity/final_k 保留给后续 service stage。
+- destination 只在 version snapshot 存储；V2 使用 `vector(1024)`、`vector_cosine_ops`、默认 HNSW；没有 legacy IVFFlat tuning 或跨表 active partial vector index 假设。
+- `RagV2Repository` 是 thin persistence boundary；直接写入与 RPC 边界、batch/activation transaction 边界、RLS/service-role security 已明确，没有 generic raw SQL surface。
+- 没有重新引入旧的两参数 activation、last-writer-wins、SQL manifest recomputation、destination denormalization、all-RPC staging writes、mutable snapshot upsert、failed corpus resurrection、failed chunk terminal-forever 或 excluded deletion 规则。
+- 没有将 Jina、Planner、runtime cutover、第四城市、全国导入、Render Dashboard inspection 或 online smoke 提前到 10B-2；Stage 10B-3/4/5/10C boundaries 保持分离。
+- 离线 deterministic tests、controlled real E2E 和 Render online smoke 的证据边界保持分离；离线指标不代表线上质量。
