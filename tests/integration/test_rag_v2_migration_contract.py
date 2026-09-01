@@ -296,3 +296,196 @@ def test_new_migration_preserves_legacy_rag_isolation() -> None:
     )
     for operation in forbidden_operations:
         assert operation not in sql
+
+
+def _trigger_function_bodies(sql: str) -> list[str]:
+    return [
+        match.group("body")
+        for match in re.finditer(
+            r"create\s+(?:or\s+replace\s+)?function\s+public\.[a-z0-9_]+\s*"
+            r"\([^)]*\)\s*returns\s+trigger\b[\s\S]*?"
+            r"as\s+\$(?P<tag>[a-z0-9_]*)\$(?P<body>.*?)\$(?P=tag)\$\s*;",
+            sql,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    ]
+
+
+def _trigger_bodies_text(sql: str) -> str:
+    return " ".join(_trigger_function_bodies(sql))
+
+
+def _assert_trigger_attached(
+    sql: str,
+    table_name: str,
+    event: str,
+) -> None:
+    assert re.search(
+        rf"create\s+trigger\s+[a-z0-9_]+\s+"
+        rf"(?:before|after)\s+[\s\S]*?\b{event}\b[\s\S]*?"
+        rf"on\s+public\.{re.escape(table_name)}\b",
+        sql,
+        flags=re.IGNORECASE,
+    ), f"missing {event} trigger attachment for {table_name}"
+
+
+def _assert_transition(body: str, old: str, new: str) -> None:
+    assert re.search(
+        rf"old\.(?:status|lifecycle_status)\s*=\s*'{old}'[\s\S]*?"
+        rf"new\.(?:status|lifecycle_status)\s*=\s*'{new}'",
+        body,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_task2_corpus_mutation_guard_trigger_function_contract_is_declared() -> None:
+    sql = _migration_sql()
+    bodies = _trigger_function_bodies(sql)
+
+    assert bodies, (
+        "expected RAG V2 corpus mutation guard trigger/function contract"
+    )
+    _assert_trigger_attached(sql, "rag_corpus_versions", "update")
+
+
+def test_task2_corpus_identity_and_lifecycle_guards_use_old_new_and_reject_invalid_changes() -> None:
+    sql = _migration_sql()
+    body = _trigger_bodies_text(sql)
+
+    _assert_trigger_attached(sql, "rag_corpus_versions", "update")
+    assert "old" in body and "new" in body
+    for field in (
+        "corpus_version_id",
+        "dataset_key",
+        "version_label",
+        "manifest_hash",
+        "created_at",
+    ):
+        assert field in body
+    for lifecycle_field in ("status", "activated_at", "superseded_at"):
+        assert lifecycle_field in body
+    assert re.search(r"raise\s+exception", body, flags=re.IGNORECASE)
+    assert re.search(
+        r"old\.status\s*<>\s*new\.status|new\.status\s*<>\s*old\.status",
+        body,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_task2_corpus_lifecycle_guard_preserves_only_approved_transitions() -> None:
+    body = _trigger_bodies_text(_migration_sql())
+
+    for old, new in (
+        ("staging", "active"),
+        ("staging", "failed"),
+        ("active", "superseded"),
+    ):
+        _assert_transition(body, old, new)
+
+    assert re.search(
+        r"status\s+not\s+in|not\s*\([\s\S]*status|status\s*<>\s*",
+        body,
+        flags=re.IGNORECASE,
+    )
+    for value in (
+        "active",
+        "staging",
+        "failed",
+        "superseded",
+    ):
+        assert f"'{value}'" in body
+
+
+def test_task2_stable_attraction_guard_protects_identity_and_lifecycle_direction() -> None:
+    sql = _migration_sql()
+    body = _trigger_bodies_text(sql)
+
+    _assert_trigger_attached(sql, "rag_attractions", "update")
+    for field in ("attraction_id", "created_at"):
+        assert field in body
+    assert "old" in body and "new" in body
+    for old, new in (("active", "retired"), ("active", "merged")):
+        _assert_transition(body, old, new)
+    for value in ("retired", "merged"):
+        assert f"'{value}'" in body
+    assert re.search(r"raise\s+exception", body, flags=re.IGNORECASE)
+
+def test_task2_version_snapshot_guards_cover_staging_insert_update_and_delete() -> None:
+    sql = _migration_sql()
+    body = _trigger_bodies_text(sql)
+
+    for event in ("insert", "update", "delete"):
+        _assert_trigger_attached(sql, "rag_attraction_versions", event)
+    assert "rag_attraction_versions" in body
+    assert "rag_corpus_versions" in body
+    assert "status = 'staging'" in body
+    assert re.search(r"raise\s+exception", body, flags=re.IGNORECASE)
+    assert re.search(
+        r"update\s+always|always\s+reject|update[\s\S]*raise\s+exception",
+        body,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_task2_chunk_parent_guards_cover_staging_writes_and_terminal_parents() -> None:
+    sql = _migration_sql()
+    body = _trigger_bodies_text(sql)
+
+    for event in ("insert", "update", "delete"):
+        _assert_trigger_attached(sql, "rag_attraction_chunks", event)
+    assert "rag_attraction_chunks" in body
+    assert "rag_corpus_versions" in body
+    assert "status = 'staging'" in body
+    for value in ("active", "superseded", "failed"):
+        assert f"'{value}'" in body
+    assert re.search(r"raise\s+exception", body, flags=re.IGNORECASE)
+
+
+def test_task2_chunk_immutable_fields_are_old_new_guarded_with_narrow_mutable_surface() -> None:
+    body = _trigger_bodies_text(_migration_sql())
+
+    assert "old" in body and "new" in body
+    for field in (
+        "corpus_version_id",
+        "attraction_id",
+        "chunk_key",
+        "chunk_type",
+        "ordinal",
+        "content",
+        "content_hash",
+        "embedding_input_hash",
+        "embedding_input_schema_version",
+        "source_label",
+        "source_url",
+        "source_type",
+        "reviewed_on",
+        "embedding_model",
+        "embedding_task",
+        "embedding_dimensions",
+    ):
+        assert field in body
+    for field in (
+        "status",
+        "embedding",
+        "embedding_error_code",
+        "embedding_error_message",
+    ):
+        assert field in body
+    assert re.search(r"raise\s+exception", body, flags=re.IGNORECASE)
+
+
+def test_task2_chunk_transition_guard_preserves_retry_graph_and_clears_retry_errors() -> None:
+    body = _trigger_bodies_text(_migration_sql())
+
+    for old, new in (
+        ("pending", "embedded"),
+        ("pending", "failed"),
+        ("failed", "pending"),
+    ):
+        _assert_transition(body, old, new)
+    for value in ("pending", "embedded", "failed"):
+        assert f"'{value}'" in body
+    assert "embedding_error_code = null" in body
+    assert "embedding_error_message = null" in body
+    assert "rag v2 chunk embedding transition is invalid" in body
+    assert re.search(r"raise\s+exception", body, flags=re.IGNORECASE)

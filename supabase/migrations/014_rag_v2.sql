@@ -151,3 +151,219 @@ create table public.rag_attraction_chunks (
             and embedding_error_message is null)
     )
 );
+
+create function public.enforce_rag_v2_corpus_update()
+returns trigger
+language plpgsql
+as $$
+begin
+    if new.corpus_version_id is distinct from old.corpus_version_id
+       or new.dataset_key is distinct from old.dataset_key
+       or new.version_label is distinct from old.version_label
+       or new.manifest_hash is distinct from old.manifest_hash
+       or new.created_at is distinct from old.created_at then
+        raise exception 'RAG V2 corpus identity fields are immutable';
+    end if;
+
+    -- status, activated_at, and superseded_at are lifecycle-only fields.
+    if old.status <> new.status then
+        if old.status = 'staging' and new.status = 'active' then
+            return new;
+        elsif old.status = 'staging' and new.status = 'failed' then
+            return new;
+        elsif old.status = 'active' and new.status = 'superseded' then
+            return new;
+        end if;
+
+        raise exception 'RAG V2 corpus lifecycle transition is invalid';
+    end if;
+
+    return new;
+end;
+$$;
+
+create trigger rag_v2_corpus_update_guard
+before update on public.rag_corpus_versions
+for each row execute function public.enforce_rag_v2_corpus_update();
+
+create function public.enforce_rag_v2_attraction_update()
+returns trigger
+language plpgsql
+as $$
+begin
+    if new.attraction_id is distinct from old.attraction_id
+       or new.created_at is distinct from old.created_at then
+        raise exception 'RAG V2 attraction identity fields are immutable';
+    end if;
+
+    -- lifecycle_status, retired_at, and merged_into_attraction_id remain
+    -- the lifecycle mutation surface; Task 1 CHECKs own row shape.
+    if old.lifecycle_status = new.lifecycle_status then
+        return new;
+    elsif old.lifecycle_status = 'active'
+          and new.lifecycle_status = 'retired' then
+        return new;
+    elsif old.lifecycle_status = 'active'
+          and new.lifecycle_status = 'merged' then
+        return new;
+    end if;
+
+    raise exception 'RAG V2 attraction lifecycle transition is invalid';
+end;
+$$;
+
+create trigger rag_v2_attraction_update_guard
+before update on public.rag_attractions
+for each row execute function public.enforce_rag_v2_attraction_update();
+
+create function public.enforce_rag_v2_version_mutation()
+returns trigger
+language plpgsql
+as $$
+declare
+    parent_status text;
+begin
+    -- Mutation guard for public.rag_attraction_versions.
+    if tg_op = 'UPDATE' then
+        raise exception 'RAG V2 attraction version updates are forbidden';
+    end if;
+
+    if tg_op = 'DELETE' then
+        select status
+          into parent_status
+          from public.rag_corpus_versions
+         where corpus_version_id = old.corpus_version_id
+           and status = 'staging';
+    else
+        select status
+          into parent_status
+          from public.rag_corpus_versions
+         where corpus_version_id = new.corpus_version_id
+           and status = 'staging';
+    end if;
+
+    if parent_status is distinct from 'staging' then
+        raise exception 'RAG V2 attraction version mutation requires staging corpus';
+    end if;
+
+    if tg_op = 'DELETE' then
+        return old;
+    end if;
+    return new;
+end;
+$$;
+
+create trigger rag_v2_version_insert_guard
+before insert on public.rag_attraction_versions
+for each row execute function public.enforce_rag_v2_version_mutation();
+
+create trigger rag_v2_version_update_guard
+before update on public.rag_attraction_versions
+for each row execute function public.enforce_rag_v2_version_mutation();
+
+create trigger rag_v2_version_delete_guard
+before delete on public.rag_attraction_versions
+for each row execute function public.enforce_rag_v2_version_mutation();
+
+create function public.enforce_rag_v2_chunk_mutation()
+returns trigger
+language plpgsql
+as $$
+declare
+    parent_status text;
+begin
+    -- Mutation guard for public.rag_attraction_chunks.
+    if tg_op = 'INSERT' then
+        select status
+          into parent_status
+          from public.rag_corpus_versions
+         where corpus_version_id = new.corpus_version_id
+           and status = 'staging';
+
+        if parent_status is distinct from 'staging' then
+            if parent_status in ('active', 'superseded', 'failed') then
+                raise exception 'RAG V2 chunk insert is forbidden for terminal corpus';
+            end if;
+            raise exception 'RAG V2 chunk insert requires status = ''staging''';
+        end if;
+        return new;
+    elsif tg_op = 'DELETE' then
+        select status
+          into parent_status
+          from public.rag_corpus_versions
+         where corpus_version_id = old.corpus_version_id
+           and status = 'staging';
+
+        if parent_status is distinct from 'staging' then
+            if parent_status in ('active', 'superseded', 'failed') then
+                raise exception 'RAG V2 chunk delete is forbidden for terminal corpus';
+            end if;
+            raise exception 'RAG V2 chunk delete requires status = ''staging''';
+        end if;
+        return old;
+    end if;
+
+    select status
+      into parent_status
+      from public.rag_corpus_versions
+     where corpus_version_id = old.corpus_version_id
+       and status = 'staging';
+
+    if parent_status is distinct from 'staging' then
+        if parent_status in ('active', 'superseded', 'failed') then
+            raise exception 'RAG V2 chunk update is forbidden for terminal corpus';
+        end if;
+        raise exception 'RAG V2 chunk update requires status = ''staging''';
+    end if;
+
+    if new.corpus_version_id is distinct from old.corpus_version_id
+       or new.attraction_id is distinct from old.attraction_id
+       or new.chunk_key is distinct from old.chunk_key
+       or new.chunk_type is distinct from old.chunk_type
+       or new.ordinal is distinct from old.ordinal
+       or new.content is distinct from old.content
+       or new.content_hash is distinct from old.content_hash
+       or new.embedding_input_hash is distinct from old.embedding_input_hash
+       or new.embedding_input_schema_version is distinct from old.embedding_input_schema_version
+       or new.source_label is distinct from old.source_label
+       or new.source_url is distinct from old.source_url
+       or new.source_type is distinct from old.source_type
+       or new.reviewed_on is distinct from old.reviewed_on
+       or new.embedding_model is distinct from old.embedding_model
+       or new.embedding_task is distinct from old.embedding_task
+       or new.embedding_dimensions is distinct from old.embedding_dimensions then
+        raise exception 'RAG V2 chunk identity/content/profile fields are immutable';
+    end if;
+
+    if old.status = new.status then
+        return new;
+    elsif old.status = 'pending' and new.status = 'embedded' then
+        return new;
+    elsif old.status = 'pending' and new.status = 'failed' then
+        return new;
+    elsif old.status = 'failed' and new.status = 'pending' then
+        -- failed -> pending requires embedding_error_code = null and
+        -- embedding_error_message = null; Task 1 CHECKs enforce the row shape.
+        if new.embedding is not null
+           or new.embedding_error_code is not null
+           or new.embedding_error_message is not null then
+            raise exception 'RAG V2 chunk retry reset must clear embedding errors';
+        end if;
+        return new;
+    end if;
+
+    raise exception 'RAG V2 chunk embedding transition is invalid';
+end;
+$$;
+
+create trigger rag_v2_chunk_insert_guard
+before insert on public.rag_attraction_chunks
+for each row execute function public.enforce_rag_v2_chunk_mutation();
+
+create trigger rag_v2_chunk_update_guard
+before update on public.rag_attraction_chunks
+for each row execute function public.enforce_rag_v2_chunk_mutation();
+
+create trigger rag_v2_chunk_delete_guard
+before delete on public.rag_attraction_chunks
+for each row execute function public.enforce_rag_v2_chunk_mutation();
