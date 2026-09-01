@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, model_validator
@@ -53,6 +53,16 @@ class EmbeddingTask(str, Enum):
 
 
 AdministrativeCode = Annotated[StrictStr, Field(pattern=r"^\d{6}$")]
+
+
+class EmbeddingInput(RagV2Schema):
+    schema_version: Literal["rag-v2-embedding-input-v1"]
+    canonical_attraction_name: str
+    destination_name: str
+    destination_code: AdministrativeCode
+    destination_level: DestinationLevel
+    chunk_type: ChunkType
+    normalized_content: str
 
 
 class Destination(RagV2Schema):
