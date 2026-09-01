@@ -74,9 +74,47 @@ Stage 10B 不把 V2 接入 `app/composition.py`，不增加 runtime flag，不�
 
 ### 3.1 `manifest_hash` canonicalization
 
-manifest hash schema version 固定为 `rag-v2-manifest-v1`。Manifest canonical representation 是一个 UTF-8 JSON object，包含显式 schema version、stable attraction ordering、stable version metadata ordering 和 stable chunk ordering。canonicalization 先执行字符串 normalization，再对 aliases 和 tags 去重、normalize、排序；attractions 按 stable `attraction_id` ascending 排序；每个 attraction 的 version metadata 使用固定 key order；chunks 按 `chunk_type` 的固定 section order、ordinal ascending、chunk_key ascending 的确定顺序排列。
+manifest hash schema version 固定为 `rag-v2-manifest-v1`。最终 canonical logical object 固定为以下结构，key 顺序也固定为示例顺序：
 
-JSON 使用 `ensure_ascii = false`、compact separators、固定 key order 和 UTF-8 encoding，最后计算 SHA-256 并保存 lowercase hex。YAML object 的偶然 key 顺序、source file path、filesystem enumeration order、database result order、import timestamp 和 staging `corpus_version_id` 都不得影响 manifest_hash。相同逻辑 corpus 即使输入文件遍历顺序不同，也必须产生相同 manifest_hash。
+```text
+{
+  schema_version,
+  dataset_key,
+  embedding_profile: {
+    model,
+    task,
+    dimensions,
+    input_schema_version
+  },
+  attractions: [
+    {
+      attraction_id,
+      metadata_hash,
+      chunks: [
+        {
+          chunk_key,
+          chunk_type,
+          ordinal,
+          content_hash,
+          embedding_input_hash,
+          source_label,
+          source_url,
+          source_type,
+          reviewed_on
+        }
+      ]
+    }
+  ]
+}
+```
+
+top-level 必须是 `schema_version = rag-v2-manifest-v1`、`dataset_key`、`embedding_profile` 和 `attractions`。`embedding_profile` 固定进入 manifest identity，document corpus 的值为 `model = jina-embeddings-v3`、`task = retrieval.passage`、`dimensions = 1024`、`input_schema_version = rag-v2-embedding-input-v1`。相同资料使用不同 embedding profile 必须得到不同 manifest_hash。
+
+每个 attraction entry 只包含 `attraction_id`、`metadata_hash` 和 `chunks`，不重复展开全部 versioned metadata；attractions 按 `attraction_id ASC` 排序。每个 chunk entry 最终固定包含 `chunk_key`、`chunk_type`、`ordinal`、`content_hash`、`embedding_input_hash`、`source_label`、`source_url`、`source_type` 和 `reviewed_on`。chunks 按固定 semantic `chunk_type` 顺序、`ordinal ASC`、`chunk_key ASC` 排序。
+
+所有 manifest 字符串先执行既定 normalization；aliases/tags 的 deterministic sorting 已由 metadata_hash canonicalization 定义。JSON 使用 `ensure_ascii = false`、compact separators、固定 key order 和 UTF-8 encoding，最后计算 SHA-256 并保存 lowercase hex。
+
+以下内容绝不能进入 manifest hash：actual embedding vector、embedding execution status、`pending`/`embedded`/`failed`、`corpus_version_id`、`version_label`、created/activated/superseded timestamps、database-generated runtime IDs（stable `attraction_id` 除外）、import timestamp、source file path、filesystem order、Supabase row order 和 temporary staging information。相同逻辑 corpus + 相同 embedding profile，不论 YAML key order、file traversal order、DB result order、staging UUID 或 import timestamp，都必须得到相同 manifest_hash。
 
 导入顺序固定为：创建 `staging` 版本 → 写入并验证 attraction versions/chunks → 完成 hash/profile/来源检查 → 将失败版本标记为 `failed` 或执行原子激活。任何校验失败都不得部分激活。
 
@@ -291,7 +329,7 @@ section 先按标题、段落和语义边界组成。Stage 10B 的 4000 Unicode 
 
 ## 8. Incremental update decision table
 
-增量决策以 stable attraction identity 为第一匹配键，再比较以下 profile：metadata_hash、chunk_key、content_hash、embedding_input_hash、embedding model、embedding task、embedding dimensions、embedding input schema version。
+`chunk_key` 只决定 logical chunk identity 和 storage position；它不是 vector reuse identity。vector 是否可复用只由以下 embedding identity tuple 共同决定：`embedding_input_hash`、`embedding_model`、`embedding_task`、`embedding_dimensions`、`embedding_input_schema_version`。可复用旧 corpus 必须已经通过 validation，其旧 vector 必须合法、finite 且 dimensions 正确。增量决策仍以 stable attraction identity 作为常规匹配起点，但当 logical key 变化时，必须按该 embedding identity tuple 在已验证旧 corpus 中寻找可复用 vector。
 
 | 情形 | 比较结果 | 行为 | Jina |
 | --- | --- | --- | --- |
@@ -301,14 +339,15 @@ section 先按标题、段落和语义边界组成。Stage 10B 的 4000 Unicode 
 | embedding-relevant metadata change | canonical name、destination name/code/level 改变，导致 embedding_input_hash 改变 | 新 row 进入 pending，成功后写新 passage vector | 必须调用 |
 | content changed | normalized content 或 content_hash 改变 | 新 row 进入 pending，成功后写新 passage vector | 必须调用 |
 | embedding profile changed | model、task、dimensions 或 embedding input schema version 改变 | 所有受影响 chunks 视为 pending；不复用旧 profile vector | 必须调用 |
-| new chunk | 新的 chunk_key 没有旧匹配 | 写新 pending row | 必须调用 |
+| new chunk_key + reusable embedding identity | 新的 chunk_key 没有旧匹配，但已验证旧 corpus 存在完全相同的 embedding_input_hash、model、task、dimensions、input schema version，且旧 vector 合法、finite、维度正确 | 创建新 logical row，复用旧 vector，不要求旧 chunk_key 相同 | 禁止调用 |
+| new chunk_key + no reusable embedding identity | 新的 chunk_key 没有旧匹配，或没有完全匹配且合法的 embedding identity/profile | 写新 pending row | 必须调用 |
 | removed chunk | 旧 chunk_key 不在新 corpus | 新 corpus 不写该 chunk；旧 active version 保留为 superseded | 不调用 |
-| new attraction | registry 分配 stable ID，存在新 version/chunks | 写 stable entity、version、chunks | chunks 必须调用 |
+| new attraction | registry 分配 stable ID，存在新 version/chunks | 写 stable entity、version、chunks；每个 chunk 按 embedding identity reuse rule 判断 | 无可复用 identity 时调用 |
 | attraction absent from new corpus | stable entity 仍存在，但该 corpus 没有 version row | 只从当前 corpus 排除；不更新 lifecycle | 不调用 |
 | explicitly retired attraction | lifecycle command 明确 retired | 更新 stable entity 的 lifecycle 和 retired_at；新 corpus 排除 | 不因 retirement 调用 |
 | merged attraction | lifecycle command 明确 source → target | source 标记 merged 并写 merged_into_attraction_id；后续版本使用 target | 仅 target 的新/变更 chunks 调用 |
 
-增量复制只允许从已验证的相同 embedding profile 复制。任何 profile 或 embedding_input_hash 不一致都必须重新 embedding。新的 staging corpus 在全部必需 vectors 和校验完成前不能 active。
+增量复制只允许从已验证旧 corpus 中复制合法、finite、维度正确且 embedding identity tuple 完全相同的 vector；旧 `chunk_key` 不必相同。任何 embedding_input_hash、model、task、dimensions 或 input schema version 不一致都不能复用，必须重新 embedding。新的 staging corpus 在全部必需 vectors 和校验完成前不能 active。
 
 ## 9. Jina embedding contract
 
@@ -485,7 +524,7 @@ Stage 10C acceptance targets 固定为：
 
 ### Stage 10B-1：Domain models, identity, hashing, semantic chunking
 
-实现严格 models、stable identity registry seam、三类 canonical hash、manifest canonicalization、六位行政 code/coordinate validation、五种 semantic sections、sentence-aware split 和增量 decision table 的纯逻辑。为每个 interface 添加 deterministic unit coverage；不接线上 consumer。
+实现严格 models、stable identity registry seam、三类 canonical hash、manifest canonicalization、六位行政 code/coordinate validation、五种 semantic sections、sentence-aware split 和以 embedding identity tuple 为唯一 reuse 判定的增量 decision logic。为每个 interface 添加 deterministic unit coverage；不接线上 consumer。
 
 ### Stage 10B-2：SQL schema, RPC, repository
 
@@ -516,7 +555,8 @@ Stage 10C acceptance targets 固定为：
 - destination/province code 的 `^\d{6}$` validation 和 latitude/longitude bounds 已明确。
 - activation RPC 是最终 validation trust boundary；importer validation 不被视为 persisted proof，RPC 在 transaction 内重新验证 database invariants。
 - `manifest_hash` 的 schema version、固定排序、canonical JSON、UTF-8 SHA-256 规则和不影响 hash 的输入已明确。
-- chunk ordinal 变化被明确视为 logical replacement；4000 code-point budget 已标记为 `UNVALIDATED DEFAULT`。
+- manifest canonical object 已固定为 `schema_version`、`dataset_key`、`embedding_profile`、`attractions` 四个 top-level keys，且 vectors/status/timestamps/staging IDs 被排除。
+- chunk ordinal 变化被明确视为 logical replacement；vector reuse 只由 embedding identity tuple 决定，4000 code-point budget 已标记为 `UNVALIDATED DEFAULT`。
 - retrieval score 已固定为 `1 - (embedding <=> p_query_embedding)`，并统一 `score >= threshold` 规则和 tie-break。
 - 未实现无真实 consumer 的 `tourism_region`。
 - 离线测试、controlled real E2E、Render online smoke 的证据边界已分离；离线指标不代表线上质量。
