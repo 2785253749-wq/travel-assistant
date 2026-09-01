@@ -405,25 +405,69 @@ UUID 使用标准小写字符串，ChunkType 使用 `.value`，ordinal 使用十
 
 ## 8. Incremental update decision table
 
-`chunk_key` 只决定 logical chunk identity 和 storage position；它不是 vector reuse identity。vector 是否可复用只由以下 embedding identity tuple 共同决定：`embedding_input_hash`、`embedding_model`、`embedding_task`、`embedding_dimensions`、`embedding_input_schema_version`。可复用旧 corpus 必须已经通过 validation，其旧 vector 必须合法、finite 且 dimensions 正确。增量决策仍以 stable attraction identity 作为常规匹配起点，但当 logical key 变化时，必须按该 embedding identity tuple 在已验证旧 corpus 中寻找可复用 vector。
+Task 7 的纯 decision API 由以下逻辑类型和函数组成：
 
-| 情形 | 比较结果 | 行为 | Jina |
-| --- | --- | --- | --- |
-| unchanged | stable ID、chunk_key、content_hash、metadata/hash 和 embedding profile 全部相同 | 将旧 active/superseded row 的 vector/provenance 按新 corpus 写入，保持新版本 identity | 禁止调用 |
-| provenance-only change | source_url/source_label/source_type/reviewed_on 改变，但 embedding text 和 profile 不变 | 写新 version row；更新 provenance/hash 所需字段 | 禁止调用 |
-| metadata-only change | aliases、province、district、category、tags、coordinates 或 status 改变，且不进入 embedding text | 写新 metadata/version row，复用 vector | 禁止调用 |
-| embedding-relevant metadata change | canonical name、destination name/code/level 改变，导致 embedding_input_hash 改变 | 新 row 进入 pending，成功后写新 passage vector | 必须调用 |
-| content changed | normalized content 或 content_hash 改变 | 新 row 进入 pending，成功后写新 passage vector | 必须调用 |
-| embedding profile changed | model、task、dimensions 或 embedding input schema version 改变 | 所有受影响 chunks 视为 pending；不复用旧 profile vector | 必须调用 |
-| new chunk_key + reusable embedding identity | 新的 chunk_key 没有旧匹配，但已验证旧 corpus 存在完全相同的 embedding_input_hash、model、task、dimensions、input schema version，且旧 vector 合法、finite、维度正确 | 创建新 logical row，复用旧 vector，不要求旧 chunk_key 相同 | 禁止调用 |
-| new chunk_key + no reusable embedding identity | 新的 chunk_key 没有旧匹配，或没有完全匹配且合法的 embedding identity/profile | 写新 pending row | 必须调用 |
-| removed chunk | 旧 chunk_key 不在新 corpus | 新 corpus 不写该 chunk；旧 active version 保留为 superseded | 不调用 |
-| new attraction | registry 分配 stable ID，存在新 version/chunks | 写 stable entity、version、chunks；每个 chunk 按 embedding identity reuse rule 判断 | 无可复用 identity 时调用 |
-| attraction absent from new corpus | stable entity 仍存在，但该 corpus 没有 version row | 只从当前 corpus 排除；不更新 lifecycle | 不调用 |
-| explicitly retired attraction | lifecycle command 明确 retired | 更新 stable entity 的 lifecycle 和 retired_at；新 corpus 排除 | 不因 retirement 调用 |
-| merged attraction | lifecycle command 明确 source → target | source 标记 merged 并写 merged_into_attraction_id；后续版本使用 target | 仅 target 的新/变更 chunks 调用 |
+- `IncrementalSubject` 的值固定为 `present_chunk`、`removed_chunk`、`attraction_absent`、`explicitly_retired`、`merged_source`。
+- `IncrementalAction` 的值固定为 `reuse`、`embed`、`remove`、`exclude`、`no_action`。
+- `EmbeddingIdentity` 只包含 `embedding_input_hash`、`embedding_model`、`embedding_task`、`embedding_dimensions`、`embedding_input_schema_version` 五个字段。
+- `PreviousEmbedding` 包含 `chunk_key`、`identity`、`vector: tuple[float, ...] | None` 和 `validated_corpus: bool`。
+- `IncrementalCandidate` 包含 `subject`、`current_chunk_key`、`current_identity` 和 `previous_embeddings`。
+- `IncrementalDecisionResult` 只包含 `action`、`reason` 和 `reused_from_chunk_key`，不包含 vector、embedding 或 provider response。
+- `decide_incremental(candidate: IncrementalCandidate) -> IncrementalDecisionResult` 是纯函数。
 
-增量复制只允许从已验证旧 corpus 中复制合法、finite、维度正确且 embedding identity tuple 完全相同的 vector；旧 `chunk_key` 不必相同。任何 embedding_input_hash、model、task、dimensions 或 input schema version 不一致都不能复用，必须重新 embedding。新的 staging corpus 在全部必需 vectors 和校验完成前不能 active。
+`chunk_key` 只决定 logical chunk identity 和 storage position；它不是 vector reuse identity。vector 是否可复用只由以下 exact embedding identity tuple 共同决定：`embedding_input_hash`、`embedding_model`、`embedding_task`、`embedding_dimensions`、`embedding_input_schema_version`。metadata_hash、content_hash、source_label、source_url、source_type 和 reviewed_on 不属于该 tuple；Task 7 不重新计算 `embedding_input_hash`。
+
+### 8.1 Lifecycle precedence and actions
+
+`decide_incremental` 必须先处理 lifecycle/removal subject，再进入 embedding reuse logic。只有 `present_chunk` 会检查 `current_identity` 和 `previous_embeddings`；其他 subject 不得检查 candidate vector 来决定 action，也不执行 storage/lifecycle mutation。
+
+| subject | exact action | decision rule |
+| --- | --- | --- |
+| `present_chunk` | `reuse` or `embed` | 至少一个 eligible previous embedding 时 `reuse`，否则 `embed` |
+| `removed_chunk` | `remove` | logical chunk 不在新 corpus；新 corpus 不写该 chunk；旧 corpus lifecycle 在本函数外处理 |
+| `attraction_absent` | `no_action` | corpus absence 不等同于 retirement；stable attraction lifecycle 不变，当前不表示 present chunk |
+| `explicitly_retired` | `exclude` | 明确 retired 的 source 不进入新 corpus；lifecycle mutation 由 identity/lifecycle layer 处理 |
+| `merged_source` | `exclude` | merged source 不进入新 source content；后续内容使用 merge target；merge mutation 在本函数外处理 |
+
+所有非 `present_chunk` subject 都直接返回对应 action、非空 deterministic reason 和 `reused_from_chunk_key = None`。
+
+### 8.2 Exact reuse and vector validity
+
+可复用旧 corpus 必须已经通过 validation。对 `present_chunk`，`previous_embeddings` 可包含 `0..N` 项，决策必须检查全部项。某一项只有同时满足以下条件才是 eligible：
+
+1. `validated_corpus is True`。
+2. vector 非 `None`。
+3. vector 每个值都是 finite；`NaN`、`+inf`、`-inf` 均无效。
+4. `len(vector) == previous.identity.embedding_dimensions`。
+5. `previous.identity` 的五个字段与 `current_identity` exact equality。
+
+无效或不匹配项只是不具备 reuse eligibility，不抛出业务异常，不 sanitize、truncate、pad、resize，也不调用 provider。空 tuple `()` 只按普通 dimension rule 处理；除非 identity dimension 也是零，否则因长度不匹配而不 eligible，不增加特殊 exception contract。
+
+如果没有 eligible 项，返回 `action = embed` 和 `reused_from_chunk_key = None`。如果只有一个 eligible 项，返回 `action = reuse`，并将其 `chunk_key` 放入 `reused_from_chunk_key`。如果有多个 eligible 项，不得因 ambiguity 拒绝 reuse，也不得依赖输入顺序；按 eligible 项的 `chunk_key` 字符串升序选择字典序最小者。`chunk_key` 只作为 eligibility 已通过后的 deterministic tie-break，不参与 eligibility。若多个 eligible 项具有相同 `chunk_key`，不增加错误或对象 identity 语义。
+
+`reason` 必须存在、非空、deterministic，并提供人类可读的 action 诊断；exact wording 不是 public contract，不得要求固定 reason 字符串或 reason enum。
+
+### 8.3 Embedding task and dimensions boundary
+
+上游当前 RAG V2 stored document profile 使用 `embedding_task = retrieval.passage`；但 Task 7 不因 task 值不是 `retrieval.passage` 而拒绝创建 `EmbeddingIdentity`。在本纯 decision layer 中，`embedding_task` 只参与五字段 exact equality，因此 `retrieval.passage` 与 `retrieval.query` 不相等时不能 reuse。Task 7 不新增 generic constructor validation。
+
+Task 7 是 generic decision layer，不硬编码 `1024`。reuse 要求：
+
+```text
+current.embedding_dimensions
+== previous.identity.embedding_dimensions
+== len(previous.vector)
+```
+
+因此 current/previous 都为 `1536` 且 vector 长度为 `1536`、其余 identity exact 相同、corpus validated、vector finite 时，具备 reuse eligibility。这不改变 Manifest V1 的 `jina-embeddings-v3`、`retrieval.passage`、`1024`、`rag-v2-embedding-input-v1` 固定 profile。
+
+### 8.4 Result and purity boundary
+
+当 `action = reuse` 时，`reused_from_chunk_key` 必须是选中旧 embedding 的 key；当 action 为 `embed`、`remove`、`exclude` 或 `no_action` 时，该字段必须为 `None`。decision 不返回 vector，vector 的实际复制/存储留给后续 stage。
+
+`decide_incremental` 不得 mutate `IncrementalCandidate`、`EmbeddingIdentity`、`PreviousEmbedding`、`previous_embeddings` 或 vector；相同输入必须得到相同 public result。实现表示保持未指定：不要求 dataclass、Pydantic、NamedTuple、frozen、slots 或额外 annotation。
+
+Task 7 不调用 Jina 或其他 provider，不执行 embedding generation、retry、batching、SQL、Supabase、PostgreSQL、pgvector、nearest-neighbor、cosine similarity 或 Planner runtime wiring。新的 staging corpus 在全部必需 vectors 和校验完成前不能 active。
 
 ## 9. Jina embedding contract
 
