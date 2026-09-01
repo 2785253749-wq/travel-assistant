@@ -168,3 +168,17 @@ class SemanticSection(RagV2Schema):
     source_url: str
     source_type: str
     reviewed_on: date
+
+
+class SemanticChunk(RagV2Schema):
+    chunk_key: str
+    attraction_id: UUID
+    chunk_type: ChunkType
+    ordinal: int = Field(ge=0)
+    normalized_content: str
+    content_hash: str
+    embedding_input_hash: str
+    source_label: str
+    source_url: str
+    source_type: str
+    reviewed_on: date
