@@ -390,3 +390,160 @@ to service_role;
 grant select, insert, update, delete
 on table public.rag_attraction_chunks
 to service_role;
+
+create or replace function public.activate_rag_v2_corpus(
+    p_dataset_key text,
+    p_corpus_version_id uuid,
+    p_expected_active_corpus_version_id uuid default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    target_dataset_key text;
+    target_status text;
+    current_active_corpus_version_id uuid;
+begin
+    perform pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended(
+            'rag-v2-corpus:' || p_dataset_key,
+            0
+        )
+    );
+
+    select dataset_key, status
+      into target_dataset_key, target_status
+      from public.rag_corpus_versions
+     where corpus_version_id = p_corpus_version_id;
+
+    if not found then
+        raise exception 'RAG_V2_NOT_FOUND: corpus version does not exist';
+    end if;
+
+    if target_dataset_key is distinct from p_dataset_key then
+        raise exception 'RAG_V2_VERSION_CONFLICT: corpus dataset mismatch';
+    end if;
+
+    select corpus_version_id
+      into current_active_corpus_version_id
+      from public.rag_corpus_versions
+     where dataset_key = p_dataset_key
+       and status = 'active';
+
+    if current_active_corpus_version_id = p_corpus_version_id then
+        return;
+    end if;
+
+    if p_expected_active_corpus_version_id is null then
+        if current_active_corpus_version_id is not null then
+            raise exception 'RAG_V2_ACTIVATION_CONFLICT: active corpus changed';
+        end if;
+    else
+        if p_expected_active_corpus_version_id is not null
+           and current_active_corpus_version_id is distinct from
+               p_expected_active_corpus_version_id then
+            raise exception 'RAG_V2_ACTIVATION_CONFLICT: active corpus changed';
+        end if;
+    end if;
+
+    if not exists (
+        select 1
+          from public.rag_corpus_versions
+         where corpus_version_id = p_corpus_version_id
+           and status = 'staging'
+    ) then
+        raise exception 'RAG_V2_INVALID_LIFECYCLE: target corpus is not staging';
+    end if;
+
+    if not exists (
+        select 1
+          from public.rag_attraction_versions
+         where corpus_version_id = p_corpus_version_id
+           and status = 'included'
+    ) then
+        raise exception 'RAG_V2_INVALID_LIFECYCLE: corpus version is not activation-ready';
+    end if;
+
+    if exists (
+        select 1
+          from public.rag_attraction_versions as av
+         where av.corpus_version_id = p_corpus_version_id
+           and av.status = 'included'
+           and not exists (
+               select 1
+                 from public.rag_attraction_chunks as c
+                where c.corpus_version_id = av.corpus_version_id
+                  and c.attraction_id = av.attraction_id
+                  and c.status = 'embedded'
+                  and c.embedding is not null
+           )
+    ) then
+        raise exception 'RAG_V2_INVALID_LIFECYCLE: corpus version is not activation-ready';
+    end if;
+
+    if exists (
+        select 1
+          from public.rag_attraction_versions as av
+          join public.rag_attraction_chunks as c
+            on c.corpus_version_id = av.corpus_version_id
+           and c.attraction_id = av.attraction_id
+         where av.corpus_version_id = p_corpus_version_id
+           and av.status = 'included'
+           and c.status in ('pending', 'failed')
+    ) then
+        raise exception 'RAG_V2_INVALID_LIFECYCLE: corpus version is not activation-ready';
+    end if;
+
+    if exists (
+        select 1
+          from public.rag_attraction_versions as av
+          join public.rag_attractions as a
+            on a.attraction_id = av.attraction_id
+         where av.corpus_version_id = p_corpus_version_id
+           and av.status = 'included'
+           and a.lifecycle_status <> 'active'
+    ) then
+        raise exception 'RAG_V2_INVALID_LIFECYCLE: corpus version is not activation-ready';
+    end if;
+
+    if exists (
+        select 1
+          from public.rag_attraction_versions as av
+          join public.rag_attraction_chunks as c
+            on c.corpus_version_id = av.corpus_version_id
+           and c.attraction_id = av.attraction_id
+         where av.corpus_version_id = p_corpus_version_id
+           and av.status = 'included'
+           and (
+               not (btrim(source_label) <> '')
+               or not (btrim(source_url) <> '')
+               or not (btrim(source_type) <> '')
+               or reviewed_on is null
+           )
+    ) then
+        raise exception 'RAG_V2_INVALID_LIFECYCLE: corpus version is not activation-ready';
+    end if;
+
+    if current_active_corpus_version_id is not null then
+        update public.rag_corpus_versions
+           set status = 'superseded',
+               superseded_at = now()
+         where corpus_version_id = current_active_corpus_version_id;
+    end if;
+
+    update public.rag_corpus_versions
+       set status = 'active',
+           activated_at = now()
+     where corpus_version_id = p_corpus_version_id;
+end;
+$$;
+
+revoke execute
+on function public.activate_rag_v2_corpus(text, uuid, uuid)
+from public, anon, authenticated;
+
+grant execute
+on function public.activate_rag_v2_corpus(text, uuid, uuid)
+to service_role;
