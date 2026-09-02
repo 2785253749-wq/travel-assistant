@@ -1,18 +1,31 @@
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Literal
+from datetime import date, datetime
+from typing import Literal, Sequence
 from uuid import UUID
 
 import httpx
+from postgrest import ReturnMethod
 from postgrest.exceptions import APIError
 from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import database_operation
-from app.rag_v2.models import AttractionLifecycleStatus, StableAttraction
+from app.rag_v2.models import (
+    AttractionLifecycleStatus,
+    AttractionVersionMetadata,
+    AttractionVersionStatus,
+    ChunkStatus,
+    ChunkType,
+    Destination,
+    DestinationLevel,
+    SemanticChunk,
+    StableAttraction,
+)
 
 
 CorpusStatus = Literal["staging", "active", "superseded", "failed"]
@@ -28,6 +41,20 @@ _LIFECYCLE_ERROR_MESSAGES = {
     "RAG V2 corpus lifecycle transition is invalid",
     "RAG V2 attraction lifecycle transition is invalid",
 }
+_TASK7_LIFECYCLE_ERROR_PREFIXES = {
+    "RAG V2 attraction version updates are forbidden",
+    "RAG V2 attraction version mutation requires staging",
+    "RAG V2 chunk insert is forbidden for terminal corpus",
+    "RAG V2 chunk insert requires status = 'staging'",
+    "RAG V2 chunk update is forbidden for terminal corpus",
+    "RAG V2 chunk update requires status = 'staging'",
+    "RAG V2 chunk retry reset must clear embedding errors",
+    "RAG V2 chunk embedding transition is invalid",
+}
+_RAG_V2_EMBEDDING_MODEL = "jina-embeddings-v3"
+_RAG_V2_EMBEDDING_TASK = "retrieval.passage"
+_RAG_V2_EMBEDDING_DIMENSIONS = 1024
+_RAG_V2_EMBEDDING_INPUT_SCHEMA = "rag-v2-embedding-input-v1"
 
 
 @dataclass(frozen=True)
@@ -40,6 +67,43 @@ class CorpusVersion:
     created_at: datetime
     activated_at: datetime | None
     superseded_at: datetime | None
+
+
+@dataclass(frozen=True)
+class AttractionVersionRecord:
+    corpus_version_id: UUID
+    metadata: AttractionVersionMetadata
+    metadata_hash: str
+
+
+@dataclass(frozen=True)
+class ChunkInsert:
+    corpus_version_id: UUID
+    chunk: SemanticChunk
+
+
+@dataclass(frozen=True)
+class ChunkRow:
+    corpus_version_id: UUID
+    attraction_id: UUID
+    chunk_key: str
+    chunk_type: ChunkType
+    ordinal: int
+    content: str
+    content_hash: str
+    embedding_input_hash: str
+    embedding_input_schema_version: str
+    source_label: str
+    source_url: str
+    source_type: str
+    reviewed_on: date
+    embedding_model: str
+    embedding_task: str
+    embedding_dimensions: int
+    embedding: tuple[float, ...] | None
+    status: ChunkStatus
+    embedding_error_code: str | None
+    embedding_error_message: str | None
 
 
 class RagV2Repository:
@@ -248,6 +312,166 @@ class RagV2Repository:
         except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError):
             raise self._app_error("RAG_V2_UNAVAILABLE") from None
 
+    def insert_attraction_versions(
+        self,
+        records: Sequence[AttractionVersionRecord],
+    ) -> tuple[AttractionVersionRecord, ...]:
+        records = tuple(records)
+        if not records:
+            return ()
+        identities = tuple(
+            (record.corpus_version_id, record.metadata.attraction_id)
+            for record in records
+        )
+        if len(set(identities)) != len(identities):
+            raise self._app_error("RAG_V2_VERSION_CONFLICT")
+
+        payload = [self._attraction_version_payload(record) for record in records]
+        try:
+            with database_operation("rag_v2.attraction_version.insert"):
+                response = (
+                    self._client.table("rag_attraction_versions")
+                    .insert(payload, returning=ReturnMethod.representation)
+                    .execute()
+                )
+                rows = self._batch_rows(response)
+                decoded = tuple(self._attraction_version_from_row(row) for row in rows)
+                return self._ordered_version_rows(decoded, identities, len(records))
+        except AppError:
+            raise
+        except APIError as exc:
+            raise self._mapped_api_error(exc) from None
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError):
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+
+    def insert_chunks(
+        self,
+        inserts: Sequence[ChunkInsert],
+    ) -> tuple[ChunkRow, ...]:
+        inserts = tuple(inserts)
+        if not inserts:
+            return ()
+        identities = tuple(
+            (item.corpus_version_id, item.chunk.chunk_key) for item in inserts
+        )
+        if len(set(identities)) != len(identities):
+            raise self._app_error("RAG_V2_VERSION_CONFLICT")
+
+        payload = [self._chunk_payload(item) for item in inserts]
+        try:
+            with database_operation("rag_v2.chunk.insert"):
+                response = (
+                    self._client.table("rag_attraction_chunks")
+                    .insert(payload, returning=ReturnMethod.representation)
+                    .execute()
+                )
+                rows = self._batch_rows(response)
+                decoded = tuple(self._chunk_from_row(row) for row in rows)
+                return self._ordered_chunk_rows(decoded, identities, len(inserts))
+        except AppError:
+            raise
+        except APIError as exc:
+            raise self._mapped_api_error(exc) from None
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError):
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+
+    def mark_chunk_embedded(
+        self,
+        *,
+        corpus_version_id: UUID,
+        chunk_key: str,
+        embedding: Sequence[float],
+    ) -> ChunkRow:
+        embedding_values = self._validated_embedding(embedding)
+        try:
+            with database_operation("rag_v2.chunk.mark_embedded"):
+                response = (
+                    self._client.table("rag_attraction_chunks")
+                    .update(
+                        {
+                            "status": ChunkStatus.embedded.value,
+                            "embedding": embedding_values,
+                            "embedding_error_code": None,
+                            "embedding_error_message": None,
+                        }
+                    )
+                    .eq("corpus_version_id", str(corpus_version_id))
+                    .eq("chunk_key", chunk_key)
+                    .execute()
+                )
+                return self._chunk_from_mutation_response(response)
+        except AppError:
+            raise
+        except APIError as exc:
+            raise self._mapped_api_error(exc) from None
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError):
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+
+    def mark_chunk_embedding_failed(
+        self,
+        *,
+        corpus_version_id: UUID,
+        chunk_key: str,
+        error_code: str,
+        error_message: str | None = None,
+    ) -> ChunkRow:
+        if not isinstance(error_code, str) or not error_code.strip():
+            raise ValueError("error_code must be a non-empty string")
+        normalized_error_code = error_code.strip()
+        try:
+            with database_operation("rag_v2.chunk.mark_failed"):
+                response = (
+                    self._client.table("rag_attraction_chunks")
+                    .update(
+                        {
+                            "status": ChunkStatus.failed.value,
+                            "embedding": None,
+                            "embedding_error_code": normalized_error_code,
+                            "embedding_error_message": error_message,
+                        }
+                    )
+                    .eq("corpus_version_id", str(corpus_version_id))
+                    .eq("chunk_key", chunk_key)
+                    .execute()
+                )
+                return self._chunk_from_mutation_response(response)
+        except AppError:
+            raise
+        except APIError as exc:
+            raise self._mapped_api_error(exc) from None
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError):
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+
+    def reset_chunk_embedding_for_retry(
+        self,
+        *,
+        corpus_version_id: UUID,
+        chunk_key: str,
+    ) -> ChunkRow:
+        try:
+            with database_operation("rag_v2.chunk.reset_for_retry"):
+                response = (
+                    self._client.table("rag_attraction_chunks")
+                    .update(
+                        {
+                            "status": ChunkStatus.pending.value,
+                            "embedding": None,
+                            "embedding_error_code": None,
+                            "embedding_error_message": None,
+                        }
+                    )
+                    .eq("corpus_version_id", str(corpus_version_id))
+                    .eq("chunk_key", chunk_key)
+                    .execute()
+                )
+                return self._chunk_from_mutation_response(response)
+        except AppError:
+            raise
+        except APIError as exc:
+            raise self._mapped_api_error(exc) from None
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError):
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+
     def _select_one(self, table_name: str, filters: tuple[tuple[str, str], ...]):
         query = self._client.table(table_name).select("*")
         for column, value in filters:
@@ -267,6 +491,216 @@ class RagV2Repository:
         if not isinstance(data[0], dict):
             raise ValueError("database response row must be an object")
         return data[0]
+
+    @staticmethod
+    def _batch_rows(response) -> list[dict]:
+        data = getattr(response, "data", None)
+        if not isinstance(data, list) or not all(isinstance(row, dict) for row in data):
+            raise ValueError("database batch response data must be a list of objects")
+        return data
+
+    @staticmethod
+    def _attraction_version_payload(record: AttractionVersionRecord) -> dict:
+        metadata = record.metadata
+        destination = metadata.destination
+        return {
+            "corpus_version_id": str(record.corpus_version_id),
+            "attraction_id": str(metadata.attraction_id),
+            "canonical_name": metadata.canonical_name,
+            "aliases": list(metadata.aliases),
+            "destination_code": destination.destination_code,
+            "destination_level": destination.destination_level.value,
+            "destination_name": destination.destination_name,
+            "province_code": destination.province_code,
+            "province_name": destination.province_name,
+            "district_name": destination.district_name,
+            "category": metadata.category,
+            "tags": list(metadata.tags),
+            "latitude": destination.latitude,
+            "longitude": destination.longitude,
+            "status": metadata.status.value,
+            "metadata_hash": record.metadata_hash,
+        }
+
+    @staticmethod
+    def _chunk_payload(item: ChunkInsert) -> dict:
+        chunk = item.chunk
+        return {
+            "corpus_version_id": str(item.corpus_version_id),
+            "attraction_id": str(chunk.attraction_id),
+            "chunk_key": chunk.chunk_key,
+            "chunk_type": chunk.chunk_type.value,
+            "ordinal": chunk.ordinal,
+            "content": chunk.normalized_content,
+            "content_hash": chunk.content_hash,
+            "embedding_input_hash": chunk.embedding_input_hash,
+            "embedding_input_schema_version": _RAG_V2_EMBEDDING_INPUT_SCHEMA,
+            "source_label": chunk.source_label,
+            "source_url": chunk.source_url,
+            "source_type": chunk.source_type,
+            "reviewed_on": chunk.reviewed_on.isoformat(),
+            "embedding_model": _RAG_V2_EMBEDDING_MODEL,
+            "embedding_task": _RAG_V2_EMBEDDING_TASK,
+            "embedding_dimensions": _RAG_V2_EMBEDDING_DIMENSIONS,
+            "embedding": None,
+            "status": ChunkStatus.pending.value,
+            "embedding_error_code": None,
+            "embedding_error_message": None,
+        }
+
+    @classmethod
+    def _ordered_version_rows(
+        cls,
+        rows: tuple[AttractionVersionRecord, ...],
+        identities: tuple[tuple[UUID, UUID], ...],
+        expected_count: int,
+    ) -> tuple[AttractionVersionRecord, ...]:
+        if len(rows) != expected_count:
+            raise ValueError("database response count does not match input")
+        by_identity = {
+            (row.corpus_version_id, row.metadata.attraction_id): row for row in rows
+        }
+        if len(by_identity) != len(rows) or set(by_identity) != set(identities):
+            raise ValueError("database response identities do not match input")
+        return tuple(by_identity[identity] for identity in identities)
+
+    @classmethod
+    def _ordered_chunk_rows(
+        cls,
+        rows: tuple[ChunkRow, ...],
+        identities: tuple[tuple[UUID, str], ...],
+        expected_count: int,
+    ) -> tuple[ChunkRow, ...]:
+        if len(rows) != expected_count:
+            raise ValueError("database response count does not match input")
+        by_identity = {
+            (row.corpus_version_id, row.chunk_key): row for row in rows
+        }
+        if len(by_identity) != len(rows) or set(by_identity) != set(identities):
+            raise ValueError("database response identities do not match input")
+        return tuple(by_identity[identity] for identity in identities)
+
+    @classmethod
+    def _attraction_version_from_row(cls, row: dict) -> AttractionVersionRecord:
+        aliases = cls._string_tuple(row["aliases"])
+        tags = cls._string_tuple(row["tags"])
+        metadata = AttractionVersionMetadata(
+            attraction_id=UUID(str(row["attraction_id"])),
+            canonical_name=cls._required_string(row["canonical_name"]),
+            aliases=aliases,
+            destination=Destination(
+                destination_code=cls._required_string(row["destination_code"]),
+                destination_level=DestinationLevel(row["destination_level"]),
+                destination_name=cls._required_string(row["destination_name"]),
+                province_code=cls._required_string(row["province_code"]),
+                province_name=cls._required_string(row["province_name"]),
+                district_name=row["district_name"],
+                latitude=row["latitude"],
+                longitude=row["longitude"],
+            ),
+            category=row["category"],
+            tags=tags,
+            status=AttractionVersionStatus(row["status"]),
+        )
+        return AttractionVersionRecord(
+            corpus_version_id=UUID(str(row["corpus_version_id"])),
+            metadata=metadata,
+            metadata_hash=cls._required_string(row["metadata_hash"]),
+        )
+
+    @classmethod
+    def _chunk_from_row(cls, row: dict) -> ChunkRow:
+        embedding_dimensions = row["embedding_dimensions"]
+        if not isinstance(embedding_dimensions, int):
+            raise ValueError("invalid embedding dimensions")
+        reviewed_on = row["reviewed_on"]
+        if isinstance(reviewed_on, datetime):
+            raise ValueError("reviewed_on must be a date")
+        if not isinstance(reviewed_on, date):
+            reviewed_on = date.fromisoformat(str(reviewed_on))
+        return ChunkRow(
+            corpus_version_id=UUID(str(row["corpus_version_id"])),
+            attraction_id=UUID(str(row["attraction_id"])),
+            chunk_key=cls._required_string(row["chunk_key"]),
+            chunk_type=ChunkType(row["chunk_type"]),
+            ordinal=row["ordinal"],
+            content=cls._required_string(row["content"]),
+            content_hash=cls._required_string(row["content_hash"]),
+            embedding_input_hash=cls._required_string(row["embedding_input_hash"]),
+            embedding_input_schema_version=cls._required_string(
+                row["embedding_input_schema_version"]
+            ),
+            source_label=cls._required_string(row["source_label"]),
+            source_url=cls._required_string(row["source_url"]),
+            source_type=cls._required_string(row["source_type"]),
+            reviewed_on=reviewed_on,
+            embedding_model=cls._required_string(row["embedding_model"]),
+            embedding_task=cls._required_string(row["embedding_task"]),
+            embedding_dimensions=embedding_dimensions,
+            embedding=cls._returned_embedding(row.get("embedding")),
+            status=ChunkStatus(row["status"]),
+            embedding_error_code=cls._optional_string(row.get("embedding_error_code")),
+            embedding_error_message=cls._optional_string(
+                row.get("embedding_error_message")
+            ),
+        )
+
+    @classmethod
+    def _chunk_from_mutation_response(cls, response) -> ChunkRow:
+        row = cls._first_row(response)
+        if row is None:
+            raise cls._app_error("RAG_V2_NOT_FOUND")
+        return cls._chunk_from_row(row)
+
+    @staticmethod
+    def _validated_embedding(embedding: Sequence[float]) -> list[float]:
+        try:
+            values = list(embedding)
+            normalized = [float(value) for value in values]
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("embedding must contain 1024 finite values") from None
+        if len(normalized) != _RAG_V2_EMBEDDING_DIMENSIONS or not all(
+            math.isfinite(value) for value in normalized
+        ):
+            raise ValueError("embedding must contain 1024 finite values")
+        return normalized
+
+    @classmethod
+    def _returned_embedding(cls, value: object) -> tuple[float, ...] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                raise ValueError("malformed embedding") from None
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("malformed embedding")
+        try:
+            normalized = tuple(float(item) for item in value)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("malformed embedding") from None
+        if len(normalized) != _RAG_V2_EMBEDDING_DIMENSIONS or not all(
+            math.isfinite(item) for item in normalized
+        ):
+            raise ValueError("malformed embedding")
+        return normalized
+
+    @staticmethod
+    def _required_string(value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("required database field must be a string")
+        return value
+
+    @classmethod
+    def _optional_string(cls, value: object) -> str | None:
+        return None if value is None else cls._required_string(value)
+
+    @classmethod
+    def _string_tuple(cls, value: object) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("database array field must be a list")
+        return tuple(cls._required_string(item) for item in value)
 
     @classmethod
     def _corpus_from_response(cls, response) -> CorpusVersion:
@@ -373,7 +807,19 @@ class RagV2Repository:
 
     @classmethod
     def _mapped_api_error(cls, error: APIError) -> AppError:
+        code = getattr(error, "code", None)
         message = getattr(error, "message", None)
-        if message in _LIFECYCLE_ERROR_MESSAGES:
+        if code == "23505":
+            return cls._app_error("RAG_V2_VERSION_CONFLICT")
+        if code == "P0001" and (
+            message in _LIFECYCLE_ERROR_MESSAGES
+            or (
+                isinstance(message, str)
+                and any(
+                    message.startswith(prefix)
+                    for prefix in _TASK7_LIFECYCLE_ERROR_PREFIXES
+                )
+            )
+        ):
             return cls._app_error("RAG_V2_INVALID_LIFECYCLE")
         return cls._app_error("RAG_V2_UNAVAILABLE")
