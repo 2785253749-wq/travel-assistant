@@ -367,3 +367,26 @@ for each row execute function public.enforce_rag_v2_chunk_mutation();
 create trigger rag_v2_chunk_delete_guard
 before delete on public.rag_attraction_chunks
 for each row execute function public.enforce_rag_v2_chunk_mutation();
+
+alter table public.rag_corpus_versions enable row level security;
+alter table public.rag_attractions enable row level security;
+alter table public.rag_attraction_versions enable row level security;
+alter table public.rag_attraction_chunks enable row level security;
+
+revoke all on table public.rag_corpus_versions from public, anon, authenticated;
+revoke all on table public.rag_attractions from public, anon, authenticated;
+revoke all on table public.rag_attraction_versions from public, anon, authenticated;
+revoke all on table public.rag_attraction_chunks from public, anon, authenticated;
+
+grant select, insert, update, delete
+on table public.rag_corpus_versions
+to service_role;
+grant select, insert, update, delete
+on table public.rag_attractions
+to service_role;
+grant select, insert, update, delete
+on table public.rag_attraction_versions
+to service_role;
+grant select, insert, update, delete
+on table public.rag_attraction_chunks
+to service_role;
