@@ -547,3 +547,173 @@ from public, anon, authenticated;
 grant execute
 on function public.activate_rag_v2_corpus(text, uuid, uuid)
 to service_role;
+
+create index rag_v2_attraction_versions_destination_idx
+    on public.rag_attraction_versions (
+        corpus_version_id,
+        destination_code,
+        destination_level
+    );
+
+create index rag_v2_attraction_versions_province_idx
+    on public.rag_attraction_versions (
+        corpus_version_id,
+        province_code
+    );
+
+create index rag_v2_attraction_chunks_status_idx
+    on public.rag_attraction_chunks (
+        corpus_version_id,
+        status
+    );
+
+create index rag_v2_attraction_chunks_embedding_hnsw_idx
+    on public.rag_attraction_chunks
+    using hnsw (embedding vector_cosine_ops)
+    where embedding is not null
+      and status = 'embedded';
+
+create or replace function public.match_rag_v2_chunks(
+    p_dataset_key text,
+    p_query_embedding vector(1024),
+    p_destination_code text default null,
+    p_destination_level text default null,
+    p_province_code text default null,
+    p_attraction_id uuid default null,
+    p_candidate_k integer default 40
+)
+returns table (
+    corpus_version_id uuid,
+    attraction_id uuid,
+    chunk_key text,
+    chunk_type text,
+    content text,
+    content_hash text,
+    source_label text,
+    source_url text,
+    source_type text,
+    reviewed_on date,
+    score real
+)
+language plpgsql
+stable
+security invoker
+set search_path = public
+as $$
+declare
+    active_count bigint;
+    active_corpus_version_id uuid;
+begin
+    if p_query_embedding is null then
+        raise exception 'RAG V2 query embedding is required';
+    end if;
+
+    if p_candidate_k is null
+       or p_candidate_k < 1
+       or p_candidate_k > 200 then
+        raise exception 'RAG V2 candidate_k is out of range';
+    end if;
+
+    select count(*)
+      into active_count
+      from public.rag_corpus_versions
+     where dataset_key = p_dataset_key
+       and status = 'active';
+
+    if active_count = 0 then
+        return;
+    elsif active_count > 1 then
+        raise exception 'RAG V2 active corpus invariant is violated';
+    end if;
+
+    select corpus_version_id
+      into active_corpus_version_id
+      from public.rag_corpus_versions
+     where dataset_key = p_dataset_key
+       and status = 'active';
+
+    return query
+    with candidates as (
+        select
+            c.corpus_version_id,
+            c.attraction_id,
+            c.chunk_key,
+            c.chunk_type,
+            c.content,
+            c.content_hash,
+            c.source_label,
+            c.source_url,
+            c.source_type,
+            c.reviewed_on,
+            c.embedding <=> p_query_embedding as distance
+        from public.rag_attraction_chunks as c
+        join public.rag_attraction_versions as av
+          on av.corpus_version_id = c.corpus_version_id
+         and av.attraction_id = c.attraction_id
+        join public.rag_attractions as a
+          on a.attraction_id = c.attraction_id
+        where c.corpus_version_id = active_corpus_version_id
+          and av.corpus_version_id = active_corpus_version_id
+          and av.status = 'included'
+          and a.lifecycle_status = 'active'
+          and c.status = 'embedded'
+          and c.embedding is not null
+          and (
+              p_destination_code is null
+              or av.destination_code = p_destination_code
+          )
+          and (
+              p_destination_level is null
+              or av.destination_level = p_destination_level
+          )
+          and (
+              p_province_code is null
+              or av.province_code = p_province_code
+          )
+          and (
+              p_attraction_id is null
+              or c.attraction_id = p_attraction_id
+          )
+        order by c.embedding <=> p_query_embedding asc
+        limit p_candidate_k
+    )
+    select
+        candidates.corpus_version_id,
+        candidates.attraction_id,
+        candidates.chunk_key,
+        candidates.chunk_type,
+        candidates.content,
+        candidates.content_hash,
+        candidates.source_label,
+        candidates.source_url,
+        candidates.source_type,
+        candidates.reviewed_on,
+        (1 - distance)::real as score
+    from candidates
+    order by score desc, attraction_id asc, chunk_key asc;
+end;
+$$;
+
+revoke execute
+on function public.match_rag_v2_chunks(
+    text,
+    vector,
+    text,
+    text,
+    text,
+    uuid,
+    integer
+)
+from public, anon, authenticated;
+
+grant execute
+on function public.match_rag_v2_chunks(
+    text,
+    vector,
+    text,
+    text,
+    text,
+    uuid,
+    integer
+)
+to service_role;

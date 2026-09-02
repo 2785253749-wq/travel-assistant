@@ -373,3 +373,402 @@ def test_activation_uses_stable_error_prefixes_and_no_explicit_transaction_contr
         body,
         flags=re.IGNORECASE,
     )
+
+
+MATCH_SIGNATURE = (
+    "p_dataset_key text, "
+    "p_query_embedding vector(1024), "
+    "p_destination_code text default null, "
+    "p_destination_level text default null, "
+    "p_province_code text default null, "
+    "p_attraction_id uuid default null, "
+    "p_candidate_k integer default 40"
+)
+MATCH_PRIVILEGE_SIGNATURE = (
+    r"text\s*,\s*vector\s*,\s*text\s*,\s*text\s*,\s*text\s*,\s*uuid\s*,\s*integer"
+)
+MATCH_RETURN_COLUMNS = (
+    "corpus_version_id uuid, "
+    "attraction_id uuid, "
+    "chunk_key text, "
+    "chunk_type text, "
+    "content text, "
+    "content_hash text, "
+    "source_label text, "
+    "source_url text, "
+    "source_type text, "
+    "reviewed_on date, "
+    "score real"
+)
+
+
+def _match_definition(sql: str) -> re.Match[str]:
+    match = re.search(
+        r"create\s+(?:or\s+replace\s+)?function\s+"
+        r"public\.match_rag_v2_chunks\s*\((?P<args>.*?)\)\s*"
+        r"returns\s+table\s*\((?P<returns>.*?)\)\s*"
+        r"(?P<header>.*?)\bas\s+\$(?P<tag>[a-z0-9_]*)\$"
+        r"(?P<body>.*?)\$(?P=tag)\$\s*;",
+        sql,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert match is not None, (
+        "expected RAG V2 candidate retrieval RPC exact seven-argument signature"
+    )
+    return match
+
+
+def _match_body(sql: str) -> str:
+    return _match_definition(sql).group("body")
+
+
+def _match_execute_statements(
+    sql: str,
+    action: str,
+) -> list[tuple[set[str], str]]:
+    return [
+        (_roles(match.group("roles")), match.group("signature"))
+        for match in re.finditer(
+            rf"{action}\s+execute\s+on\s+function\s+"
+            r"public\.match_rag_v2_chunks\s*"
+            rf"\(\s*(?P<signature>{MATCH_PRIVILEGE_SIGNATURE})\s*\)\s+"
+            rf"(?:from|to)\s+(?P<roles>[^;]+);",
+            sql,
+            flags=re.IGNORECASE,
+        )
+    ]
+
+
+def _hnsw_index_statements(sql: str) -> list[re.Match[str]]:
+    return list(
+        re.finditer(
+            r"create\s+index\s+[a-z0-9_]+\s+on\s+"
+            r"public\.rag_attraction_chunks\s+using\s+hnsw\s*"
+            r"\((?P<columns>.*?)\)\s+where\s+(?P<predicate>.*?);",
+            sql,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
+
+
+def _has_exact_filter(body: str, parameter: str, column: str) -> bool:
+    has_null_branch = re.search(
+        rf"\b{parameter}\s+is\s+null\b",
+        body,
+        flags=re.IGNORECASE,
+    )
+    has_equality = re.search(
+        rf"(?:\b{column}\b\s*=\s*\b{parameter}\b|"
+        rf"\b{parameter}\b\s*=\s*\b{column}\b)",
+        body,
+        flags=re.IGNORECASE,
+    )
+    return has_null_branch is not None and has_equality is not None
+
+
+def test_match_rag_v2_chunks_exact_signature_is_declared() -> None:
+    definition = _match_definition(_migration_sql())
+
+    assert _normalized(definition.group("args")) == MATCH_SIGNATURE
+
+
+def test_match_rag_v2_chunks_returns_exact_eleven_columns() -> None:
+    definition = _match_definition(_migration_sql())
+
+    assert _normalized(definition.group("returns")) == MATCH_RETURN_COLUMNS
+    assert "distance" not in definition.group("returns").lower()
+    assert "embedding" not in definition.group("returns").lower()
+    assert "destination" not in definition.group("returns").lower()
+
+
+def test_match_rag_v2_chunks_is_security_invoker() -> None:
+    definition = _match_definition(_migration_sql())
+    header = _normalized(definition.group("header"))
+
+    assert re.search(r"\bsecurity\s+invoker\b", header)
+    assert not re.search(r"\bsecurity\s+definer\b", header)
+
+
+def test_match_rag_v2_chunks_has_service_role_only_execute_boundary() -> None:
+    sql = _migration_sql()
+    revokes = _match_execute_statements(sql, "revoke")
+    grants = _match_execute_statements(sql, "grant")
+
+    assert revokes
+    assert grants
+    revoked_roles = set().union(*(roles for roles, _ in revokes))
+    granted_roles = set().union(*(roles for roles, _ in grants))
+    assert {"public", "anon", "authenticated"} <= revoked_roles
+    assert granted_roles == {"service_role"}
+    assert revoked_roles <= EXECUTE_ROLES
+
+
+def test_match_rag_v2_chunks_rejects_null_and_out_of_range_candidate_k() -> None:
+    body = _match_body(_migration_sql())
+
+    for condition in (
+        r"p_candidate_k\s+is\s+null",
+        r"p_candidate_k\s*<\s*1",
+        r"p_candidate_k\s*>\s*200",
+    ):
+        assert re.search(condition, body, flags=re.IGNORECASE)
+    assert re.search(r"raise\s+exception", body, flags=re.IGNORECASE)
+    assert not re.search(r"coalesce\s*\(\s*p_candidate_k", body, re.IGNORECASE)
+
+
+def test_match_rag_v2_chunks_rejects_null_query_embedding_before_ranking() -> None:
+    body = _match_body(_migration_sql())
+
+    assert re.search(
+        r"p_query_embedding\s+is\s+null[\s\S]{0,400}?raise\s+exception",
+        body,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_match_rag_v2_chunks_distinguishes_zero_one_and_multiple_active_corpora() -> None:
+    body = _match_body(_migration_sql())
+
+    assert re.search(
+        r"rag_corpus_versions[\s\S]{0,1800}?status\s*=\s*'active'",
+        body,
+        flags=re.IGNORECASE,
+    )
+    assert not re.search(
+        r"select\s+into\s+strict[\s\S]{0,1200}?status\s*=\s*'active'",
+        body,
+        flags=re.IGNORECASE,
+    )
+    assert re.search(
+        r"(?:count\s*\(|array_agg\s*\(|cardinality\s*\(|array_length\s*\(|"
+        r"active_count|active_corpus_count)",
+        body,
+        flags=re.IGNORECASE,
+    )
+    assert re.search(r"(?:>\s*1|>=\s*2)", body)
+    assert re.search(r"(?:=\s*0|is\s+null|coalesce\s*\([^)]*,\s*0\))", body)
+    assert not re.search(
+        r"from\s+public\.rag_corpus_versions[\s\S]{0,600}?"
+        r"status\s*=\s*'active'[\s\S]{0,300}?limit\s+1",
+        body,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_match_rag_v2_chunks_requires_included_active_stable_candidates() -> None:
+    body = _match_body(_migration_sql())
+
+    assert re.search(
+        r"rag_attraction_versions[\s\S]{0,2500}?"
+        r"rag_attractions[\s\S]{0,2500}?"
+        r"status\s*=\s*'included'",
+        body,
+        flags=re.IGNORECASE,
+    )
+    assert re.search(
+        r"lifecycle_status\s*(?:=|<>|!=)\s*'active'|"
+        r"not\s+exists[\s\S]{0,1200}?lifecycle_status\s*=\s*'active'",
+        body,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_match_rag_v2_chunks_requires_embedded_non_null_vectors_in_candidate_relation() -> None:
+    body = _match_body(_migration_sql())
+
+    assert re.search(
+        r"rag_attraction_chunks[\s\S]{0,2200}?"
+        r"status\s*=\s*'embedded'[\s\S]{0,700}?"
+        r"embedding\s+is\s+not\s+null",
+        body,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_match_rag_v2_chunks_applies_all_optional_filters_as_exact_nullable_filters() -> None:
+    body = _match_body(_migration_sql())
+
+    for parameter, column in (
+        ("p_destination_code", "destination_code"),
+        ("p_destination_level", "destination_level"),
+        ("p_province_code", "province_code"),
+        ("p_attraction_id", "attraction_id"),
+    ):
+        assert _has_exact_filter(body, parameter, column), (
+            f"missing NULL/exact filter contract for {parameter}"
+        )
+
+
+def test_match_rag_v2_chunks_filters_before_inner_ann_limit() -> None:
+    body = _match_body(_migration_sql())
+    distance_order = re.search(
+        r"order\s+by[\s\S]{0,250}?embedding\s*<=>\s*p_query_embedding"
+        r"\s*(?:asc\b)?",
+        body,
+        flags=re.IGNORECASE,
+    )
+    assert distance_order is not None, "missing inner raw-distance ANN ordering"
+    limit_position = body.find("limit p_candidate_k", distance_order.end())
+    assert limit_position >= 0, "missing inner candidate_k limit"
+
+    for witness in (
+        "status = 'included'",
+        "status = 'embedded'",
+        "embedding is not null",
+        "p_destination_code",
+        "p_destination_level",
+        "p_province_code",
+        "p_attraction_id",
+    ):
+        assert body.find(witness) < distance_order.start(), (
+            f"metadata/lifecycle witness occurs after ANN ordering: {witness}"
+        )
+
+
+def test_match_rag_v2_chunks_uses_raw_cosine_distance_for_inner_ann_order() -> None:
+    body = _match_body(_migration_sql())
+
+    assert re.search(
+        r"order\s+by[\s\S]{0,250}?embedding\s*<=>\s*p_query_embedding"
+        r"\s+asc[\s\S]{0,200}?limit\s+p_candidate_k",
+        body,
+        flags=re.IGNORECASE,
+    )
+    assert not re.search(
+        r"order\s+by\s+1\s*-\s*\(?\s*embedding\s*<=>\s*"
+        r"p_query_embedding\s*\)?\s+desc[\s\S]{0,200}?limit\s+p_candidate_k",
+        body,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_match_rag_v2_chunks_projects_explicit_real_score() -> None:
+    body = _match_body(_migration_sql())
+
+    assert re.search(
+        r"1\s*-\s*(?:distance|[a-z_][a-z0-9_]*\.embedding\s*<=>\s*"
+        r"p_query_embedding)[^,;]{0,100}?::\s*real\s+as\s+score",
+        body,
+        flags=re.IGNORECASE,
+    ) or re.search(
+        r"cast\s*\([\s\S]{0,250}?1\s*-\s*[\s\S]{0,180}?"
+        r"as\s+real\s*\)[\s\S]{0,80}?as\s+score",
+        body,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_match_rag_v2_chunks_orders_selected_rows_deterministically() -> None:
+    body = _match_body(_migration_sql())
+    inner_order = re.search(
+        r"order\s+by[\s\S]{0,250}?embedding\s*<=>\s*p_query_embedding"
+        r"\s+asc[\s\S]{0,200}?limit\s+p_candidate_k",
+        body,
+        flags=re.IGNORECASE,
+    )
+    outer_order = re.search(
+        r"order\s+by[\s\S]{0,250}?score\s+desc[\s\S]{0,250}?"
+        r"attraction_id\s+asc[\s\S]{0,250}?chunk_key\s+asc",
+        body,
+        flags=re.IGNORECASE,
+    )
+    assert inner_order is not None
+    assert outer_order is not None
+    assert inner_order.start() < outer_order.start()
+
+
+def test_match_rag_v2_chunks_candidate_k_is_after_all_approved_filters() -> None:
+    body = _match_body(_migration_sql())
+
+    inner_order = re.search(
+        r"order\s+by[\s\S]{0,250}?embedding\s*<=>\s*p_query_embedding"
+        r"\s+asc[\s\S]{0,200}?limit\s+p_candidate_k",
+        body,
+        flags=re.IGNORECASE,
+    )
+    assert inner_order is not None
+    assert body.find("status = 'included'") < inner_order.start()
+    assert body.find("status = 'embedded'") < inner_order.start()
+    assert body.find("embedding is not null") < inner_order.start()
+
+
+def test_match_rag_v2_chunks_declares_default_hnsw_cosine_partial_index() -> None:
+    sql = _migration_sql()
+    indexes = _hnsw_index_statements(sql)
+
+    assert len(indexes) == 1
+    statement = indexes[0]
+    assert "vector_cosine_ops" in statement.group("columns")
+    assert "embedding is not null" in statement.group("predicate")
+    assert "status = 'embedded'" in statement.group("predicate")
+    assert "with (" not in statement.group().lower()
+    assert "ivfflat" not in statement.group().lower()
+
+
+def test_match_rag_v2_chunks_hnsw_predicate_is_chunk_local() -> None:
+    sql = _migration_sql()
+    indexes = _hnsw_index_statements(sql)
+
+    assert indexes
+    predicate = indexes[0].group("predicate").lower()
+    assert "rag_corpus_versions" not in predicate
+    assert "status = 'embedded'" in predicate
+    assert "embedding is not null" in predicate
+
+
+def test_match_rag_v2_chunks_declares_approved_btree_indexes() -> None:
+    sql = _migration_sql()
+
+    assert re.search(
+        r"create\s+index\s+[a-z0-9_]+\s+on\s+"
+        r"public\.rag_attraction_versions\s*\(\s*"
+        r"corpus_version_id\s*,\s*destination_code\s*,\s*destination_level\s*\)",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    assert re.search(
+        r"create\s+index\s+[a-z0-9_]+\s+on\s+"
+        r"public\.rag_attraction_versions\s*\(\s*"
+        r"corpus_version_id\s*,\s*province_code\s*\)",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    assert re.search(
+        r"create\s+index\s+[a-z0-9_]+\s+on\s+"
+        r"public\.rag_attraction_chunks\s*\(\s*"
+        r"corpus_version_id\s*,\s*status\s*\)",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
+def test_match_rag_v2_chunks_has_no_later_ranking_or_state_mutation() -> None:
+    body = _match_body(_migration_sql()).lower()
+
+    for forbidden in (
+        "threshold",
+        "score >= 0.70",
+        "distinct on (content_hash)",
+        "group by content_hash",
+        "final_k",
+        "diversity",
+        "jina",
+        "retrieval.query",
+        "planner",
+    ):
+        assert forbidden not in body
+    assert not re.search(r"\b(?:insert|update|delete)\b", body)
+
+
+def test_match_rag_v2_chunks_preserves_legacy_and_activation_isolation() -> None:
+    sql = _migration_sql()
+
+    for forbidden in (
+        "alter table public.knowledge_chunks",
+        "drop table public.knowledge_chunks",
+        "drop function public.match_knowledge_chunks",
+        "create or replace function public.match_knowledge_chunks",
+    ):
+        assert forbidden not in sql
+    assert sql.count("create or replace function public.activate_rag_v2_corpus") == 1
+    assert "match_rag_v2_chunks" in sql
