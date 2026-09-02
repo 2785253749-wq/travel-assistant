@@ -58,7 +58,9 @@ provider-infrastructure dependency. If the implementation reuses it, the
 legacy module's current request, timeout, retry-compatible behavior, response
 validation, logging redaction, and RagUnavailable semantics remain
 unchanged. The V2 adapter owns the V2 query-facing error boundary; it does
-not rewrite legacy callers.
+not rewrite legacy callers. Legacy transport may be reused only as provider
+infrastructure; its legacy-facing public error taxonomy is not exposed through
+the new V2 query retrieval API.
 
 ## 3. Architecture
 
@@ -70,7 +72,7 @@ The three responsibilities are deliberately separated:
 
 | Boundary | Responsibility | Must not own |
 | --- | --- | --- |
-| Query embedding layer | Normalize the already-selected query input, invoke the Jina query profile through a provider seam, validate one 1024-value finite vector, and map provider failures | Destination resolution, repository filters, ranking policy, evidence formatting |
+| Query embedding layer | Invoke the Jina query profile through a provider seam, validate one 1024-value finite vector, and map provider failures | Query normalization, destination resolution, repository filters, ranking policy, evidence formatting |
 | Repository layer | Send the query vector and exact metadata filters to match_rag_v2_chunks through RagV2Repository.match_chunks(...); return ordered RagV2Candidate values | Thresholding, deduplication, diversity, final_k, query embedding, Planner behavior |
 | Retrieval layer | Validate retrieval parameters, call the embedder and repository, apply the deterministic policy, and assemble evidence | API keys, HTTP details, provider response parsing, SQL, persistence mutation |
 
@@ -137,16 +139,20 @@ additional fields in this stage.
 
 ### 4.3 Provider seam
 
-The retrieval layer depends on a small query-embedding interface. Its
-conceptual public operation is:
+The retrieval layer depends on a small query-embedding interface. The
+Retrieval Service owns query normalization; the Query Embedder receives an
+already-normalized, non-empty string. Its conceptual public operation is:
 
     embed_query(query: str) -> tuple[float, ...]
 
 The concrete representation of the provider adapter may be a class with an
 embed_query method or a narrow callable seam, provided the observable
-contract remains the same. Retrieval code receives a validated tuple and
-never receives an API key, HTTP client, provider response object, retry state,
-or raw provider body.
+contract remains the same. The Query Embedder must not strip, lowercase,
+collapse whitespace, rewrite, expand, or append destination metadata. It
+only invokes the provider, applies the fixed query profile, decodes and
+validates the provider response, and maps embedding failures. Retrieval code
+receives a validated tuple and never receives an API key, HTTP client,
+provider response object, retry state, or raw provider body.
 
 ## 5. Query embedding contract
 
@@ -168,10 +174,23 @@ Query vectors are request-time values. They are not written into
 rag_attraction_chunks, are not part of a manifest, and are not candidates
 for Stage 10B-4 vector reuse.
 
-### 5.2 Query normalization
+### 5.2 Query normalization owned by the Retrieval Service
 
-The retrieval boundary accepts only a Python str query. It strips leading
-and trailing whitespace and preserves all internal whitespace exactly.
+The Retrieval Service is the one and only query-normalization owner. The
+exact flow is:
+
+    retrieve(...)
+        -> validate query is str
+        -> strip leading/trailing whitespace exactly once
+        -> preserve internal whitespace
+        -> normalized_query
+        -> embed_query(normalized_query)
+        -> RetrievalResult.query = normalized_query
+
+The Query Embedder receives an already-normalized, non-empty query string and
+must never normalize it again. The Retrieval Service accepts only a Python
+str query. It strips leading and trailing whitespace and preserves all
+internal whitespace exactly.
 
     "   厦门适合看日落的地方   " -> "厦门适合看日落的地方"
     "厦门   日落"               -> "厦门   日落"
@@ -180,16 +199,18 @@ It does not lowercase, remove punctuation, collapse internal whitespace,
 tokenize, rewrite, expand, append destination metadata, or call an LLM.
 
 If the input is not a string, or the stripped result is empty, the public
-caller error is:
+caller error from the Retrieval Service is:
 
     ValueError("query must be a non-empty string")
 
 This validation occurs before the embedder or repository is called. An empty
-query therefore makes zero provider calls and zero repository calls.
+query therefore makes zero provider calls and zero repository calls. The
+Query Embedder itself does not repeat this stripping or ownership decision;
+its input contract is an already-normalized, non-empty string.
 
 ### 5.3 Successful output
 
-The query provider adapter accepts only a successful result with exactly 1024
+The Query Embedder accepts only a successful provider result with exactly 1024
 numeric values. It converts every value to float, rejects booleans and
 non-numeric values, verifies that every converted value is finite, and
 returns an immutable tuple[float, ...] of length 1024.
@@ -208,18 +229,26 @@ The adapter must not expose an API key, raw provider response body, or
 secret-bearing exception text in the raised application error or public
 result.
 
-### 5.4 Embedding-specific error
+### 5.4 Embedding-specific error boundary
 
-Embedding/provider failures use a distinct public AppError boundary:
+At the V2 Query Embedder boundary, every embedding/provider dependency
+failure uses a distinct public AppError:
 
     code    = RAG_V2_EMBEDDING_UNAVAILABLE
     message = RAG V2 embedding is unavailable
 
-The exact stable message is public. The error must not reuse
-RAG_V2_UNAVAILABLE, which remains the persistence/Supabase/RPC failure
-boundary. Already-created application errors are not blindly remapped; the
-implementation must preserve the repository's established error discipline
-while ensuring raw provider failures cannot escape.
+The exact stable message is public. If the V2 Query Embedder encounters a
+legacy Jina RagUnavailable, provider HTTP failure, network failure, timeout,
+provider/client exception, malformed provider response, missing embedding,
+wrong dimensions, non-numeric or boolean embedding values, or NaN/positive
+infinity/negative infinity, its public result is exactly this V2 embedding
+error. Raw provider and legacy exception text must not escape.
+
+If an error is already exactly the V2 embedding error with code
+RAG_V2_EMBEDDING_UNAVAILABLE, the Query Embedder may re-raise it unchanged
+and must not wrap it again. Repository AppError values are outside the Query
+Embedder catch boundary and are preserved by the Retrieval Service exactly as
+received.
 
 ### 5.5 Retry boundary
 
@@ -280,18 +309,22 @@ that range.
 
 ### 6.2 Parameter validation
 
-final_k defaults to 6 and belongs entirely to the Python retrieval layer.
-Values below 1 raise:
+final_k defaults to 6 and belongs entirely to the Python retrieval layer. It
+must be a Python int; bool is invalid even though bool is an int subclass;
+values must also satisfy final_k >= 1. Values such as True, False, 1.5,
+"6", None, 0, and -1 are invalid and raise:
 
     ValueError("final_k must be at least 1")
 
-score_threshold defaults to 0.70 and is also an UNVALIDATED DEFAULT. It must
-be an acceptable finite numeric threshold. A non-finite value such as NaN,
-positive infinity, or negative infinity raises:
+score_threshold defaults to 0.70 and is also an UNVALIDATED DEFAULT. It
+accepts Python int or float values only; bool is invalid. The accepted value
+is converted to float and must be finite. Numeric strings, None, NaN,
+positive infinity, and negative infinity are invalid and raise:
 
     ValueError("score_threshold must be finite")
 
-The threshold is not restricted to [0, 1]. Retrieval does not clamp it,
+The valid threshold may be 0, 1, 0.70, or -0.25 and is not restricted to
+[0, 1]. Retrieval does not accept numeric strings, clamp it,
 recompute cosine similarity, rescale scores, or introduce a score threshold
 policy into SQL.
 
@@ -415,6 +448,12 @@ AppError as an embedding error merely because the call occurs after
 embedding. It must not expose raw provider or database content, secrets,
 stack traces, or response bodies through a public exception.
 
+Legacy Jina `RagUnavailable` is treated as an embedding/provider dependency
+failure when it crosses the V2 Query Embedder boundary and is translated to
+`RAG_V2_EMBEDDING_UNAVAILABLE`. Legacy callers and legacy behavior remain
+unchanged. A repository `AppError` is outside that boundary and is preserved
+unchanged by the Retrieval Service.
+
 The Stage 10B-2 repository remains responsible for its existing
 RAG_V2_UNAVAILABLE, not-found, conflict, and other persistence mappings.
 Stage 10B-3 does not create a second repository error taxonomy and does not
@@ -450,11 +489,10 @@ or a network service.
 
 ### 10.1 Query embedding tests
 
-tests/unit/test_rag_v2_query_embedding.py must cover:
+tests/unit/test_rag_v2_query_embedding.py assumes it receives an
+already-normalized, non-empty query string and must cover:
 
-- leading and trailing query stripping;
-- preservation of internal whitespace;
-- the exact empty-query ValueError and zero downstream calls;
+- forwarding that already-normalized string to the provider;
 - fixed model jina-embeddings-v3;
 - fixed task retrieval.query;
 - fixed dimensions 1024;
@@ -473,7 +511,13 @@ No test uses a live Jina API key or real HTTP endpoint.
 
 tests/unit/test_rag_v2_retrieval.py must cover:
 
+- non-string query rejection;
+- leading and trailing stripping exactly once;
+- preservation of internal whitespace;
+- empty normalized query rejection;
+- zero embedder calls and zero repository calls for invalid/empty queries;
 - normalized query forwarding to the embedder;
+- RetrievalResult.query equal to normalized_query;
 - exact repository forwarding of query vector and all six repository
   parameters: dataset_key, destination_code, destination_level,
   province_code, attraction_id, and candidate_k;
@@ -488,8 +532,10 @@ tests/unit/test_rag_v2_retrieval.py must cover:
 - fewer than final_k candidates returning the actual available count;
 - RPC empty results producing evidence == ();
 - all-below-threshold results producing evidence == ();
-- exact final_k < 1 validation;
-- exact non-finite threshold validation for NaN and infinities;
+- exact final_k type and final_k < 1 validation, including bool, float,
+  string, None, zero, and negative values;
+- exact score_threshold type and finite validation, including bool, numeric
+  strings, None, NaN, and infinities;
 - exact RagV2Candidate to RetrievalEvidence field mapping;
 - corpus_version_id not appearing on RetrievalEvidence.
 
@@ -568,34 +614,43 @@ of those consumers exists in this stage.
 The Stage 10B-3 design is complete when the later implementation can satisfy
 all of the following without reopening earlier contracts:
 
-1. Query normalization strips only outer whitespace and rejects an empty
-   normalized query with the exact public ValueError.
+1. The Retrieval Service is the only query-normalization owner: it strips
+   outer whitespace exactly once, preserves internal whitespace, passes the
+   normalized non-empty query to the Query Embedder, and rejects an empty
+   normalized query with the exact public ValueError. The Query Embedder never
+   normalizes.
 2. Query embedding uses jina-embeddings-v3, retrieval.query, and exactly
    1024 finite float values, returning a tuple.
 3. Provider failures map to RAG_V2_EMBEDDING_UNAVAILABLE with the exact
    stable message and no raw secret/body leakage.
-4. Repository failures preserve existing RAG V2 persistence AppError
+4. The Query Embedder translates legacy/provider embedding failures to the V2
+   embedding error, while repository failures preserve existing RAG V2 persistence AppError
    semantics, and RagV2Repository.match_chunks(...) receives the exact
    query vector, filters, and unchanged candidate_k.
-5. candidate_k = 40, final_k = 6, and score_threshold = 0.70 are
+5. final_k accepts only Python int values other than bool and requires
+   final_k >= 1, using the exact frozen ValueError for every invalid value.
+   score_threshold accepts only Python int or float values other than bool,
+   converts to float, requires finiteness, and has no [0, 1] restriction,
+   using the exact frozen ValueError for every invalid value.
+6. candidate_k = 40, final_k = 6, and score_threshold = 0.70 are
    explicitly documented as UNVALIDATED DEFAULT values where applicable;
    retrieval owns final_k and threshold validation while the database owns
    the candidate range.
-6. Threshold eligibility is score >= score_threshold, including equality,
+7. Threshold eligibility is score >= score_threshold, including equality,
    with no clamp, rescale, or cosine recomputation.
-7. Candidate order is preserved; deduplication is by first content_hash
+8. Candidate order is preserved; deduplication is by first content_hash
    occurrence; diversity runs in the exact two stable rounds; and the final
    count is at most final_k.
-8. RetrievalEvidence has exactly the frozen ten fields and excludes
+9. RetrievalEvidence has exactly the frozen ten fields and excludes
    corpus_version_id; RetrievalResult has exactly query and evidence.
-9. Empty valid retrievals return successful empty evidence rather than an
+10. Empty valid retrievals return successful empty evidence rather than an
    application error.
-10. Unit/fake-provider tests cover the query, provider, forwarding,
-    threshold, deduplication, diversity, limit, empty-result, validation,
-    error-preservation, and evidence-mapping contracts without live services.
-11. The implementation remains additive: app/rag_v2/repository.py,
-    supabase/migrations/014_rag_v2.sql, legacy RAG modules,
-    app/rag_v2/__init__.py, Planner/runtime wiring, and Stage 10B-4 remain
+11. Unit/fake-provider tests cover the query, provider, forwarding,
+   threshold, deduplication, diversity, limit, empty-result, validation,
+   error-preservation, and evidence-mapping contracts without live services.
+12. The implementation remains additive: app/rag_v2/repository.py,
+   supabase/migrations/014_rag_v2.sql, legacy RAG modules,
+   app/rag_v2/__init__.py, Planner/runtime wiring, and Stage 10B-4 remain
     outside this stage's implementation scope.
 
 The design intentionally avoids ThresholdFilter, ContentDeduplicator,
