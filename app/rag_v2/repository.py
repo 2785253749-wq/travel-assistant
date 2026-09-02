@@ -33,6 +33,7 @@ CorpusStatus = Literal["staging", "active", "superseded", "failed"]
 _ERROR_MESSAGES = {
     "RAG_V2_NOT_FOUND": "RAG V2 record not found",
     "RAG_V2_VERSION_CONFLICT": "RAG V2 corpus version conflicts with existing data",
+    "RAG_V2_ACTIVATION_CONFLICT": "RAG V2 corpus activation conflict",
     "RAG_V2_INVALID_LIFECYCLE": "RAG V2 lifecycle transition is invalid",
     "RAG_V2_UNAVAILABLE": "RAG V2 persistence is unavailable",
 }
@@ -50,6 +51,12 @@ _TASK7_LIFECYCLE_ERROR_PREFIXES = {
     "RAG V2 chunk update requires status = 'staging'",
     "RAG V2 chunk retry reset must clear embedding errors",
     "RAG V2 chunk embedding transition is invalid",
+}
+_TASK8_ACTIVATION_ERROR_PREFIXES = {
+    "RAG_V2_NOT_FOUND:": "RAG_V2_NOT_FOUND",
+    "RAG_V2_VERSION_CONFLICT:": "RAG_V2_VERSION_CONFLICT",
+    "RAG_V2_ACTIVATION_CONFLICT:": "RAG_V2_ACTIVATION_CONFLICT",
+    "RAG_V2_INVALID_LIFECYCLE:": "RAG_V2_INVALID_LIFECYCLE",
 }
 _RAG_V2_EMBEDDING_MODEL = "jina-embeddings-v3"
 _RAG_V2_EMBEDDING_TASK = "retrieval.passage"
@@ -104,6 +111,21 @@ class ChunkRow:
     status: ChunkStatus
     embedding_error_code: str | None
     embedding_error_message: str | None
+
+
+@dataclass(frozen=True)
+class RagV2Candidate:
+    corpus_version_id: UUID
+    attraction_id: UUID
+    chunk_key: str
+    chunk_type: ChunkType
+    content: str
+    content_hash: str
+    source_label: str
+    source_url: str
+    source_type: str
+    reviewed_on: date
+    score: float
 
 
 class RagV2Repository:
@@ -472,6 +494,80 @@ class RagV2Repository:
         except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError):
             raise self._app_error("RAG_V2_UNAVAILABLE") from None
 
+    def activate_corpus(
+        self,
+        *,
+        dataset_key: str,
+        corpus_version_id: UUID,
+        expected_active_corpus_version_id: UUID | None = None,
+    ) -> None:
+        params = {
+            "p_dataset_key": dataset_key,
+            "p_corpus_version_id": str(corpus_version_id),
+            "p_expected_active_corpus_version_id": (
+                str(expected_active_corpus_version_id)
+                if expected_active_corpus_version_id is not None
+                else None
+            ),
+        }
+        try:
+            with database_operation("rag_v2.corpus.activate"):
+                response = self._client.rpc("activate_rag_v2_corpus", params).execute()
+                if response is None or not hasattr(response, "data"):
+                    raise self._app_error("RAG_V2_UNAVAILABLE")
+        except AppError:
+            raise
+        except APIError as exc:
+            raise self._mapped_activation_api_error(exc) from None
+        except httpx.HTTPError:
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+        except (TypeError, ValueError, ValidationError):
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+
+    def match_chunks(
+        self,
+        *,
+        dataset_key: str,
+        query_embedding: Sequence[float],
+        destination_code: str | None = None,
+        destination_level: DestinationLevel | None = None,
+        province_code: str | None = None,
+        attraction_id: UUID | None = None,
+        candidate_k: int = 40,
+    ) -> tuple[RagV2Candidate, ...]:
+        embedding_values = self._validated_embedding(query_embedding)
+        params = {
+            "p_dataset_key": dataset_key,
+            "p_query_embedding": embedding_values,
+            "p_destination_code": destination_code,
+            "p_destination_level": (
+                destination_level.value if destination_level is not None else None
+            ),
+            "p_province_code": province_code,
+            "p_attraction_id": (
+                str(attraction_id) if attraction_id is not None else None
+            ),
+            "p_candidate_k": candidate_k,
+        }
+        try:
+            with database_operation("rag_v2.chunk.match"):
+                response = self._client.rpc("match_rag_v2_chunks", params).execute()
+                rows = self._batch_rows(response)
+                return tuple(self._candidate_from_row(row) for row in rows)
+        except AppError:
+            raise
+        except APIError:
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+        except (
+            httpx.HTTPError,
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            ValidationError,
+        ):
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+
     def _select_one(self, table_name: str, filters: tuple[tuple[str, str], ...]):
         query = self._client.table(table_name).select("*")
         for column, value in filters:
@@ -643,6 +739,27 @@ class RagV2Repository:
             embedding_error_message=cls._optional_string(
                 row.get("embedding_error_message")
             ),
+        )
+
+    @classmethod
+    def _candidate_from_row(cls, row: dict) -> RagV2Candidate:
+        reviewed_on = row["reviewed_on"]
+        if isinstance(reviewed_on, datetime):
+            raise ValueError("reviewed_on must be a date")
+        if not isinstance(reviewed_on, date):
+            reviewed_on = date.fromisoformat(str(reviewed_on))
+        return RagV2Candidate(
+            corpus_version_id=UUID(str(row["corpus_version_id"])),
+            attraction_id=UUID(str(row["attraction_id"])),
+            chunk_key=cls._required_string(row["chunk_key"]),
+            chunk_type=ChunkType(row["chunk_type"]),
+            content=cls._required_string(row["content"]),
+            content_hash=cls._required_string(row["content_hash"]),
+            source_label=cls._required_string(row["source_label"]),
+            source_url=cls._required_string(row["source_url"]),
+            source_type=cls._required_string(row["source_type"]),
+            reviewed_on=reviewed_on,
+            score=float(row["score"]),
         )
 
     @classmethod
@@ -822,4 +939,16 @@ class RagV2Repository:
             )
         ):
             return cls._app_error("RAG_V2_INVALID_LIFECYCLE")
+        return cls._app_error("RAG_V2_UNAVAILABLE")
+
+    @classmethod
+    def _mapped_activation_api_error(cls, error: APIError) -> AppError:
+        if getattr(error, "code", None) != "P0001":
+            return cls._app_error("RAG_V2_UNAVAILABLE")
+        message = getattr(error, "message", None)
+        if not isinstance(message, str):
+            return cls._app_error("RAG_V2_UNAVAILABLE")
+        for prefix, error_code in _TASK8_ACTIVATION_ERROR_PREFIXES.items():
+            if message.startswith(prefix):
+                return cls._app_error(error_code)
         return cls._app_error("RAG_V2_UNAVAILABLE")

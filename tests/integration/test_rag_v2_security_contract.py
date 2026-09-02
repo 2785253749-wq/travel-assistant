@@ -149,3 +149,33 @@ def test_task3_v2_security_artifact_preserves_legacy_rag_security_isolation() ->
     )
     for operation in forbidden_operations:
         assert operation not in sql
+
+
+def test_task8_rpc_execute_is_revoked_from_end_users_and_granted_to_service_role() -> None:
+    sql = _migration_sql()
+
+    expected_boundaries = (
+        (
+            r"public\.activate_rag_v2_corpus",
+            r"text\s*,\s*uuid\s*,\s*uuid",
+        ),
+        (
+            r"public\.match_rag_v2_chunks",
+            r"text\s*,\s*vector\s*,\s*text\s*,\s*text\s*,\s*"
+            r"text\s*,\s*uuid\s*,\s*integer",
+        ),
+    )
+    for function_name, signature in expected_boundaries:
+        assert re.search(
+            rf"revoke\s+execute\s+on\s+function\s+{function_name}\s*"
+            rf"\(\s*{signature}\s*\)\s+from\s+"
+            r"public\s*,\s*anon\s*,\s*authenticated\s*;",
+            sql,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        assert re.search(
+            rf"grant\s+execute\s+on\s+function\s+{function_name}\s*"
+            rf"\(\s*{signature}\s*\)\s+to\s+service_role\s*;",
+            sql,
+            flags=re.IGNORECASE | re.DOTALL,
+        )

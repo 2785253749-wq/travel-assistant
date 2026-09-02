@@ -100,13 +100,45 @@ class FakeQuery:
         return SimpleNamespace(data=response)
 
 
+class FakeRpcQuery:
+    def __init__(self, client, name, params):
+        self.client = client
+        self.name = name
+        self.params = params
+
+    def execute(self):
+        self.client.rpc_calls.append(
+            {
+                "name": self.name,
+                "params": self.params,
+            }
+        )
+        if self.client.raw_rpc_responses:
+            response = self.client.raw_rpc_responses.pop(0)
+            if isinstance(response, BaseException):
+                raise response
+            return response
+        if not self.client.rpc_responses:
+            raise AssertionError("fake RPC response queue is exhausted")
+        response = self.client.rpc_responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return SimpleNamespace(data=response)
+
+
 class FakeClient:
     def __init__(self, *responses):
         self.responses = list(responses)
         self.calls = []
+        self.rpc_responses = []
+        self.raw_rpc_responses = []
+        self.rpc_calls = []
 
     def table(self, name):
         return FakeQuery(self, name)
+
+    def rpc(self, name, params):
+        return FakeRpcQuery(self, name, params)
 
 
 def _corpus_row(
@@ -866,7 +898,7 @@ def test_chunk_row_is_exact_frozen_dataclass_with_immutable_vector():
         instance.status = ChunkStatus.failed
 
 
-def test_task7_methods_are_present_without_task8_or_reuse_surface():
+def test_task7_methods_remain_present_without_reuse_or_generic_escape_hatches():
     repository = _repository(FakeClient())
     public_names = {name for name in dir(repository) if not name.startswith("_")}
 
@@ -878,8 +910,6 @@ def test_task7_methods_are_present_without_task8_or_reuse_surface():
         "reset_chunk_embedding_for_retry",
     } <= public_names
     for name in (
-        "activate_corpus",
-        "match_chunks",
         "upsert",
         "generic_insert",
         "generic_update",
@@ -1402,4 +1432,516 @@ def test_unexpected_task7_http_failure_is_unavailable_without_raw_text(caplog):
 
     _assert_task7_error(error, "RAG_V2_UNAVAILABLE", "RAG V2 persistence is unavailable")
     assert "raw provider response" not in str(error.value)
+    assert "secret" not in caplog.text
+
+
+def test_rag_v2_candidate_is_exact_frozen_dataclass():
+    module = _repository_module()
+    candidate_type = module.RagV2Candidate
+    instance = candidate_type(
+        corpus_version_id=TASK7_CORPUS_ID,
+        attraction_id=TASK7_ATTRACTION_A,
+        chunk_key="candidate-a",
+        chunk_type=ChunkType.overview,
+        content="candidate content",
+        content_hash="f" * 64,
+        source_label="official source",
+        source_url="https://example.com/candidate",
+        source_type="official",
+        reviewed_on=TASK7_REVIEWED_ON,
+        score=0.91,
+    )
+
+    assert is_dataclass(candidate_type)
+    assert [field.name for field in fields(candidate_type)] == [
+        "corpus_version_id",
+        "attraction_id",
+        "chunk_key",
+        "chunk_type",
+        "content",
+        "content_hash",
+        "source_label",
+        "source_url",
+        "source_type",
+        "reviewed_on",
+        "score",
+    ]
+    annotations = get_type_hints(candidate_type)
+    assert annotations["corpus_version_id"] is UUID
+    assert annotations["attraction_id"] is UUID
+    assert annotations["chunk_key"] is str
+    assert annotations["chunk_type"] is ChunkType
+    assert annotations["content"] is str
+    assert annotations["content_hash"] is str
+    assert annotations["source_label"] is str
+    assert annotations["source_url"] is str
+    assert annotations["source_type"] is str
+    assert annotations["reviewed_on"] is date
+    assert annotations["score"] is float
+    with pytest.raises(FrozenInstanceError):
+        instance.score = 0.1
+
+
+def test_task8_repository_methods_exist_without_reuse_or_raw_rpc_surface():
+    repository = _repository(FakeClient())
+
+    assert hasattr(repository, "activate_corpus")
+    assert hasattr(repository, "match_chunks")
+    for name in (
+        "list_embedded_chunks_for_reuse",
+        "raw_rpc",
+        "call_rpc",
+    ):
+        assert not hasattr(repository, name)
+
+
+TASK8_QUERY_VECTOR = tuple([0.25] * 1024)
+TASK8_CANDIDATE_A = {
+    "corpus_version_id": str(TASK7_CORPUS_ID),
+    "attraction_id": str(TASK7_ATTRACTION_A),
+    "chunk_key": "candidate-a",
+    "chunk_type": ChunkType.overview.value,
+    "content": "candidate A content",
+    "content_hash": "a" * 64,
+    "source_label": "official source A",
+    "source_url": "https://example.com/a",
+    "source_type": "official",
+    "reviewed_on": TASK7_REVIEWED_ON.isoformat(),
+    "score": 0.91,
+}
+TASK8_CANDIDATE_B = {
+    "corpus_version_id": str(TASK7_CORPUS_ID),
+    "attraction_id": str(TASK7_ATTRACTION_B),
+    "chunk_key": "candidate-b",
+    "chunk_type": ChunkType.highlights.value,
+    "content": "candidate B content",
+    "content_hash": "b" * 64,
+    "source_label": "official source B",
+    "source_url": "https://example.com/b",
+    "source_type": "official",
+    "reviewed_on": TASK7_REVIEWED_ON.isoformat(),
+    "score": 0.73,
+}
+
+
+def _assert_task8_error(error_info, code, message):
+    _assert_app_error(error_info, code, message)
+
+
+def test_activate_corpus_calls_exact_rpc_with_all_three_parameters_and_no_table_call():
+    client = FakeClient()
+    client.rpc_responses = [None]
+
+    result = _repository(client).activate_corpus(
+        dataset_key=DATASET_KEY,
+        corpus_version_id=TASK7_CORPUS_ID,
+        expected_active_corpus_version_id=WINNING_CORPUS_ID,
+    )
+
+    assert result is None
+    assert client.calls == []
+    assert client.rpc_calls == [
+        {
+            "name": "activate_rag_v2_corpus",
+            "params": {
+                "p_dataset_key": DATASET_KEY,
+                "p_corpus_version_id": str(TASK7_CORPUS_ID),
+                "p_expected_active_corpus_version_id": str(WINNING_CORPUS_ID),
+            },
+        }
+    ]
+
+
+def test_activate_corpus_forwards_explicit_null_expected_active_id():
+    client = FakeClient()
+    client.rpc_responses = [None]
+
+    _repository(client).activate_corpus(
+        dataset_key=DATASET_KEY,
+        corpus_version_id=TASK7_CORPUS_ID,
+    )
+
+    assert client.rpc_calls == [
+        {
+            "name": "activate_rag_v2_corpus",
+            "params": {
+                "p_dataset_key": DATASET_KEY,
+                "p_corpus_version_id": str(TASK7_CORPUS_ID),
+                "p_expected_active_corpus_version_id": None,
+            },
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("prefix", "code", "message"),
+    [
+        (
+            "RAG_V2_NOT_FOUND:",
+            "RAG_V2_NOT_FOUND",
+            "RAG V2 record not found",
+        ),
+        (
+            "RAG_V2_VERSION_CONFLICT:",
+            "RAG_V2_VERSION_CONFLICT",
+            "RAG V2 corpus version conflicts with existing data",
+        ),
+        (
+            "RAG_V2_ACTIVATION_CONFLICT:",
+            "RAG_V2_ACTIVATION_CONFLICT",
+            "RAG V2 corpus activation conflict",
+        ),
+        (
+            "RAG_V2_INVALID_LIFECYCLE:",
+            "RAG_V2_INVALID_LIFECYCLE",
+            "RAG V2 lifecycle transition is invalid",
+        ),
+    ],
+)
+def test_activate_corpus_maps_approved_p0001_prefixes(prefix, code, message):
+    client = FakeClient()
+    client.rpc_responses = [
+        APIError({"code": "P0001", "message": prefix + " detail"})
+    ]
+
+    with pytest.raises(AppError) as error:
+        _repository(client).activate_corpus(
+            dataset_key=DATASET_KEY,
+            corpus_version_id=TASK7_CORPUS_ID,
+        )
+
+    _assert_task8_error(error, code, message)
+
+
+def test_activate_corpus_maps_unrecognized_p0001_to_unavailable():
+    client = FakeClient()
+    client.rpc_responses = [
+        APIError({"code": "P0001", "message": "unrelated database error"})
+    ]
+
+    with pytest.raises(AppError) as error:
+        _repository(client).activate_corpus(
+            dataset_key=DATASET_KEY,
+            corpus_version_id=TASK7_CORPUS_ID,
+        )
+
+    _assert_task8_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+
+
+def test_activate_corpus_requires_p0001_for_prefix_mapping():
+    client = FakeClient()
+    client.rpc_responses = [
+        APIError(
+            {
+                "code": "23514",
+                "message": "RAG_V2_NOT_FOUND: detail",
+            }
+        )
+    ]
+
+    with pytest.raises(AppError) as error:
+        _repository(client).activate_corpus(
+            dataset_key=DATASET_KEY,
+            corpus_version_id=TASK7_CORPUS_ID,
+        )
+
+    _assert_task8_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+
+
+def test_activate_corpus_maps_unexpected_http_failure_without_raw_text(caplog):
+    client = FakeClient()
+    client.rpc_responses = [httpx.ConnectError("activation provider secret")]
+
+    with caplog.at_level(logging.WARNING, logger="app.database"):
+        with pytest.raises(AppError) as error:
+            _repository(client).activate_corpus(
+                dataset_key=DATASET_KEY,
+                corpus_version_id=TASK7_CORPUS_ID,
+            )
+
+    _assert_task8_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+    assert "activation provider secret" not in str(error.value)
+    assert "secret" not in caplog.text
+
+
+def test_activate_corpus_maps_unexpected_api_failure_without_raw_text(caplog):
+    client = FakeClient()
+    client.rpc_responses = [
+        APIError({"code": "XX000", "message": "activation database secret"})
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="app.database"):
+        with pytest.raises(AppError) as error:
+            _repository(client).activate_corpus(
+                dataset_key=DATASET_KEY,
+                corpus_version_id=TASK7_CORPUS_ID,
+            )
+
+    _assert_task8_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+    assert "activation database secret" not in str(error.value)
+    assert "secret" not in caplog.text
+
+
+def test_activate_corpus_maps_malformed_rpc_response_to_unavailable():
+    client = FakeClient()
+    client.raw_rpc_responses = [None]
+
+    with pytest.raises(AppError) as error:
+        _repository(client).activate_corpus(
+            dataset_key=DATASET_KEY,
+            corpus_version_id=TASK7_CORPUS_ID,
+        )
+
+    _assert_task8_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TypeError("activation client type secret"),
+        ValueError("activation client value secret"),
+    ],
+)
+def test_activate_corpus_normalizes_unexpected_local_failures(failure):
+    client = FakeClient()
+    client.rpc_responses = [failure]
+
+    with pytest.raises(AppError) as error:
+        _repository(client).activate_corpus(
+            dataset_key=DATASET_KEY,
+            corpus_version_id=TASK7_CORPUS_ID,
+        )
+
+    _assert_task8_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+    assert "secret" not in str(error.value)
+
+
+def test_match_chunks_calls_exact_rpc_with_all_filters_and_preserves_types():
+    client = FakeClient()
+    client.rpc_responses = [[]]
+
+    result = _repository(client).match_chunks(
+        dataset_key=DATASET_KEY,
+        query_embedding=TASK8_QUERY_VECTOR,
+        destination_code="350200",
+        destination_level=DestinationLevel.prefecture_city,
+        province_code="350000",
+        attraction_id=TASK7_ATTRACTION_A,
+        candidate_k=17,
+    )
+
+    assert result == ()
+    assert client.calls == []
+    assert client.rpc_calls == [
+        {
+            "name": "match_rag_v2_chunks",
+            "params": {
+                "p_dataset_key": DATASET_KEY,
+                "p_query_embedding": list(TASK8_QUERY_VECTOR),
+                "p_destination_code": "350200",
+                "p_destination_level": DestinationLevel.prefecture_city.value,
+                "p_province_code": "350000",
+                "p_attraction_id": str(TASK7_ATTRACTION_A),
+                "p_candidate_k": 17,
+            },
+        }
+    ]
+
+
+def test_match_chunks_forwards_null_filters_and_explicit_default_candidate_k():
+    client = FakeClient()
+    client.rpc_responses = [[]]
+
+    _repository(client).match_chunks(
+        dataset_key=DATASET_KEY,
+        query_embedding=TASK8_QUERY_VECTOR,
+        destination_code=None,
+        destination_level=None,
+        province_code=None,
+        attraction_id=None,
+    )
+
+    assert client.rpc_calls == [
+        {
+            "name": "match_rag_v2_chunks",
+            "params": {
+                "p_dataset_key": DATASET_KEY,
+                "p_query_embedding": list(TASK8_QUERY_VECTOR),
+                "p_destination_code": None,
+                "p_destination_level": None,
+                "p_province_code": None,
+                "p_attraction_id": None,
+                "p_candidate_k": 40,
+            },
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "query_embedding",
+    [
+        [0.1] * 1023,
+        [0.1] * 1025,
+        [0.1] * 1023 + [math.nan],
+        [0.1] * 1023 + [math.inf],
+        [0.1] * 1023 + [-math.inf],
+    ],
+)
+def test_match_chunks_rejects_invalid_query_vectors_before_rpc(query_embedding):
+    client = FakeClient()
+
+    with pytest.raises(ValueError) as error:
+        _repository(client).match_chunks(
+            dataset_key=DATASET_KEY,
+            query_embedding=query_embedding,
+        )
+
+    assert str(error.value) == "embedding must contain 1024 finite values"
+    assert client.rpc_calls == []
+
+
+def test_match_chunks_decodes_empty_response_as_empty_tuple():
+    client = FakeClient()
+    client.rpc_responses = [[]]
+
+    result = _repository(client).match_chunks(
+        dataset_key=DATASET_KEY,
+        query_embedding=TASK8_QUERY_VECTOR,
+    )
+
+    assert result == ()
+
+
+def test_match_chunks_decodes_exact_candidate_rows_in_rpc_order():
+    client = FakeClient()
+    client.rpc_responses = [[TASK8_CANDIDATE_B, TASK8_CANDIDATE_A]]
+
+    result = _repository(client).match_chunks(
+        dataset_key=DATASET_KEY,
+        query_embedding=TASK8_QUERY_VECTOR,
+    )
+
+    assert [candidate.chunk_key for candidate in result] == [
+        "candidate-b",
+        "candidate-a",
+    ]
+    assert result == (
+        _repository_module().RagV2Candidate(
+            corpus_version_id=TASK7_CORPUS_ID,
+            attraction_id=TASK7_ATTRACTION_B,
+            chunk_key="candidate-b",
+            chunk_type=ChunkType.highlights,
+            content="candidate B content",
+            content_hash="b" * 64,
+            source_label="official source B",
+            source_url="https://example.com/b",
+            source_type="official",
+            reviewed_on=TASK7_REVIEWED_ON,
+            score=0.73,
+        ),
+        _repository_module().RagV2Candidate(
+            corpus_version_id=TASK7_CORPUS_ID,
+            attraction_id=TASK7_ATTRACTION_A,
+            chunk_key="candidate-a",
+            chunk_type=ChunkType.overview,
+            content="candidate A content",
+            content_hash="a" * 64,
+            source_label="official source A",
+            source_url="https://example.com/a",
+            source_type="official",
+            reviewed_on=TASK7_REVIEWED_ON,
+            score=0.91,
+        ),
+    )
+
+
+def test_match_chunks_preserves_rpc_score_without_range_validation_or_clamping():
+    row = dict(TASK8_CANDIDATE_A, score=-3.25)
+    client = FakeClient()
+    client.rpc_responses = [[row]]
+
+    result = _repository(client).match_chunks(
+        dataset_key=DATASET_KEY,
+        query_embedding=TASK8_QUERY_VECTOR,
+    )
+
+    assert result[0].score == -3.25
+
+
+def test_match_chunks_maps_score_overflow_to_unavailable():
+    row = dict(TASK8_CANDIDATE_A, score=10**10000)
+    client = FakeClient()
+    client.rpc_responses = [[row]]
+
+    with pytest.raises(AppError) as error:
+        _repository(client).match_chunks(
+            dataset_key=DATASET_KEY,
+            query_embedding=TASK8_QUERY_VECTOR,
+        )
+
+    _assert_task8_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+
+
+def test_match_chunks_maps_malformed_candidate_row_to_unavailable():
+    client = FakeClient()
+    client.rpc_responses = [[{"corpus_version_id": "not-a-uuid"}]]
+
+    with pytest.raises(AppError) as error:
+        _repository(client).match_chunks(
+            dataset_key=DATASET_KEY,
+            query_embedding=TASK8_QUERY_VECTOR,
+        )
+
+    _assert_task8_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+
+
+def test_match_chunks_maps_unexpected_http_failure_without_raw_text(caplog):
+    client = FakeClient()
+    client.rpc_responses = [httpx.ConnectError("retrieval provider secret")]
+
+    with caplog.at_level(logging.WARNING, logger="app.database"):
+        with pytest.raises(AppError) as error:
+            _repository(client).match_chunks(
+                dataset_key=DATASET_KEY,
+                query_embedding=TASK8_QUERY_VECTOR,
+            )
+
+    _assert_task8_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+    assert "retrieval provider secret" not in str(error.value)
     assert "secret" not in caplog.text

@@ -772,3 +772,77 @@ def test_match_rag_v2_chunks_preserves_legacy_and_activation_isolation() -> None
         assert forbidden not in sql
     assert sql.count("create or replace function public.activate_rag_v2_corpus") == 1
     assert "match_rag_v2_chunks" in sql
+
+
+REPOSITORY_PATH = PROJECT_ROOT / "app" / "rag_v2" / "repository.py"
+
+
+def _repository_source() -> str:
+    return REPOSITORY_PATH.read_text(encoding="utf-8")
+
+
+def _repository_method_source(source: str, method_name: str) -> str:
+    match = re.search(
+        rf"(?ms)^    def {re.escape(method_name)}\(.*?(?=^    def |\Z)",
+        source,
+    )
+    assert match is not None
+    return match.group()
+
+
+def test_task8_repository_declares_candidate_and_typed_rpc_methods() -> None:
+    source = _repository_source()
+
+    assert "class RagV2Candidate" in source
+    assert "def activate_corpus" in source
+    assert "def match_chunks" in source
+    for forbidden in (
+        "list_embedded_chunks_for_reuse",
+        "def raw_rpc",
+        "def call_rpc",
+    ):
+        assert forbidden not in source
+
+
+def test_task8_activation_repository_uses_exact_three_parameter_rpc() -> None:
+    body = _repository_method_source(_repository_source(), "activate_corpus")
+
+    assert 'self._client.rpc("activate_rag_v2_corpus"' in body
+    for parameter in (
+        '"p_dataset_key"',
+        '"p_corpus_version_id"',
+        '"p_expected_active_corpus_version_id"',
+    ):
+        assert parameter in body
+    assert "expected_active_corpus_version_id" in body
+    assert ".table(" not in body
+
+
+def test_task8_match_repository_uses_exact_seven_parameter_rpc() -> None:
+    body = _repository_method_source(_repository_source(), "match_chunks")
+
+    assert 'self._client.rpc("match_rag_v2_chunks"' in body
+    for parameter in (
+        '"p_dataset_key"',
+        '"p_query_embedding"',
+        '"p_destination_code"',
+        '"p_destination_level"',
+        '"p_province_code"',
+        '"p_attraction_id"',
+        '"p_candidate_k"',
+    ):
+        assert parameter in body
+    assert ".table(" not in body
+
+
+def test_task8_repository_does_not_expose_generic_rpc_or_retrieval_reuse() -> None:
+    source = _repository_source()
+
+    for forbidden in (
+        "def list_embedded_chunks_for_reuse",
+        "def raw_rpc",
+        "def call_rpc",
+        "def execute_sql",
+        "def generic_rpc",
+    ):
+        assert forbidden not in source

@@ -489,3 +489,34 @@ def test_task2_chunk_transition_guard_preserves_retry_graph_and_clears_retry_err
     assert "embedding_error_message = null" in body
     assert "rag v2 chunk embedding transition is invalid" in body
     assert re.search(r"raise\s+exception", body, flags=re.IGNORECASE)
+
+
+def test_task8_migration_declares_exact_activation_and_candidate_rpc_signatures() -> None:
+    sql = _migration_sql()
+
+    activation = re.search(
+        r"create\s+or\s+replace\s+function\s+public\.activate_rag_v2_corpus\s*"
+        r"\((?P<args>.*?)\)\s*returns\s+(?P<returns>void)\b",
+        sql,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert activation is not None
+    assert _normalized(activation.group("args")) == (
+        "p_dataset_key text, p_corpus_version_id uuid, "
+        "p_expected_active_corpus_version_id uuid default null"
+    )
+
+    candidate = re.search(
+        r"create\s+or\s+replace\s+function\s+public\.match_rag_v2_chunks\s*"
+        r"\((?P<args>.*?)\)\s*returns\s+table\b",
+        sql,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    assert candidate is not None
+    assert _normalized(candidate.group("args")) == (
+        "p_dataset_key text, p_query_embedding vector(1024), "
+        "p_destination_code text default null, "
+        "p_destination_level text default null, "
+        "p_province_code text default null, "
+        "p_attraction_id uuid default null, p_candidate_k integer default 40"
+    )
