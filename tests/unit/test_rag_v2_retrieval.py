@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import FrozenInstanceError, fields
 from datetime import date
 from inspect import signature
 from math import inf, nan
+from pathlib import Path
 from typing import Protocol, get_type_hints
 from uuid import UUID
 
@@ -28,6 +30,52 @@ _ATTRACTION_A = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 _ATTRACTION_B = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 _ATTRACTION_C = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 _QUERY_VECTOR = tuple([0.25] * 1024)
+_EXPECTED_ROOT_EXPORTS = [
+    "RagV2Schema",
+    "DestinationLevel",
+    "ChunkType",
+    "AttractionLifecycleStatus",
+    "AttractionVersionStatus",
+    "ChunkStatus",
+    "EmbeddingTask",
+    "Destination",
+    "EmbeddingProfile",
+    "SourceProvenance",
+    "StableAttraction",
+    "AttractionVersionMetadata",
+    "SemanticSection",
+    "normalize_text",
+    "normalize_content",
+    "content_hash",
+    "canonical_metadata_json",
+    "metadata_hash",
+    "EmbeddingInput",
+    "build_embedding_input",
+    "canonical_embedding_text",
+    "embedding_input_hash",
+    "ManifestChunk",
+    "ManifestAttraction",
+    "ManifestInput",
+    "canonical_manifest_json",
+    "manifest_hash",
+    "AttractionIdentitySource",
+    "rename_attraction",
+    "merge_attraction",
+    "retire_attraction",
+    "handle_corpus_absence",
+    "SemanticChunk",
+    "CHUNK_KEY_SCHEMA_VERSION",
+    "DEFAULT_CHUNK_BUDGET",
+    "chunk_key_for",
+    "SemanticChunker",
+    "IncrementalSubject",
+    "IncrementalAction",
+    "EmbeddingIdentity",
+    "PreviousEmbedding",
+    "IncrementalCandidate",
+    "IncrementalDecisionResult",
+    "decide_incremental",
+]
 
 
 def _evidence(*, content: str = "厦门适合看日落") -> RetrievalEvidence:
@@ -208,6 +256,56 @@ def test_task2_symbols_remain_module_level_and_root_exports_stay_frozen() -> Non
     assert "RetrievalEvidence" not in rag_v2.__all__
     assert "RetrievalResult" not in rag_v2.__all__
     assert len(rag_v2.__all__) == 44
+
+
+def test_task3_preserves_exact_frozen_root_export_surface() -> None:
+    assert rag_v2.__all__ == _EXPECTED_ROOT_EXPORTS
+    assert {
+        "QueryEmbedder",
+        "RetrievalEvidence",
+        "RetrievalResult",
+        "RetrievalService",
+        "JinaQueryEmbedder",
+        "JinaQueryProvider",
+        "QueryEmbeddingProvider",
+    }.isdisjoint(rag_v2.__all__)
+
+
+def test_retrieval_module_has_no_forbidden_direct_layer_imports() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    retrieval_path = project_root / "app" / "rag_v2" / "retrieval.py"
+    tree = ast.parse(retrieval_path.read_text(encoding="utf-8"))
+
+    imported_modules: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            imported_modules.append(node.module)
+
+    forbidden_module_roots = (
+        "supabase",
+        "pgvector",
+        "httpx",
+        "postgrest",
+        "jina",
+        "planner",
+        "app.agent",
+        "app.composition",
+        "app.infrastructure.supabase",
+        "app.rag",
+        "app.runtime",
+        "app.rag_v2.importer",
+        "app.rag_v2.reuse",
+    )
+
+    def is_forbidden(module: str) -> bool:
+        return any(
+            module == root or module.startswith(f"{root}.")
+            for root in forbidden_module_roots
+        )
+
+    assert [module for module in imported_modules if is_forbidden(module)] == []
 
 
 def test_retrieval_service_constructor_and_method_have_exact_keyword_only_api() -> None:
