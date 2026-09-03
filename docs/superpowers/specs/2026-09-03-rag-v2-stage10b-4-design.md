@@ -98,7 +98,7 @@ The importer composes existing models and seams with the following new frozen in
         reused_chunk_keys: tuple[str, ...]
         embedded_chunk_keys: tuple[str, ...]
 
-The result type represents successful completion only. A failure does not return a partially-ready result. On success, ready_for_activation is true, all required chunk rows are authoritative embedded rows, and the corpus remains staging.
+The result type represents a completed import attempt. A failure does not return a partially-ready result. For a staging import that reaches exact readiness, ready_for_activation is true, all expected chunk rows are authoritative embedded rows, and the corpus remains staging. For an active or superseded terminal no-op, ready_for_activation is false because no activation is pending.
 
 The public orchestration type is:
 
@@ -131,26 +131,46 @@ Identity resolution is deterministic:
 
 Allocation is performed only for a previously unresolved registry key. The registry mapping, not a source row's incidental UUID, is authoritative. A failed import does not silently allocate a second identity on retry.
 
+The current Stage 10B-1 contracts do not reject an empty section tuple at model construction time, and SemanticChunker.chunk operates on one supplied section at a time. Therefore sections == () is structurally valid for ImportAttraction. An included attraction with no sections produces no expected chunks and cannot satisfy the final ready_for_activation predicate; a suppressed attraction may have no sections. The importer rejects an included zero-chunk snapshot as not ready and never claims activation readiness for it.
+
+For one attraction, input sections must have unique ChunkType values. This is an importer-level identity guard, not a change to SemanticChunker: the existing chunker starts ordinals at zero for each supplied section, while storage identity is attraction_id plus chunk_type plus ordinal. Repeated ChunkType values would therefore create duplicate chunk identities. The importer rejects repeated section chunk types before persistence.
+
 ## 5. Import Flow
 
-RagV2Importer.import_corpus follows this order:
+RagV2Importer.import_corpus follows this exact order:
 
-1. Validate request shape, non-empty dataset/version identity, unique registry keys, attraction metadata, sections, fixed passage profile, and manifest consistency.
+1. Validate the deterministic request: non-empty dataset/version identity, boolean retry_failed, unique registry keys, valid metadata, valid provenance, valid section tuple rules, fixed passage profile, and manifest consistency. The canonical requested manifest hash is manifest_hash(request.manifest), and request.dataset_key must equal request.manifest.dataset_key.
 2. Resolve or allocate stable attraction identities.
-3. Create or retrieve the immutable corpus version through RagV2Repository.create_corpus_version.
-4. Ensure each stable attraction exists through the existing identity/lifecycle persistence seam.
-5. Insert attraction-version metadata through insert_attraction_versions.
-6. Chunk each section through the existing SemanticChunker.
-7. Build and compare the generated manifest artifact and manifest hash.
-8. Insert pending chunks through insert_chunks.
-9. For every current chunk, obtain eligible previous embeddings from the dedicated reuse read seam.
-10. Build an IncrementalCandidate with the fixed current passage identity and call decide_incremental.
-11. For REUSE, persist the exact prior validated vector through mark_chunk_embedded without calling Jina.
-12. For EMBED, create the canonical embedding text, call the passage embedder once, validate its vector, and persist it through mark_chunk_embedded.
-13. Re-read authoritative persisted rows and perform the application readiness checks.
-14. Return a successful CorpusImportResult with ready_for_activation true, without calling activate_corpus.
+3. Create or retrieve the authoritative corpus through RagV2Repository.create_corpus_version.
+4. Branch on the authoritative corpus status:
+   - active with the same manifest: return a terminal no-op result;
+   - superseded with the same manifest: return a terminal no-op result;
+   - failed: raise the existing RAG_V2_VERSION_CONFLICT;
+   - staging: continue.
+5. Build the deterministic expected attraction-version snapshot.
+6. Chunk every supplied section and compute canonical embedding identities.
+7. Build and verify the canonical manifest artifact and manifest hash.
+8. Read authoritative current attraction versions through list_attraction_versions.
+9. Read authoritative current chunks through list_chunk_rows.
+10. Reconcile the requested immutable snapshot with those rows.
+11. Insert only missing attraction versions through insert_attraction_versions.
+12. Insert only missing chunks as pending through insert_chunks.
+13. Process every expected chunk in deterministic attraction_id, chunk_type, ordinal, chunk_key order:
+    - an exact existing embedded row is retained;
+    - an exact existing pending row enters the reuse/embed decision;
+    - an existing failed row with retry_failed false remains failed and raises the frozen lifecycle-level failure;
+    - an existing failed row with retry_failed true is reset to pending before the reuse/embed decision;
+    - a newly inserted pending row enters the reuse/embed decision.
+14. For REUSE, persist the exact prior validated vector through mark_chunk_embedded without calling Jina.
+15. For EMBED, create canonical embedding text, call the passage embedder once, validate its vector, and persist it through mark_chunk_embedded.
+16. On a passage provider failure, call mark_chunk_embedding_failed for the current chunk with the frozen safe error code/message. If that failure-record write itself raises a repository AppError, preserve the original RAG_V2_EMBEDDING_UNAVAILABLE and do not issue a corpus-failure mutation; retain the corpus staging state when the database permits it.
+17. Freshly re-read the authoritative corpus, attraction versions, and chunk rows.
+18. Evaluate the exact readiness predicates.
+19. If the staging snapshot is exact and complete, return ready_for_activation = true.
+20. A terminal active/superseded branch has already returned ready_for_activation = false.
+21. Never call activate_corpus.
 
-Lifecycle subjects are handled by decide_incremental before present-chunk reuse logic. Removed, absent, explicitly retired, and merged-source subjects use the already-approved actions. The importer translates those actions to the existing repository lifecycle methods and does not duplicate the decision table.
+Lifecycle subjects are handled by decide_incremental before present-chunk reuse logic. Removed, absent, explicitly retired, and merged-source subjects use the already-approved actions when a lifecycle input is present. The importer translates those actions to the existing repository lifecycle methods and does not duplicate the decision table. A present chunk always uses the existing pure decision function; no importer-specific action table is introduced.
 
 No greedy chunk recombination, alternate hash implementation, profile inference, query embedding, or activation shortcut is allowed.
 
@@ -257,6 +277,52 @@ For each current present chunk, the importer supplies the current fixed identity
 
 The importer requests previous candidates by the current embedding_input_hash and excludes the current corpus version. decide_incremental then performs the exact identity and vector eligibility checks.
 
+For each expected chunk in CorpusImportInput, the importer constructs an IncrementalCandidate with subject = IncrementalSubject.present_chunk. The other existing subjects remain owned by decide_incremental and the identity/lifecycle operations: this importer input does not infer removal, absence, retirement, or merge from an omitted section.
+
+The following field-level classification is frozen from AttractionVersionMetadata, SemanticChunk, SemanticSection, build_embedding_input, and canonical_embedding_text:
+
+| Field | Classification | Incremental consequence |
+|---|---|---|
+| AttractionVersionMetadata.attraction_id | metadata/storage identity only | does not authorize reuse; a changed identity creates a different attraction snapshot |
+| AttractionVersionMetadata.canonical_name | canonical embedding input | changes embedding_input_hash and requires EMBED |
+| AttractionVersionMetadata.aliases | metadata-only | may change metadata_hash; no EMBED by itself; REUSE remains allowed only when the exact five-field identity matches |
+| AttractionVersionMetadata.destination.destination_code | canonical embedding input | changes embedding_input_hash and requires EMBED |
+| AttractionVersionMetadata.destination.destination_level | canonical embedding input | changes embedding_input_hash and requires EMBED |
+| AttractionVersionMetadata.destination.destination_name | canonical embedding input | changes embedding_input_hash and requires EMBED |
+| AttractionVersionMetadata.destination.province_code | metadata-only | may change metadata_hash; no EMBED by itself |
+| AttractionVersionMetadata.destination.province_name | metadata-only | may change metadata_hash; no EMBED by itself |
+| AttractionVersionMetadata.destination.district_name | metadata-only | may change metadata_hash; no EMBED by itself |
+| AttractionVersionMetadata.destination.latitude | metadata-only | may change metadata_hash; no EMBED by itself |
+| AttractionVersionMetadata.destination.longitude | metadata-only | may change metadata_hash; no EMBED by itself |
+| AttractionVersionMetadata.category | metadata-only | may change metadata_hash; no EMBED by itself |
+| AttractionVersionMetadata.tags | metadata-only | may change metadata_hash; no EMBED by itself |
+| AttractionVersionMetadata.status | metadata-only/lifecycle input | may change stored version state; no EMBED by itself |
+| SemanticSection.attraction_id | storage identity | a mismatch is invalid; a changed identity creates a different attraction snapshot |
+| SemanticSection.chunk_type | canonical embedding input | changes embedding_input_hash and requires EMBED |
+| SemanticSection.content | source content | after normalization, changes normalized_content and requires EMBED when the canonical input changes |
+| SemanticSection.source_label | provenance-only | does not change content_hash or embedding_input_hash; REUSE allowed |
+| SemanticSection.source_url | provenance-only | does not change content_hash or embedding_input_hash; REUSE allowed |
+| SemanticSection.source_type | provenance-only | does not change content_hash or embedding_input_hash; REUSE allowed |
+| SemanticSection.reviewed_on | provenance-only | does not change content_hash or embedding_input_hash; REUSE allowed |
+| SemanticChunk.chunk_key | logical/storage identity | not reuse identity; a different key may reuse a vector |
+| SemanticChunk.ordinal | logical/storage position | not reuse identity; an ordinal change creates a different logical chunk |
+| SemanticChunk.normalized_content | canonical embedding input | changes content_hash and embedding_input_hash and requires EMBED |
+| SemanticChunk.content_hash | derived content hash | not an independent reuse authorization; it changes when normalized content changes |
+| SemanticChunk.embedding_input_hash | algorithmic reuse authority | exact mismatch produces EMBED; it is never recomputed by the decision layer |
+| SemanticChunk.source_label | provenance-only | no EMBED by itself |
+| SemanticChunk.source_url | provenance-only | no EMBED by itself |
+| SemanticChunk.source_type | provenance-only | no EMBED by itself |
+| SemanticChunk.reviewed_on | provenance-only | no EMBED by itself |
+| EmbeddingInput.schema_version | canonical embedding input/profile | fixed Manifest V1 validation rejects an unsupported mutation |
+| EmbeddingInput.canonical_attraction_name | canonical embedding input | changes embedding_input_hash and requires EMBED |
+| EmbeddingInput.destination_name | canonical embedding input | changes embedding_input_hash and requires EMBED |
+| EmbeddingInput.destination_code | canonical embedding input | changes embedding_input_hash and requires EMBED |
+| EmbeddingInput.destination_level | canonical embedding input | changes embedding_input_hash and requires EMBED |
+| EmbeddingInput.chunk_type | canonical embedding input | changes embedding_input_hash and requires EMBED |
+| EmbeddingInput.normalized_content | canonical embedding input | changes embedding_input_hash and requires EMBED |
+
+The algorithmic authority remains embedding_input_hash plus the other four exact identity fields. This table is documentation of existing canonical behavior, not a second decision algorithm. Under the fixed Manifest V1 contract, a profile or schema change is rejected during manifest/profile validation rather than silently treated as metadata-only reuse.
+
 REUSE means:
 
 - the previous corpus is active or superseded;
@@ -278,7 +344,7 @@ The importer never copies a vector merely because attraction_id, chunk_type, or 
 The importer uses the existing create_corpus_version idempotency contract:
 
 - the identity is dataset_key plus version_label;
-- an existing staging, active, or superseded version with the same manifest hash is reusable;
+- an existing staging, active, or superseded version with the same manifest hash is returned authoritatively;
 - an existing failed version is a conflict;
 - a different manifest hash is a conflict;
 - a race is resolved by reading the authoritative existing identity;
@@ -286,24 +352,34 @@ The importer uses the existing create_corpus_version idempotency contract:
 
 The request corpus_version_id is the candidate ID for a new corpus. If an idempotent existing version is returned with another authoritative UUID, the importer uses the returned UUID and does not create a duplicate.
 
-Attraction versions and chunks are immutable. The importer never updates an existing immutable payload and never turns an insert conflict into an overwrite.
+The terminal branches are exact:
 
-On a rerun of the same deterministic staging request:
+- active with the same manifest returns a completed no-op with corpus set to the authoritative active row, chunk_rows = (), ready_for_activation = false, reused_chunk_keys = (), and embedded_chunk_keys = (). It performs no attraction-version insert, chunk insert, reset, vector mutation, provider call, corpus failure mutation, or activation.
+- superseded with the same manifest returns the same completed terminal no-op shape with the authoritative superseded row and ready_for_activation = false. It is never resurrected or mutated.
+- failed returns the existing RAG_V2_VERSION_CONFLICT and is never resurrected.
+- staging is the only status that enters snapshot reconciliation and chunk processing.
 
-- exact existing attraction-version rows are accepted as already persisted;
-- exact existing chunk rows are accepted as already persisted;
-- a mismatch in any immutable field is a version conflict;
-- pending rows remain pending;
-- embedded rows are verified against the expected profile, hashes, provenance, and vector shape;
-- failed rows remain failed unless retry_failed is true;
-- when retry_failed is true, reset_chunk_embedding_for_retry is called explicitly before a fresh reuse-or-embed decision;
-- a failed corpus is never silently resurrected by the importer;
-- no second identity allocation occurs for an already-resolved registry key;
-- no duplicate vector operation is performed for an already-authoritative embedded row unless an explicit retry policy requires it.
+Attraction versions and chunks are immutable. For a staging corpus, the importer reads the complete authoritative attraction-version and chunk snapshots before either immutable insert. It compares requested identities and every immutable field, then inserts only missing rows. It never blindly inserts all expected rows, uses upsert, uses ignore-duplicates, or catches every unique conflict as a substitute for reconciliation.
 
-The final snapshot is compared by stable keys and canonical field values. Caller order never determines persisted identity or result order.
+The exact staging rerun matrix is:
 
-There is no claim of a distributed transaction across the identity registry, Supabase, and Jina. If a later step fails, already-persisted staging rows remain for diagnostics and explicit retry. The importer marks the corpus failed when the repository can safely do so, then raises the typed failure.
+| Existing row | Immutable comparison | retry_failed | Action |
+|---|---|---:|---|
+| attraction version missing | not applicable | either | insert exactly once |
+| attraction version present | every immutable field equal | either | accept authoritative row and skip insert |
+| attraction version present | any immutable field differs | either | raise RAG_V2_VERSION_CONFLICT and mark corpus failed as deterministic integrity conflict |
+| chunk missing | not applicable | either | insert pending, then run reuse/embed decision |
+| chunk embedded | all immutable fields, profile, hashes, provenance, and vector valid/equal | either | retain authoritative row; zero provider calls and zero vector mutation |
+| chunk embedded | any immutable/profile/hash/provenance/vector conflict | either | raise RAG_V2_VERSION_CONFLICT and mark corpus failed as deterministic integrity conflict |
+| chunk pending | immutable fields equal | either | skip insert and run reuse/embed decision |
+| chunk failed | immutable fields equal | false | do not reset or call provider; retain failed staging row and raise RAG_V2_INVALID_LIFECYCLE |
+| chunk failed | immutable fields equal | true | reset to pending, then run reuse/embed decision |
+
+For an existing embedded row, the vector must be non-null, exactly 1024-dimensional, numeric, non-bool, finite, and paired with the fixed passage profile. A malformed or unsafe authoritative row maps to RAG_V2_UNAVAILABLE rather than being repaired by the importer.
+
+For a staging row that is incomplete but retryable, pending and failed state is preserved. A failed chunk is not automatically promoted to corpus failure. A retry is explicit through retry_failed and reset_chunk_embedding_for_retry; no scheduler, background retry, retry counter, or backoff subsystem exists.
+
+Caller order never determines persisted identity or result order. There is no claim of a distributed transaction across the identity registry, Supabase, and Jina. If a later retryable step fails, already-persisted staging rows remain for diagnostics and explicit retry. Only deterministic corpus-level integrity conflicts and non-retryable final invariant conflicts use mark_corpus_failed.
 
 ## 10. Failure and Error Semantics
 
@@ -320,13 +396,34 @@ These failures do not expose provider or database internals.
 
 Repository failures preserve the repository's existing AppError contract. Raw Supabase/PostgREST errors do not cross the repository boundary.
 
-Passage-provider failures map to RAG_V2_EMBEDDING_UNAVAILABLE with the frozen safe message. The importer marks the affected chunk failed with a concise safe error code/message, marks the corpus failed where possible, preserves the staging rows, and raises the typed error.
+Passage-provider failures map to RAG_V2_EMBEDDING_UNAVAILABLE with the frozen safe message. The importer marks the affected chunk failed with a concise safe error code/message, keeps the corpus staging, preserves the staging rows, and raises the original safe embedding AppError. A single chunk/provider failure never calls mark_corpus_failed.
 
-Malformed reuse rows, malformed current snapshot rows, malformed vectors, and unexpected repository response/conversion failures map to RAG_V2_UNAVAILABLE. No raw Python conversion exception or raw response content escapes.
+An already-created repository AppError, including RAG_V2_UNAVAILABLE or another ordinary persistence error, is preserved and propagated. During a staging import the importer performs no corpus-failure mutation for that transient error; the corpus remains staging unless the database operation itself has already changed authoritative state.
 
-A final readiness failure also marks the corpus failed where possible and raises. A success result is returned only after all required chunks are authoritative embedded rows with valid fixed-profile vectors.
+Malformed reuse rows, malformed current snapshot rows, malformed vectors, and unexpected repository response/conversion failures map to RAG_V2_UNAVAILABLE. No raw Python conversion exception or raw response content escapes. These source-read failures perform no corpus-failure mutation; an existing staging corpus remains staging.
+
+Deterministic corpus-level integrity failures mark the staging corpus failed after it exists. They are limited to an authoritative immutable snapshot conflict, an authoritative manifest/corpus identity contradiction, an unexpected immutable extra or mismatching version/chunk row, or a final authoritative persisted state that violates a non-retryable corpus invariant. Pending rows, failed rows, retry_failed = false, temporary Jina unavailability, and temporary Supabase unavailability are not corpus-level terminal failures.
+
+A readiness result is not returned for an incomplete staging corpus. If incompleteness is retryable, the importer raises RAG_V2_INVALID_LIFECYCLE, preserves pending/failed staging rows, and leaves the corpus staging. If the exact readiness predicate detects deterministic integrity conflict, the importer raises RAG_V2_VERSION_CONFLICT and may mark the corpus failed. A success result is returned only after the exact authoritative readiness predicate passes.
 
 The importer does not catch and reinterpret existing AppError values as generic domain errors. Already-created typed errors remain unchanged.
+
+The importer failure matrix is:
+
+| Condition | Public outcome | Chunk mutation | Corpus mutation | Retryable |
+|---|---|---|---|---|
+| invalid request | ValueError | none | none | no until input is corrected |
+| manifest mismatch | ValueError | none | none if validation precedes corpus creation | no until input is corrected |
+| immutable snapshot mismatch | RAG_V2_VERSION_CONFLICT | none | mark corpus failed | no |
+| existing failed chunk with retry_failed = false | RAG_V2_INVALID_LIFECYCLE | retain failed | remain staging | yes, only with explicit retry |
+| passage provider failure | RAG_V2_EMBEDDING_UNAVAILABLE | mark current chunk failed | remain staging | yes |
+| ordinary repository RAG_V2_UNAVAILABLE AppError | preserve RAG_V2_UNAVAILABLE | preserve partial state | no corpus-failure mutation; staging remains authoritative | yes, after the transient cause is corrected |
+| malformed reusable vector read | RAG_V2_UNAVAILABLE | none for current chunk | no corpus-failure mutation; staging remains authoritative | no until source data is repaired |
+| active same-manifest corpus | completed no-op result | none | none | no activation pending |
+| superseded same-manifest corpus | completed terminal no-op result | none | none | no activation pending |
+| failed corpus | RAG_V2_VERSION_CONFLICT | none | no resurrection | no |
+| readiness incomplete but retryable | RAG_V2_INVALID_LIFECYCLE | preserve pending/failed rows | remain staging | yes |
+| readiness deterministic integrity conflict | RAG_V2_VERSION_CONFLICT | preserve rows | mark corpus failed | no |
 
 ## 11. Provenance and Source Completeness
 
@@ -335,14 +432,45 @@ Every persisted chunk must carry:
 - non-empty source_label after trimming;
 - non-empty source_type after trimming;
 - an absolute HTTPS source_url;
-- a source URL that is not localhost, a .test domain, an example-only host, or another known non-production placeholder domain;
+- a source_url whose parsed scheme is exactly https;
+- a source_url whose parsed hostname is present and non-empty;
+- a source_url containing no username or password credentials;
 - non-null reviewed_on.
 
 The importer validates these rules before embedding and checks them again in the final authoritative snapshot. It does not fabricate provenance, infer a review date, or replace a missing URL with a default.
 
+Stage 10B-4 checks deterministic source completeness only. Passing these checks does not prove that a source is authoritative, high quality, current, or production-approved. Actual three-city source review remains Stage 10C.
+
 The activation RPC remains the final database trust boundary. The importer readiness check is an early application check and does not replace database constraints or activation validation.
 
-## 12. Offline Evaluation
+## 12. Ready-for-Activation Predicates
+
+After all staging operations, the importer freshly reads the authoritative corpus row, attraction-version rows, and chunk rows. It never reports readiness from loop iterations, provider-call counts, or in-memory chunk counts alone.
+
+ready_for_activation = true if and only if every predicate below is true:
+
+1. authoritative corpus.status == staging;
+2. authoritative corpus_version_id is the resolved staging corpus;
+3. authoritative dataset_key exactly equals the request dataset_key;
+4. authoritative version_label exactly equals the request version_label;
+5. authoritative manifest_hash exactly equals the canonical requested manifest hash;
+6. the persisted attraction-version identity set exactly equals the expected attraction-version identity set, where each identity is (corpus_version_id, attraction_id);
+7. the persisted chunk identity set exactly equals the expected chunk identity set, where each identity is (corpus_version_id, chunk_key);
+8. there are no unexpected attraction-version rows;
+9. there are no unexpected chunk rows;
+10. every expected chunk status == embedded;
+11. there are zero expected pending chunks;
+12. there are zero expected failed chunks;
+13. every expected chunk has a non-null embedding;
+14. every embedding is exactly 1024 finite numeric non-bool values;
+15. every expected chunk has embedding_model == jina-embeddings-v3, embedding_task == retrieval.passage, embedding_dimensions == 1024, and embedding_input_schema_version == rag-v2-embedding-input-v1;
+16. every expected immutable chunk field matches the deterministic requested snapshot: chunk_key, attraction_id, chunk_type, ordinal, content, content_hash, embedding_input_hash, source_label, source_url, source_type, and reviewed_on;
+17. every expected attraction-version immutable field matches the deterministic requested snapshot, including all AttractionVersionMetadata fields and metadata_hash;
+18. required provenance completeness checks pass.
+
+Set equality is mandatory; subset checking is insufficient. Unexpected extra immutable rows are a deterministic corpus-integrity conflict. Pending or failed rows are not themselves grounds to call mark_corpus_failed; they make the corpus not ready and preserve retryability.
+
+## 13. Offline Evaluation
 
 The new module is app/rag_v2/evaluation.py. It is pure and deterministic; it does not invoke Supabase, Jina, RetrievalService, or the Planner.
 
@@ -382,9 +510,17 @@ The pure APIs are:
         results: Sequence[RetrievalResult],
     ) -> tuple[EvaluationObservation, ...]: ...
 
+evaluate_cases uses positional deterministic pairing. It first requires len(cases) == len(results); otherwise it raises exactly:
+
+    ValueError("cases and results must have the same length")
+
+RetrievalResult has no case ID, so no mismatched-result-ID contract is invented. Each output observation inherits case.case_id, and output order is exactly the same as cases order.
+
+EvaluationCase validates that attraction_id keys in attraction_destinations are unique and that every mapped destination code satisfies the existing six-digit destination-code contract.
+
 The evaluator checks:
 
-- deterministic case ordering and matching case IDs;
+- deterministic case ordering and positional case/result pairing;
 - expected attraction IDs and expected chunk keys when specified;
 - expected destination behavior using the explicit attraction_destinations mapping, because RetrievalEvidence intentionally does not contain destination metadata;
 - wrong-destination evidence;
@@ -393,9 +529,13 @@ The evaluator checks:
 - source URL completeness when require_source_urls is true;
 - stable, concise failure reasons.
 
+When expected_destination_code is None, destination correctness is disabled for that case; it does not require evidence to have no destination. When expected_destination_code is not None, every returned evidence.attraction_id must exist in attraction_destinations and its mapped destination code must equal expected_destination_code. An unknown attraction ID, missing mapping, different destination, or mixed destination evidence fails the case. No separate forbidden-destination list is needed because every non-matching mapped destination is forbidden.
+
+When expect_no_answer is true, the case passes this assertion only when result.evidence == (). Any evidence fails the case before destination success can be claimed. Other assertions, including case identity, duplicate evidence, and source completeness when enabled, remain applicable.
+
 The evaluator does not invent a relevance score, threshold, LLM judge, network call, or hidden metadata lookup. It is a fixture-level contract for offline evidence, not a production ranking algorithm.
 
-## 13. Deployment and Environment Contract
+## 14. Deployment and Environment Contract
 
 The later implementation may modify render.yaml only by adding this server-side secret declaration:
 
@@ -410,7 +550,7 @@ Dashboard configuration, secret value entry, deploy ID, migration result, and on
 
 A deployment-manifest contract test may statically assert that render.yaml contains JINA_API_KEY with sync false and does not require runtime activation or online claims.
 
-## 14. Runtime, Database, and Legacy Boundaries
+## 15. Runtime, Database, and Legacy Boundaries
 
 The following remain unchanged:
 
@@ -431,7 +571,7 @@ The following remain unchanged:
 
 Stage 10B-4 does not add a migration, RPC, index, trigger, RLS policy, GRANT, or REVOKE. The existing activation RPC remains untouched and is never invoked by the importer. No legacy table, function, route, or client is altered.
 
-## 15. Proposed Implementation Scope
+## 16. Proposed Implementation Scope
 
 The later implementation is limited to the following files.
 
@@ -464,7 +604,7 @@ Do not modify:
 
 No implementation file or test file is created by this specification-only change.
 
-## 16. Testing Strategy and TDD Sequence
+## 17. Testing Strategy and TDD Sequence
 
 Implementation follows strict RED/GREEN with human-run Python verification. Tests are static or fake-boundary tests unless a later stage explicitly supplies a database harness.
 
@@ -513,7 +653,7 @@ The TDD order is:
 
 Task boundaries remain atomic. No partial RetrievalService is added to Task 2 or reopened in Stage 10B-4. Task 4 PASS-immediately closure semantics from the prior plan remain unchanged. Stage 10B-4 implementation does not begin until this design specification passes its human gate.
 
-## 17. Evidence Matrix
+## 18. Evidence Matrix
 
 The implementation review must record:
 
@@ -530,9 +670,9 @@ The implementation review must record:
 - static diff and scope checks;
 - human review approval before commit.
 
-Offline tests do not prove live PostgreSQL behavior, real Jina availability, Dashboard configuration, deployment success, activation, or online smoke behavior. Those claims require the later controlled environment.
+Stage 10B-4 deterministic tests/evaluation cannot prove real Jina passage compatibility, real Jina query compatibility, actual JINA_API_KEY availability, real Supabase behavior, real PostgreSQL behavior, real pgvector behavior, actual ANN planning, a Top1 quality target, a Recall@5 quality target, real destination contamination rate, real duplicate rate, online latency, real three-city data quality, production retrieval quality, Render Dashboard configuration, deployment correctness, or production online behavior. Those claims remain Stage 10C or later deployment acceptance.
 
-## 18. Security and Operational Policy
+## 19. Security and Operational Policy
 
 JINA_API_KEY is server-only, supplied through Render's sync:false secret declaration, and never logged or committed. Provider errors expose only the frozen public unavailable code/message.
 
@@ -540,7 +680,7 @@ The importer writes only the RAG V2 tables through the typed repository. It does
 
 Staging rows are retained after failure for diagnosis and explicit retry. Failed corpora are not activated. A later operator may discard an inactive failed staging corpus through an approved operational procedure; this specification does not add a destructive cleanup command.
 
-## 19. Rollback
+## 20. Rollback
 
 The additive Stage 10B-4 implementation can be disabled by removing the importer/evaluator invocation from the offline job or by excluding the additive modules from that job. Existing query retrieval and legacy behavior remain untouched.
 
@@ -548,7 +688,7 @@ If the deployment declaration must be reverted, remove only the added JINA_API_K
 
 An unsuccessful import leaves the corpus inactive. Activation is a separate later action, so rollback does not require reversing a production corpus switch.
 
-## 20. Acceptance Criteria
+## 21. Acceptance Criteria
 
 Stage 10B-4 implementation is acceptable only when all of the following are true:
 
@@ -561,15 +701,19 @@ Stage 10B-4 implementation is acceptable only when all of the following are true
 - changed embedding input re-embeds through the fixed passage profile;
 - provider, repository, malformed-row, and validation failures have the specified safe boundaries;
 - explicit retry is required for failed rows;
+- one failed chunk or temporary provider/repository failure leaves the corpus staging;
+- only deterministic corpus-integrity conflicts mark the corpus failed;
 - immutable reruns are deterministic and do not upsert or duplicate;
 - final readiness checks use authoritative persisted rows;
+- readiness requires exact attraction-version/chunk set equality with no unexpected rows;
+- active and superseded same-manifest reruns are terminal no-ops with ready_for_activation = false;
 - the importer never activates a corpus;
 - offline evaluation detects wrong destinations, no-answer violations, duplicates, missing sources, and expected-result mismatches;
 - render.yaml declares JINA_API_KEY with sync:false and no real secret is committed;
 - no migration, RPC, RLS, privilege, Planner, runtime, frontend, or legacy behavior is changed;
 - human-run focused and cross-stage regression evidence is green before final review.
 
-## 21. Alternatives Rejected
+## 22. Alternatives Rejected
 
 A new embedding_input.py or manifest.py module is rejected because the current repository already owns those contracts in models.py and hashing.py.
 
@@ -587,7 +731,7 @@ Using an LLM judge or network-based evaluator is rejected because Stage 10B-4 re
 
 Changing query embedding or the root package export list is rejected because those Stage 10B-3 and Stage 10B-1 contracts are already frozen.
 
-## 22. Contradiction and Completeness Gate
+## 23. Contradiction and Completeness Gate
 
 Before implementation begins, the human review must confirm:
 
@@ -596,6 +740,12 @@ Before implementation begins, the human review must confirm:
 - Task 2 remains data contracts and QueryEmbedder only; no partial service is introduced.
 - The repository reuse seam is typed, direct-table, active/superseded-only, and current-corpus-excluding.
 - A current snapshot read exists for immutable rerun reconciliation and final authoritative validation.
+- staging reruns read before immutable inserts and insert only missing rows;
+- active and superseded same-manifest corpora are terminal no-ops, while failed corpora conflict;
+- failed chunks remain staging and retryable; only deterministic corpus-integrity conflicts use mark_corpus_failed;
+- ready_for_activation uses authoritative corpus/version/chunk reads and exact set equality;
+- metadata-only field behavior is documented while embedding_input_hash remains algorithmic authority;
+- evaluator destination mapping, no-answer, source completeness, and positional pairing rules are exact;
 - provenance-only changes preserve content and embedding-input hashes while persisting new provenance;
 - no activation occurs in the importer;
 - the migration, RPC, security, legacy, Planner, runtime, and frontend boundaries are explicit;
