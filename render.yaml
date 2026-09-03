@@ -54,3 +54,5 @@ services:
         sync: false
       - key: ANON_SESSION_SIGNING_SECRET
         sync: false
+      - key: JINA_API_KEY
+        sync: false
