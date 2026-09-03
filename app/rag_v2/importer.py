@@ -7,8 +7,20 @@ from uuid import UUID
 
 from app.core.errors import AppError
 from app.rag_v2.chunking import SemanticChunker
-from app.rag_v2.hashing import manifest_hash, metadata_hash
+from app.rag_v2.hashing import (
+    build_embedding_input,
+    canonical_embedding_text,
+    manifest_hash,
+    metadata_hash,
+)
 from app.rag_v2.identity import AttractionIdentitySource
+from app.rag_v2.incremental import (
+    EmbeddingIdentity,
+    IncrementalAction,
+    IncrementalCandidate,
+    IncrementalSubject,
+    decide_incremental,
+)
 from app.rag_v2.models import (
     AttractionVersionMetadata,
     ChunkStatus,
@@ -27,6 +39,8 @@ from app.rag_v2.repository import (
 
 
 _ERROR_MESSAGES = {
+    "RAG_V2_INVALID_LIFECYCLE": "RAG V2 lifecycle transition is invalid",
+    "RAG_V2_UNAVAILABLE": "RAG V2 persistence is unavailable",
     "RAG_V2_VERSION_CONFLICT": "RAG V2 corpus version conflicts with existing data",
 }
 
@@ -126,22 +140,25 @@ class RagV2Importer:
             expected=expected_chunks,
             existing=chunk_rows,
         )
-        return CorpusImportResult(
+        reused_chunk_keys, embedded_chunk_keys = self._process_chunks(
+            request=request,
             corpus=corpus,
-            chunk_rows=tuple(
-                sorted(
-                    chunk_rows + inserted_chunks,
-                    key=lambda row: (
-                        str(row.attraction_id),
-                        row.chunk_type.value,
-                        row.ordinal,
-                        row.chunk_key,
-                    ),
-                )
-            ),
-            ready_for_activation=False,
-            reused_chunk_keys=(),
-            embedded_chunk_keys=(),
+            expected_versions=expected_versions,
+            expected_chunks=expected_chunks,
+            current_chunks=chunk_rows + inserted_chunks,
+        )
+        fresh_corpus, fresh_versions, fresh_chunks = self._fresh_ready_state(
+            corpus=corpus,
+            expected_versions=expected_versions,
+            expected_chunks=expected_chunks,
+            expected_manifest_hash=prepared_manifest_hash,
+        )
+        return CorpusImportResult(
+            corpus=fresh_corpus,
+            chunk_rows=self._ordered_chunk_rows(fresh_chunks),
+            ready_for_activation=True,
+            reused_chunk_keys=tuple(reused_chunk_keys),
+            embedded_chunk_keys=tuple(embedded_chunk_keys),
         )
 
     def _prepare_request(
@@ -428,6 +445,260 @@ class RagV2Importer:
             return ()
         return self._repository.insert_chunks(tuple(missing))
 
+    def _process_chunks(
+        self,
+        *,
+        request: CorpusImportInput,
+        corpus: CorpusVersion,
+        expected_versions: tuple[AttractionVersionRecord, ...],
+        expected_chunks: tuple[ChunkRow, ...],
+        current_chunks: tuple[ChunkRow, ...],
+    ) -> tuple[list[str], list[str]]:
+        metadata_by_attraction_id = {
+            record.metadata.attraction_id: record.metadata
+            for record in expected_versions
+        }
+        current_by_identity = {
+            (row.corpus_version_id, row.chunk_key): row for row in current_chunks
+        }
+        reused_chunk_keys: list[str] = []
+        embedded_chunk_keys: list[str] = []
+
+        for expected_row in self._ordered_chunk_rows(expected_chunks):
+            current_row = current_by_identity[
+                (expected_row.corpus_version_id, expected_row.chunk_key)
+            ]
+            if current_row.status is ChunkStatus.embedded:
+                continue
+            if current_row.status is ChunkStatus.failed:
+                if not request.retry_failed:
+                    raise self._invalid_lifecycle()
+                self._repository.reset_chunk_embedding_for_retry(
+                    corpus_version_id=corpus.corpus_version_id,
+                    chunk_key=expected_row.chunk_key,
+                )
+            elif current_row.status is not ChunkStatus.pending:
+                raise self._invalid_lifecycle()
+
+            previous_embeddings = self._repository.list_embedded_chunks_for_reuse(
+                dataset_key=request.dataset_key,
+                embedding_input_hash=expected_row.embedding_input_hash,
+                exclude_corpus_version_id=corpus.corpus_version_id,
+            )
+            identity = EmbeddingIdentity(
+                embedding_input_hash=expected_row.embedding_input_hash,
+                embedding_model=expected_row.embedding_model,
+                embedding_task=expected_row.embedding_task,
+                embedding_dimensions=expected_row.embedding_dimensions,
+                embedding_input_schema_version=(
+                    expected_row.embedding_input_schema_version
+                ),
+            )
+            decision = decide_incremental(
+                IncrementalCandidate(
+                    subject=IncrementalSubject.present_chunk,
+                    current_chunk_key=expected_row.chunk_key,
+                    current_identity=identity,
+                    previous_embeddings=previous_embeddings,
+                )
+            )
+            if decision.action is IncrementalAction.reuse:
+                vector = self._reused_vector(
+                    previous_embeddings=previous_embeddings,
+                    reused_from_chunk_key=decision.reused_from_chunk_key,
+                )
+                self._repository.mark_chunk_embedded(
+                    corpus_version_id=corpus.corpus_version_id,
+                    chunk_key=expected_row.chunk_key,
+                    embedding=vector,
+                )
+                reused_chunk_keys.append(expected_row.chunk_key)
+                continue
+
+            metadata = metadata_by_attraction_id[expected_row.attraction_id]
+            embedding_input = build_embedding_input(
+                canonical_attraction_name=metadata.canonical_name,
+                destination_name=metadata.destination.destination_name,
+                destination_code=metadata.destination.destination_code,
+                destination_level=metadata.destination.destination_level,
+                chunk_type=expected_row.chunk_type,
+                normalized_content=expected_row.content,
+            )
+            try:
+                embedding = self._passage_embedder.embed_passage(
+                    canonical_embedding_text(embedding_input)
+                )
+            except AppError as exc:
+                try:
+                    self._repository.mark_chunk_embedding_failed(
+                        corpus_version_id=corpus.corpus_version_id,
+                        chunk_key=expected_row.chunk_key,
+                        error_code=exc.code,
+                        error_message=exc.message,
+                    )
+                except AppError:
+                    pass
+                raise
+
+            self._repository.mark_chunk_embedded(
+                corpus_version_id=corpus.corpus_version_id,
+                chunk_key=expected_row.chunk_key,
+                embedding=embedding,
+            )
+            embedded_chunk_keys.append(expected_row.chunk_key)
+
+        return reused_chunk_keys, embedded_chunk_keys
+
+    @staticmethod
+    def _reused_vector(
+        *,
+        previous_embeddings: tuple,
+        reused_from_chunk_key: str | None,
+    ) -> tuple[float, ...]:
+        for previous in previous_embeddings:
+            if previous.chunk_key == reused_from_chunk_key and previous.vector is not None:
+                return previous.vector
+        raise AppError(
+            "RAG_V2_UNAVAILABLE",
+            _ERROR_MESSAGES["RAG_V2_UNAVAILABLE"],
+        )
+
+    def _fresh_ready_state(
+        self,
+        *,
+        corpus: CorpusVersion,
+        expected_versions: tuple[AttractionVersionRecord, ...],
+        expected_chunks: tuple[ChunkRow, ...],
+        expected_manifest_hash: str,
+    ) -> tuple[
+        CorpusVersion,
+        tuple[AttractionVersionRecord, ...],
+        tuple[ChunkRow, ...],
+    ]:
+        fresh_corpus = self._repository.get_corpus_version(
+            corpus_version_id=corpus.corpus_version_id
+        )
+        fresh_versions = self._repository.list_attraction_versions(
+            corpus_version_id=corpus.corpus_version_id
+        )
+        fresh_chunks = self._repository.list_chunk_rows(
+            corpus_version_id=corpus.corpus_version_id
+        )
+        if fresh_corpus is None:
+            self._raise_version_conflict(corpus.corpus_version_id)
+        if (
+            fresh_corpus.status != "staging"
+            or fresh_corpus.corpus_version_id != corpus.corpus_version_id
+            or fresh_corpus.dataset_key != corpus.dataset_key
+            or fresh_corpus.version_label != corpus.version_label
+            or fresh_corpus.manifest_hash != expected_manifest_hash
+        ):
+            self._raise_version_conflict(corpus.corpus_version_id)
+
+        self._validate_final_versions(
+            corpus_version_id=corpus.corpus_version_id,
+            expected=expected_versions,
+            actual=fresh_versions,
+        )
+        self._validate_final_chunks(
+            corpus_version_id=corpus.corpus_version_id,
+            expected=expected_chunks,
+            actual=fresh_chunks,
+        )
+        return fresh_corpus, fresh_versions, fresh_chunks
+
+    def _validate_final_versions(
+        self,
+        *,
+        corpus_version_id: UUID,
+        expected: tuple[AttractionVersionRecord, ...],
+        actual: tuple[AttractionVersionRecord, ...],
+    ) -> None:
+        expected_by_identity = {
+            (record.corpus_version_id, record.metadata.attraction_id): record
+            for record in expected
+        }
+        actual_by_identity = {
+            (record.corpus_version_id, record.metadata.attraction_id): record
+            for record in actual
+        }
+        if (
+            len(actual) != len(actual_by_identity)
+            or set(actual_by_identity) != set(expected_by_identity)
+        ):
+            self._raise_version_conflict(corpus_version_id)
+        for identity, expected_record in expected_by_identity.items():
+            if not self._attraction_version_matches(
+                expected_record,
+                actual_by_identity[identity],
+            ):
+                self._raise_version_conflict(corpus_version_id)
+
+    def _validate_final_chunks(
+        self,
+        *,
+        corpus_version_id: UUID,
+        expected: tuple[ChunkRow, ...],
+        actual: tuple[ChunkRow, ...],
+    ) -> None:
+        expected_by_identity = {
+            (row.corpus_version_id, row.chunk_key): row for row in expected
+        }
+        actual_by_identity = {
+            (row.corpus_version_id, row.chunk_key): row for row in actual
+        }
+        if (
+            len(actual) != len(actual_by_identity)
+            or set(actual_by_identity) != set(expected_by_identity)
+        ):
+            self._raise_version_conflict(corpus_version_id)
+
+        for identity, expected_row in expected_by_identity.items():
+            actual_row = actual_by_identity[identity]
+            if not self._has_complete_final_provenance(actual_row):
+                raise self._invalid_lifecycle()
+            if not self._chunk_row_matches(expected_row, actual_row):
+                self._raise_version_conflict(corpus_version_id)
+            if actual_row.status is not ChunkStatus.embedded or actual_row.embedding is None:
+                raise self._invalid_lifecycle()
+
+    @staticmethod
+    def _has_complete_final_provenance(row: ChunkRow) -> bool:
+        if (
+            not isinstance(row.source_label, str)
+            or not row.source_label.strip()
+            or not isinstance(row.source_type, str)
+            or not row.source_type.strip()
+            or not isinstance(row.source_url, str)
+        ):
+            return False
+        try:
+            parsed = urlparse(row.source_url)
+            hostname = parsed.hostname
+        except ValueError:
+            return False
+        return (
+            parsed.scheme == "https"
+            and bool(parsed.netloc)
+            and bool(hostname)
+            and parsed.username is None
+            and parsed.password is None
+        )
+
+    @staticmethod
+    def _ordered_chunk_rows(rows: tuple[ChunkRow, ...]) -> tuple[ChunkRow, ...]:
+        return tuple(
+            sorted(
+                rows,
+                key=lambda row: (
+                    str(row.attraction_id),
+                    row.chunk_type.value,
+                    row.ordinal,
+                    row.chunk_key,
+                ),
+            )
+        )
+
     @staticmethod
     def _semantic_chunk_from_row(row: ChunkRow) -> SemanticChunk:
         return SemanticChunk(
@@ -477,4 +748,11 @@ class RagV2Importer:
         return AppError(
             "RAG_V2_VERSION_CONFLICT",
             _ERROR_MESSAGES["RAG_V2_VERSION_CONFLICT"],
+        )
+
+    @staticmethod
+    def _invalid_lifecycle() -> AppError:
+        return AppError(
+            "RAG_V2_INVALID_LIFECYCLE",
+            _ERROR_MESSAGES["RAG_V2_INVALID_LIFECYCLE"],
         )

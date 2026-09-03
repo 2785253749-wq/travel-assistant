@@ -9,8 +9,10 @@ import pytest
 
 from app.core.errors import AppError
 from app.rag_v2.chunking import chunk_key_for
+from app.rag_v2.incremental import EmbeddingIdentity, PreviousEmbedding
 from app.rag_v2.hashing import (
     build_embedding_input,
+    canonical_embedding_text,
     content_hash,
     embedding_input_hash,
     manifest_hash,
@@ -308,14 +310,28 @@ class FakeRepository:
         corpus: CorpusVersion,
         attraction_versions: tuple[AttractionVersionRecord, ...] = (),
         chunk_rows: tuple[ChunkRow, ...] = (),
+        reuse_embeddings: tuple[PreviousEmbedding, ...] = (),
+        final_corpus: CorpusVersion | None = None,
+        final_attraction_versions: tuple[AttractionVersionRecord, ...] | None = None,
+        final_chunk_rows: tuple[ChunkRow, ...] | None = None,
         create_error: AppError | None = None,
         snapshot_error: AppError | None = None,
+        reuse_error: AppError | None = None,
+        embedding_failure_error: AppError | None = None,
+        allow_task5_operations: bool = False,
     ) -> None:
         self.corpus = corpus
         self.attraction_versions = attraction_versions
         self.chunk_rows = chunk_rows
+        self.reuse_embeddings = reuse_embeddings
+        self.final_corpus = final_corpus
+        self.final_attraction_versions = final_attraction_versions
+        self.final_chunk_rows = final_chunk_rows
         self.create_error = create_error
         self.snapshot_error = snapshot_error
+        self.reuse_error = reuse_error
+        self.embedding_failure_error = embedding_failure_error
+        self.allow_task5_operations = allow_task5_operations
         self.create_calls: list[dict[str, object]] = []
         self.attraction_version_calls: list[UUID] = []
         self.chunk_row_calls: list[UUID] = []
@@ -327,6 +343,13 @@ class FakeRepository:
         self.mark_failed_calls: list[UUID] = []
         self.operation_log: list[str] = []
         self.forbidden_calls: list[str] = []
+        self.reuse_calls: list[dict[str, object]] = []
+        self.embedded_calls: list[dict[str, object]] = []
+        self.failed_embedding_calls: list[dict[str, object]] = []
+        self.retry_reset_calls: list[dict[str, object]] = []
+        self.corpus_reads: list[UUID] = []
+        self._attraction_version_read_count = 0
+        self._chunk_row_read_count = 0
 
     def create_corpus_version(self, **kwargs: object) -> CorpusVersion:
         self.operation_log.append("create_corpus_version")
@@ -344,6 +367,12 @@ class FakeRepository:
         self.attraction_version_calls.append(corpus_version_id)
         if self.snapshot_error is not None:
             raise self.snapshot_error
+        self._attraction_version_read_count += 1
+        if (
+            self._attraction_version_read_count > 1
+            and self.final_attraction_versions is not None
+        ):
+            return self.final_attraction_versions
         return self.attraction_versions
 
     def list_chunk_rows(self, *, corpus_version_id: UUID) -> tuple[ChunkRow, ...]:
@@ -351,7 +380,97 @@ class FakeRepository:
         self.chunk_row_calls.append(corpus_version_id)
         if self.snapshot_error is not None:
             raise self.snapshot_error
+        self._chunk_row_read_count += 1
+        if self._chunk_row_read_count > 1 and self.final_chunk_rows is not None:
+            return self.final_chunk_rows
         return self.chunk_rows
+
+    def get_corpus_version(self, *, corpus_version_id: UUID) -> CorpusVersion | None:
+        self._require_task5_operation("get_corpus_version")
+        self.operation_log.append("get_corpus_version")
+        self.corpus_reads.append(corpus_version_id)
+        return self.final_corpus if self.final_corpus is not None else self.corpus
+
+    def list_embedded_chunks_for_reuse(
+        self,
+        *,
+        dataset_key: str,
+        embedding_input_hash: str,
+        exclude_corpus_version_id: UUID,
+    ) -> tuple[PreviousEmbedding, ...]:
+        self._require_task5_operation("list_embedded_chunks_for_reuse")
+        self.operation_log.append("list_embedded_chunks_for_reuse")
+        self.reuse_calls.append(
+            {
+                "dataset_key": dataset_key,
+                "embedding_input_hash": embedding_input_hash,
+                "exclude_corpus_version_id": exclude_corpus_version_id,
+            }
+        )
+        if self.reuse_error is not None:
+            raise self.reuse_error
+        return self.reuse_embeddings
+
+    def mark_chunk_embedded(
+        self,
+        *,
+        corpus_version_id: UUID,
+        chunk_key: str,
+        embedding: tuple[float, ...],
+    ) -> ChunkRow:
+        self._require_task5_operation("mark_chunk_embedded")
+        self.operation_log.append("mark_chunk_embedded")
+        self.embedded_calls.append(
+            {
+                "corpus_version_id": corpus_version_id,
+                "chunk_key": chunk_key,
+                "embedding": embedding,
+            }
+        )
+        return next(row for row in self.chunk_rows if row.chunk_key == chunk_key)
+
+    def mark_chunk_embedding_failed(
+        self,
+        *,
+        corpus_version_id: UUID,
+        chunk_key: str,
+        error_code: str,
+        error_message: str | None = None,
+    ) -> ChunkRow:
+        self._require_task5_operation("mark_chunk_embedding_failed")
+        self.operation_log.append("mark_chunk_embedding_failed")
+        self.failed_embedding_calls.append(
+            {
+                "corpus_version_id": corpus_version_id,
+                "chunk_key": chunk_key,
+                "error_code": error_code,
+                "error_message": error_message,
+            }
+        )
+        if self.embedding_failure_error is not None:
+            raise self.embedding_failure_error
+        return next(row for row in self.chunk_rows if row.chunk_key == chunk_key)
+
+    def reset_chunk_embedding_for_retry(
+        self,
+        *,
+        corpus_version_id: UUID,
+        chunk_key: str,
+    ) -> ChunkRow:
+        self._require_task5_operation("reset_chunk_embedding_for_retry")
+        self.operation_log.append("reset_chunk_embedding_for_retry")
+        self.retry_reset_calls.append(
+            {
+                "corpus_version_id": corpus_version_id,
+                "chunk_key": chunk_key,
+            }
+        )
+        return next(row for row in self.chunk_rows if row.chunk_key == chunk_key)
+
+    def _require_task5_operation(self, name: str) -> None:
+        if not self.allow_task5_operations:
+            self.forbidden_calls.append(name)
+            raise AssertionError(f"Task 4 must not call {name}")
 
     def insert_attraction_versions(
         self,
@@ -374,6 +493,7 @@ class FakeRepository:
             for item in inserted
         )
         self.inserted_chunk_rows.append(rows)
+        self.chunk_rows += rows
         return rows
 
     def mark_corpus_failed(self, *, corpus_version_id: UUID) -> CorpusVersion:
@@ -401,6 +521,7 @@ def _make_importer(
     repository: FakeRepository,
     identity_source: FakeIdentitySource | None = None,
     chunker: FakeChunker | None = None,
+    passage_embedder: object | None = None,
 ):
     module = _importer_module()
     return module.RagV2Importer(
@@ -409,7 +530,7 @@ def _make_importer(
         ),
         repository=repository,
         chunker=chunker or FakeChunker(chunks=(_chunk(),)),
-        passage_embedder=FakePassageEmbedder(),
+        passage_embedder=passage_embedder or FakePassageEmbedder(),
     )
 
 
@@ -744,21 +865,28 @@ def test_task3_staging_reads_authoritative_snapshot_and_returns_authoritative_id
     row = _chunk_row(chunk, corpus_version_id=_OTHER_ID)
     authoritative_corpus = _corpus("staging", corpus_version_id=_OTHER_ID)
     request = _request(metadata=metadata, section=section)
+    vector = (0.25,) * 1024
     repository = FakeRepository(
         corpus=authoritative_corpus,
         attraction_versions=(version,),
         chunk_rows=(row,),
+        reuse_embeddings=(_previous_embedding(chunk, vector=vector),),
+        final_attraction_versions=(version,),
+        final_chunk_rows=(
+            replace(_embedded_row(chunk, vector), corpus_version_id=_OTHER_ID),
+        ),
+        allow_task5_operations=True,
     )
     importer = _make_importer(
         repository=repository,
         chunker=FakeChunker(chunks=(chunk,)),
+        passage_embedder=FakeTask5PassageEmbedder(vector=vector),
     )
 
     result = importer.import_corpus(request)
 
     assert result.corpus is authoritative_corpus
     assert result.corpus.corpus_version_id == _OTHER_ID
-    assert result.chunk_rows == (row,)
     assert repository.create_calls == [
         {
             "corpus_version_id": _CORPUS_ID,
@@ -767,9 +895,8 @@ def test_task3_staging_reads_authoritative_snapshot_and_returns_authoritative_id
             "manifest_hash": manifest_hash(request.manifest),
         }
     ]
-    assert repository.attraction_version_calls == [_OTHER_ID]
-    assert repository.chunk_row_calls == [_OTHER_ID]
-    assert result.ready_for_activation is False
+    assert repository.attraction_version_calls[0] == _OTHER_ID
+    assert repository.chunk_row_calls[0] == _OTHER_ID
 
 
 def test_task3_allocates_unresolved_identity_once_and_adapts_prepared_snapshot() -> None:
@@ -786,11 +913,19 @@ def test_task3_allocates_unresolved_identity_once_and_adapts_prepared_snapshot()
         ),
     )
     identity = FakeIdentitySource(resolutions={"xiamen:gulangyu": None})
+    allocated_metadata = _metadata(_ALLOCATED_ID)
+    vector = (0.25,) * 1024
     repository = FakeRepository(
         corpus=_corpus(
             "staging",
             manifest_hash_value=manifest_hash(request.manifest),
-        )
+        ),
+        attraction_versions=(_version_record(allocated_metadata),),
+        chunk_rows=(_chunk_row(allocated_chunk),),
+        reuse_embeddings=(_previous_embedding(allocated_chunk, vector=vector),),
+        final_attraction_versions=(_version_record(allocated_metadata),),
+        final_chunk_rows=(_embedded_row(allocated_chunk, vector),),
+        allow_task5_operations=True,
     )
     chunker = FakeChunker(chunks=(allocated_chunk,))
 
@@ -798,6 +933,7 @@ def test_task3_allocates_unresolved_identity_once_and_adapts_prepared_snapshot()
         repository=repository,
         identity_source=identity,
         chunker=chunker,
+        passage_embedder=FakeTask5PassageEmbedder(vector=vector),
     ).import_corpus(request)
 
     assert identity.resolve_calls == ["xiamen:gulangyu"]
@@ -929,6 +1065,7 @@ def _make_task4_importer(
     *,
     repository: FakeRepository,
     chunks_by_attraction: dict[UUID, tuple[SemanticChunk, ...]],
+    passage_embedder: object | None = None,
 ):
     module = _importer_module()
     identity_source = FakeIdentitySource(
@@ -944,7 +1081,7 @@ def _make_task4_importer(
             chunks=(),
             chunks_by_attraction=chunks_by_attraction,
         ),
-        passage_embedder=FakePassageEmbedder(),
+        passage_embedder=passage_embedder or FakePassageEmbedder(),
     )
 
 
@@ -954,6 +1091,7 @@ def test_task4_preserves_matching_rows_and_inserts_only_missing_rows() -> None:
     authoritative_corpus_id = _ALLOCATED_ID
     metadata_a, metadata_b = entries[0][1], entries[1][1]
     chunk_a, chunk_b = entries[0][3][0], entries[1][3][0]
+    vector = (0.25,) * 1024
     repository = FakeRepository(
         corpus=_corpus(
             "staging",
@@ -964,11 +1102,22 @@ def test_task4_preserves_matching_rows_and_inserts_only_missing_rows() -> None:
             _version_record(metadata_a, corpus_version_id=authoritative_corpus_id),
         ),
         chunk_rows=(_chunk_row(chunk_a, corpus_version_id=authoritative_corpus_id),),
+        reuse_embeddings=(_previous_embedding(chunk_a, vector=vector),),
+        final_attraction_versions=(
+            _version_record(metadata_a, corpus_version_id=authoritative_corpus_id),
+            _version_record(metadata_b, corpus_version_id=authoritative_corpus_id),
+        ),
+        final_chunk_rows=(
+            replace(_embedded_row(chunk_a, vector), corpus_version_id=authoritative_corpus_id),
+            replace(_embedded_row(chunk_b, vector), corpus_version_id=authoritative_corpus_id),
+        ),
+        allow_task5_operations=True,
     )
 
     result = _make_task4_importer(
         repository=repository,
         chunks_by_attraction=chunks_by_attraction,
+        passage_embedder=FakeTask5PassageEmbedder(vector=vector),
     ).import_corpus(request)
 
     assert repository.inserted_attraction_versions == [
@@ -981,7 +1130,6 @@ def test_task4_preserves_matching_rows_and_inserts_only_missing_rows() -> None:
         (_chunk_row(chunk_b, corpus_version_id=authoritative_corpus_id),)
     ]
     assert result.corpus.status == "staging"
-    assert result.ready_for_activation is False
     assert repository.forbidden_calls == []
 
 
@@ -1061,16 +1209,29 @@ def test_task4_marks_chunk_immutable_conflict_and_does_not_replace_it(
 def test_task4_reads_both_authoritative_snapshots_before_any_insert() -> None:
     entries = _two_attraction_entries()
     request, chunks_by_attraction = _task4_request(entries)
+    metadata_a, metadata_b = entries[0][1], entries[1][1]
+    chunk_a, chunk_b = entries[0][3][0], entries[1][3][0]
+    vector = (0.25,) * 1024
     repository = FakeRepository(
         corpus=_corpus(
             "staging",
             manifest_hash_value=manifest_hash(request.manifest),
-        )
+        ),
+        final_attraction_versions=(
+            _version_record(metadata_a),
+            _version_record(metadata_b),
+        ),
+        final_chunk_rows=(
+            _embedded_row(chunk_a, vector),
+            _embedded_row(chunk_b, vector),
+        ),
+        allow_task5_operations=True,
     )
 
     _make_task4_importer(
         repository=repository,
         chunks_by_attraction=chunks_by_attraction,
+        passage_embedder=FakeTask5PassageEmbedder(vector=vector),
     ).import_corpus(request)
 
     read_positions = [
@@ -1085,14 +1246,15 @@ def test_task4_reads_both_authoritative_snapshots_before_any_insert() -> None:
     ]
     assert read_positions
     assert insert_positions
-    assert max(read_positions) < min(insert_positions)
+    assert max(read_positions[:2]) < min(insert_positions)
 
 
-def test_task4_partial_rerun_keeps_matching_rows_and_is_not_ready() -> None:
+def test_task4_partial_rerun_keeps_matching_rows_and_inserts_only_missing_rows() -> None:
     entries = _two_attraction_entries()
     request, chunks_by_attraction = _task4_request(entries)
     metadata_a, metadata_b = entries[0][1], entries[1][1]
     chunk_a, chunk_b = entries[0][3][0], entries[1][3][0]
+    vector = (0.25,) * 1024
     repository = FakeRepository(
         corpus=_corpus(
             "staging",
@@ -1100,11 +1262,22 @@ def test_task4_partial_rerun_keeps_matching_rows_and_is_not_ready() -> None:
         ),
         attraction_versions=(_version_record(metadata_a),),
         chunk_rows=(_chunk_row(chunk_a),),
+        reuse_embeddings=(_previous_embedding(chunk_a, vector=vector),),
+        final_attraction_versions=(
+            _version_record(metadata_a),
+            _version_record(metadata_b),
+        ),
+        final_chunk_rows=(
+            _embedded_row(chunk_a, vector),
+            _embedded_row(chunk_b, vector),
+        ),
+        allow_task5_operations=True,
     )
 
     result = _make_task4_importer(
         repository=repository,
         chunks_by_attraction=chunks_by_attraction,
+        passage_embedder=FakeTask5PassageEmbedder(vector=vector),
     ).import_corpus(request)
 
     assert repository.inserted_attraction_versions == [(_version_record(metadata_b),)]
@@ -1112,20 +1285,22 @@ def test_task4_partial_rerun_keeps_matching_rows_and_is_not_ready() -> None:
         (ChunkInsert(corpus_version_id=_CORPUS_ID, chunk=chunk_b),)
     ]
     assert repository.attraction_versions == (_version_record(metadata_a),)
-    assert repository.chunk_rows == (_chunk_row(chunk_a),)
-    assert result.ready_for_activation is False
+    assert repository.chunk_rows == (
+        _chunk_row(chunk_a),
+        _chunk_row(chunk_b),
+    )
     assert repository.forbidden_calls == []
 
 
-# Regression coverage: Task 3 already provides this observable staging no-op.
-def test_task4_complete_staging_rerun_is_idempotent_and_does_not_claim_readiness() -> None:
+def test_task4_complete_staging_rerun_is_idempotent_and_preserves_embedded_rows() -> None:
     entries = _two_attraction_entries()
     request, chunks_by_attraction = _task4_request(entries)
     existing_versions = tuple(
         _version_record(metadata) for _, metadata, _, _ in entries
     )
+    vector = (0.25,) * 1024
     existing_rows = tuple(
-        _chunk_row(chunk)
+        _embedded_row(chunk, vector)
         for _, _, _, chunks in entries
         for chunk in chunks
     )
@@ -1136,18 +1311,22 @@ def test_task4_complete_staging_rerun_is_idempotent_and_does_not_claim_readiness
         ),
         attraction_versions=existing_versions,
         chunk_rows=existing_rows,
+        allow_task5_operations=True,
     )
+    embedder = FakeTask5PassageEmbedder(vector=vector)
 
     result = _make_task4_importer(
         repository=repository,
         chunks_by_attraction=chunks_by_attraction,
+        passage_embedder=embedder,
     ).import_corpus(request)
 
     assert repository.inserted_attraction_versions == []
     assert repository.inserted_chunks == []
     assert result.corpus.status == "staging"
     assert result.chunk_rows == existing_rows
-    assert result.ready_for_activation is False
+    assert result.ready_for_activation is True
+    assert embedder.calls == []
     assert repository.forbidden_calls == []
 
 
@@ -1155,24 +1334,49 @@ def test_task4_result_chunk_order_is_independent_of_caller_order() -> None:
     entries = _two_attraction_entries()
     canonical_request, canonical_chunks = _task4_request(entries)
     reversed_request, reversed_chunks = _task4_request(tuple(reversed(entries)))
+    metadata_a, metadata_b = entries[0][1], entries[1][1]
+    chunk_a, chunk_b = entries[0][3][0], entries[1][3][0]
+    vector = (0.25,) * 1024
 
     canonical_result = _make_task4_importer(
         repository=FakeRepository(
             corpus=_corpus(
                 "staging",
                 manifest_hash_value=manifest_hash(canonical_request.manifest),
-            )
+            ),
+            reuse_embeddings=(_previous_embedding(chunk_a, vector=vector),),
+            final_attraction_versions=(
+                _version_record(metadata_a),
+                _version_record(metadata_b),
+            ),
+            final_chunk_rows=(
+                _embedded_row(chunk_a, vector),
+                _embedded_row(chunk_b, vector),
+            ),
+            allow_task5_operations=True,
         ),
         chunks_by_attraction=canonical_chunks,
+        passage_embedder=FakeTask5PassageEmbedder(vector=vector),
     ).import_corpus(canonical_request)
     reversed_result = _make_task4_importer(
         repository=FakeRepository(
             corpus=_corpus(
                 "staging",
                 manifest_hash_value=manifest_hash(reversed_request.manifest),
-            )
+            ),
+            reuse_embeddings=(_previous_embedding(chunk_a, vector=vector),),
+            final_attraction_versions=(
+                _version_record(metadata_a),
+                _version_record(metadata_b),
+            ),
+            final_chunk_rows=(
+                _embedded_row(chunk_a, vector),
+                _embedded_row(chunk_b, vector),
+            ),
+            allow_task5_operations=True,
         ),
         chunks_by_attraction=reversed_chunks,
+        passage_embedder=FakeTask5PassageEmbedder(vector=vector),
     ).import_corpus(reversed_request)
 
     def row_order(rows: tuple[ChunkRow, ...]) -> tuple[tuple[object, ...], ...]:
@@ -1192,3 +1396,659 @@ def test_task4_result_chunk_order_is_independent_of_caller_order() -> None:
     assert row_order(reversed_result.chunk_rows) == row_order(
         canonical_result.chunk_rows
     )
+
+
+class FakeTask5PassageEmbedder:
+    def __init__(
+        self,
+        *,
+        vector: tuple[float, ...] | None = None,
+        error: AppError | None = None,
+    ) -> None:
+        self.vector = vector or (0.25,) * 1024
+        self.error = error
+        self.calls: list[str] = []
+
+    def embed_passage(self, text: str) -> tuple[float, ...]:
+        self.calls.append(text)
+        if self.error is not None:
+            raise self.error
+        return self.vector
+
+
+def _embedded_row(chunk: SemanticChunk, vector: tuple[float, ...]) -> ChunkRow:
+    return replace(
+        _chunk_row(chunk),
+        embedding=vector,
+        status=ChunkStatus.embedded,
+    )
+
+
+def _previous_embedding(
+    chunk: SemanticChunk,
+    *,
+    vector: tuple[float, ...],
+    **identity_updates: object,
+) -> PreviousEmbedding:
+    values: dict[str, object] = {
+        "embedding_input_hash": chunk.embedding_input_hash,
+        "embedding_model": "jina-embeddings-v3",
+        "embedding_task": "retrieval.passage",
+        "embedding_dimensions": 1024,
+        "embedding_input_schema_version": "rag-v2-embedding-input-v1",
+    }
+    values.update(identity_updates)
+    return PreviousEmbedding(
+        chunk_key="historical-chunk",
+        identity=EmbeddingIdentity(**values),
+        vector=vector,
+        validated_corpus=True,
+    )
+
+
+def _make_task5_importer(
+    *,
+    repository: FakeRepository,
+    passage_embedder: FakeTask5PassageEmbedder,
+    chunk: SemanticChunk | None = None,
+):
+    module = _importer_module()
+    return module.RagV2Importer(
+        identity_source=FakeIdentitySource(
+            resolutions={"xiamen:gulangyu": _CANDIDATE_ID}
+        ),
+        repository=repository,
+        chunker=FakeChunker(chunks=(chunk or _chunk(),)),
+        passage_embedder=passage_embedder,
+    )
+
+
+def _task5_staging_repository(
+    *,
+    request,
+    chunk: SemanticChunk,
+    initial_row: ChunkRow | None = None,
+    final_corpus: CorpusVersion | None = None,
+    final_versions: tuple[AttractionVersionRecord, ...] | None = None,
+    final_rows: tuple[ChunkRow, ...] | None = None,
+    reuse_embeddings: tuple[PreviousEmbedding, ...] = (),
+    reuse_error: AppError | None = None,
+    embedding_failure_error: AppError | None = None,
+) -> FakeRepository:
+    metadata = request.attractions[0].metadata
+    return FakeRepository(
+        corpus=_corpus(
+            "staging",
+            manifest_hash_value=manifest_hash(request.manifest),
+        ),
+        attraction_versions=(_version_record(metadata),),
+        chunk_rows=(initial_row if initial_row is not None else _chunk_row(chunk),),
+        reuse_embeddings=reuse_embeddings,
+        final_corpus=final_corpus,
+        final_attraction_versions=(
+            (_version_record(metadata),)
+            if final_versions is None
+            else final_versions
+        ),
+        final_chunk_rows=final_rows,
+        reuse_error=reuse_error,
+        embedding_failure_error=embedding_failure_error,
+        allow_task5_operations=True,
+    )
+
+
+def test_task5_reuses_exact_historical_vector_and_reads_fresh_authoritative_state() -> None:
+    request = _request()
+    chunk = _chunk()
+    vector = (0.125,) * 1024
+    repository = _task5_staging_repository(
+        request=request,
+        chunk=chunk,
+        reuse_embeddings=(_previous_embedding(chunk, vector=vector),),
+        final_rows=(_embedded_row(chunk, vector),),
+    )
+    embedder = FakeTask5PassageEmbedder()
+
+    result = _make_task5_importer(
+        repository=repository,
+        passage_embedder=embedder,
+    ).import_corpus(request)
+
+    assert repository.reuse_calls == [
+        {
+            "dataset_key": _DATASET_KEY,
+            "embedding_input_hash": chunk.embedding_input_hash,
+            "exclude_corpus_version_id": _CORPUS_ID,
+        }
+    ]
+    assert repository.embedded_calls == [
+        {
+            "corpus_version_id": _CORPUS_ID,
+            "chunk_key": chunk.chunk_key,
+            "embedding": vector,
+        }
+    ]
+    assert embedder.calls == []
+    assert repository.corpus_reads == [_CORPUS_ID]
+    assert repository.attraction_version_calls == [_CORPUS_ID, _CORPUS_ID]
+    assert repository.chunk_row_calls == [_CORPUS_ID, _CORPUS_ID]
+    assert result.chunk_rows == (_embedded_row(chunk, vector),)
+    assert result.ready_for_activation is True
+    assert result.reused_chunk_keys == (chunk.chunk_key,)
+    assert result.embedded_chunk_keys == ()
+    assert repository.forbidden_calls == []
+
+
+def test_task5_reuses_when_only_provenance_changes() -> None:
+    section = _section(source_label="更新后的来源", source_url="https://example.com/new")
+    chunk = _chunk(section=section)
+    request = _request(metadata=_metadata(), section=section)
+    vector = (0.375,) * 1024
+    repository = _task5_staging_repository(
+        request=request,
+        chunk=chunk,
+        reuse_embeddings=(_previous_embedding(chunk, vector=vector),),
+        final_rows=(_embedded_row(chunk, vector),),
+    )
+    embedder = FakeTask5PassageEmbedder()
+
+    _make_task5_importer(
+        repository=repository,
+        passage_embedder=embedder,
+        chunk=chunk,
+    ).import_corpus(request)
+
+    assert embedder.calls == []
+    assert repository.embedded_calls == [
+        {
+            "corpus_version_id": _CORPUS_ID,
+            "chunk_key": chunk.chunk_key,
+            "embedding": vector,
+        }
+    ]
+
+
+def test_task5_reembeds_when_canonical_embedding_input_changes() -> None:
+    section = _section(content="鼓浪屿保留了丰富的历史建筑与海岛景观。")
+    chunk = _chunk(section=section)
+    request = _request(section=section)
+    vector = (0.625,) * 1024
+    repository = _task5_staging_repository(
+        request=request,
+        chunk=chunk,
+        reuse_embeddings=(),
+        final_rows=(_embedded_row(chunk, vector),),
+    )
+    embedder = FakeTask5PassageEmbedder(vector=vector)
+
+    _make_task5_importer(
+        repository=repository,
+        passage_embedder=embedder,
+        chunk=chunk,
+    ).import_corpus(request)
+
+    assert embedder.calls == [
+        canonical_embedding_text(
+            build_embedding_input(
+                canonical_attraction_name=_metadata().canonical_name,
+                destination_name=_metadata().destination.destination_name,
+                destination_code=_metadata().destination.destination_code,
+                destination_level=_metadata().destination.destination_level,
+                chunk_type=chunk.chunk_type,
+                normalized_content=chunk.normalized_content,
+            )
+        )
+    ]
+    assert repository.embedded_calls[0]["embedding"] == vector
+
+
+def test_task5_records_provider_failure_without_failing_the_corpus() -> None:
+    request = _request()
+    chunk = _chunk()
+    original_error = AppError(
+        "RAG_V2_EMBEDDING_UNAVAILABLE",
+        "RAG V2 embedding is unavailable",
+    )
+    repository = _task5_staging_repository(
+        request=request,
+        chunk=chunk,
+        embedding_failure_error=AppError(
+            "RAG_V2_UNAVAILABLE",
+            "RAG V2 persistence is unavailable",
+        ),
+    )
+    embedder = FakeTask5PassageEmbedder(error=original_error)
+
+    with pytest.raises(AppError) as raised:
+        _make_task5_importer(
+            repository=repository,
+            passage_embedder=embedder,
+            chunk=chunk,
+        ).import_corpus(request)
+
+    assert raised.value is original_error
+    assert repository.failed_embedding_calls == [
+        {
+            "corpus_version_id": _CORPUS_ID,
+            "chunk_key": chunk.chunk_key,
+            "error_code": "RAG_V2_EMBEDDING_UNAVAILABLE",
+            "error_message": "RAG V2 embedding is unavailable",
+        }
+    ]
+    assert repository.mark_failed_calls == []
+
+
+def test_task5_preserves_ordinary_repository_app_errors_without_failure_mutation() -> None:
+    request = _request()
+    chunk = _chunk()
+    original_error = AppError(
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+    repository = _task5_staging_repository(
+        request=request,
+        chunk=chunk,
+        reuse_error=original_error,
+    )
+
+    with pytest.raises(AppError) as raised:
+        _make_task5_importer(
+            repository=repository,
+            passage_embedder=FakeTask5PassageEmbedder(),
+        ).import_corpus(request)
+
+    assert raised.value is original_error
+    assert repository.mark_failed_calls == []
+
+
+def test_task5_failed_chunk_requires_explicit_retry() -> None:
+    request = _request()
+    chunk = _chunk()
+    failed_row = replace(
+        _chunk_row(chunk),
+        status=ChunkStatus.failed,
+        embedding_error_code="RAG_V2_EMBEDDING_UNAVAILABLE",
+    )
+    repository = _task5_staging_repository(
+        request=request,
+        chunk=chunk,
+        initial_row=failed_row,
+    )
+
+    with pytest.raises(AppError) as raised:
+        _make_task5_importer(
+            repository=repository,
+            passage_embedder=FakeTask5PassageEmbedder(),
+        ).import_corpus(request)
+
+    assert raised.value.code == "RAG_V2_INVALID_LIFECYCLE"
+    assert repository.retry_reset_calls == []
+    assert repository.mark_failed_calls == []
+
+
+def test_task5_retry_resets_failed_chunk_before_embedding() -> None:
+    chunk = _chunk()
+    request = _request(retry_failed=True)
+    vector = (0.75,) * 1024
+    failed_row = replace(
+        _chunk_row(chunk),
+        status=ChunkStatus.failed,
+        embedding_error_code="RAG_V2_EMBEDDING_UNAVAILABLE",
+    )
+    repository = _task5_staging_repository(
+        request=request,
+        chunk=chunk,
+        initial_row=failed_row,
+        final_rows=(_embedded_row(chunk, vector),),
+    )
+
+    _make_task5_importer(
+        repository=repository,
+        passage_embedder=FakeTask5PassageEmbedder(vector=vector),
+    ).import_corpus(request)
+
+    assert repository.retry_reset_calls == [
+        {"corpus_version_id": _CORPUS_ID, "chunk_key": chunk.chunk_key}
+    ]
+    assert repository.embedded_calls[0]["embedding"] == vector
+
+
+@pytest.mark.parametrize(
+    ("final_versions", "final_rows", "expected_code"),
+    [
+        ((), None, "RAG_V2_VERSION_CONFLICT"),
+        (
+            (_version_record(_metadata(_OTHER_ID)),),
+            None,
+            "RAG_V2_VERSION_CONFLICT",
+        ),
+        (None, (), "RAG_V2_VERSION_CONFLICT"),
+        (
+            None,
+            (
+                _embedded_row(_chunk(), (0.0,) * 1024),
+                _embedded_row(
+                    _chunk(
+                        _OTHER_ID,
+                        section=_section(
+                            _OTHER_ID,
+                            chunk_type=ChunkType.highlights,
+                            content="额外片段。",
+                        ),
+                    ),
+                    (0.0,) * 1024,
+                ),
+            ),
+            "RAG_V2_VERSION_CONFLICT",
+        ),
+    ],
+)
+def test_task5_rejects_missing_or_extra_authoritative_rows(
+    final_versions: tuple[AttractionVersionRecord, ...] | None,
+    final_rows: tuple[ChunkRow, ...] | None,
+    expected_code: str,
+) -> None:
+    request = _request()
+    chunk = _chunk()
+    vector = (0.625,) * 1024
+    if final_rows is None:
+        final_rows = (_embedded_row(chunk, vector),)
+    repository = _task5_staging_repository(
+        request=request,
+        chunk=chunk,
+        reuse_embeddings=(_previous_embedding(chunk, vector=vector),),
+        final_versions=final_versions,
+        final_rows=final_rows,
+    )
+
+    with pytest.raises(AppError) as raised:
+        _make_task5_importer(
+            repository=repository,
+            passage_embedder=FakeTask5PassageEmbedder(),
+        ).import_corpus(request)
+
+    assert raised.value.code == expected_code
+
+
+@pytest.mark.parametrize("status", [ChunkStatus.pending, ChunkStatus.failed])
+def test_task5_pending_or_failed_authoritative_chunk_is_retryable_not_ready(
+    status: ChunkStatus,
+) -> None:
+    request = _request()
+    chunk = _chunk()
+    row = replace(
+        _chunk_row(chunk),
+        status=status,
+        embedding_error_code="retryable" if status is ChunkStatus.failed else None,
+    )
+    repository = _task5_staging_repository(
+        request=request,
+        chunk=chunk,
+        initial_row=_embedded_row(chunk, (0.875,) * 1024),
+        final_rows=(row,),
+    )
+
+    with pytest.raises(AppError) as raised:
+        _make_task5_importer(
+            repository=repository,
+            passage_embedder=FakeTask5PassageEmbedder(),
+        ).import_corpus(request)
+
+    assert raised.value.code == "RAG_V2_INVALID_LIFECYCLE"
+    assert repository.mark_failed_calls == []
+
+
+def _task5_ready_state_repository(
+    *,
+    request,
+    chunk: SemanticChunk,
+    final_corpus: CorpusVersion | None = None,
+    final_versions: tuple[AttractionVersionRecord, ...] | None = None,
+    final_rows: tuple[ChunkRow, ...] | None = None,
+) -> FakeRepository:
+    vector = (0.875,) * 1024
+    return _task5_staging_repository(
+        request=request,
+        chunk=chunk,
+        reuse_embeddings=(_previous_embedding(chunk, vector=vector),),
+        final_corpus=final_corpus,
+        final_versions=final_versions,
+        final_rows=final_rows or (_embedded_row(chunk, vector),),
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "failed"),
+        ("corpus_version_id", _OTHER_ID),
+        ("dataset_key", "other-dataset"),
+        ("version_label", "other-version"),
+        ("manifest_hash", "f" * 64),
+    ],
+)
+def test_task5_rejects_final_corpus_identity_or_manifest_mismatch(
+    field: str,
+    value: object,
+) -> None:
+    request = _request()
+    chunk = _chunk()
+    repository = _task5_ready_state_repository(request=request, chunk=chunk)
+    repository.final_corpus = replace(repository.corpus, **{field: value})
+
+    with pytest.raises(AppError) as raised:
+        _make_task5_importer(
+            repository=repository,
+            passage_embedder=FakeTask5PassageEmbedder(),
+        ).import_corpus(request)
+
+    assert raised.value.code == "RAG_V2_VERSION_CONFLICT"
+    assert repository.forbidden_calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("canonical_name", "不同名称"),
+        ("aliases", ("别名",)),
+        (
+            "destination",
+            _metadata().destination.model_copy(update={"destination_name": "福州市"}),
+        ),
+        ("category", "museum"),
+        ("tags", ("不同标签",)),
+        ("status", AttractionVersionStatus.suppressed),
+    ],
+)
+def test_task5_rejects_final_attraction_metadata_or_hash_mismatch(
+    field: str,
+    value: object,
+) -> None:
+    request = _request()
+    chunk = _chunk()
+    expected = _version_record(_metadata())
+    changed_metadata = expected.metadata.model_copy(update={field: value})
+    repository = _task5_ready_state_repository(
+        request=request,
+        chunk=chunk,
+        final_versions=(
+            replace(expected, metadata=changed_metadata),
+        ),
+    )
+
+    with pytest.raises(AppError) as raised:
+        _make_task5_importer(
+            repository=repository,
+            passage_embedder=FakeTask5PassageEmbedder(),
+        ).import_corpus(request)
+
+    assert raised.value.code == "RAG_V2_VERSION_CONFLICT"
+
+
+def test_task5_rejects_final_attraction_metadata_hash_mismatch() -> None:
+    request = _request()
+    chunk = _chunk()
+    expected = _version_record(_metadata())
+    repository = _task5_ready_state_repository(
+        request=request,
+        chunk=chunk,
+        final_versions=(replace(expected, metadata_hash="f" * 64),),
+    )
+
+    with pytest.raises(AppError) as raised:
+        _make_task5_importer(
+            repository=repository,
+            passage_embedder=FakeTask5PassageEmbedder(),
+        ).import_corpus(request)
+
+    assert raised.value.code == "RAG_V2_VERSION_CONFLICT"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("attraction_id", _OTHER_ID),
+        ("chunk_key", "different-chunk-key"),
+        ("chunk_type", ChunkType.highlights),
+        ("ordinal", 1),
+        ("content", "不同的规范化内容"),
+        ("content_hash", "a" * 64),
+        ("embedding_input_hash", "b" * 64),
+        ("embedding_input_schema_version", "rag-v2-embedding-input-v2"),
+        ("embedding_model", "jina-embeddings-v4"),
+        ("embedding_task", "retrieval.query"),
+        ("embedding_dimensions", 1536),
+    ],
+)
+def test_task5_rejects_final_immutable_chunk_or_profile_mismatch(
+    field: str,
+    value: object,
+) -> None:
+    request = _request()
+    chunk = _chunk()
+    repository = _task5_ready_state_repository(
+        request=request,
+        chunk=chunk,
+        final_rows=(replace(_embedded_row(chunk, (0.875,) * 1024), **{field: value}),),
+    )
+
+    with pytest.raises(AppError) as raised:
+        _make_task5_importer(
+            repository=repository,
+            passage_embedder=FakeTask5PassageEmbedder(),
+        ).import_corpus(request)
+
+    assert raised.value.code == "RAG_V2_VERSION_CONFLICT"
+
+
+def test_task5_requires_a_complete_finite_non_boolean_embedding() -> None:
+    embedding = None
+    request = _request()
+    chunk = _chunk()
+    repository = _task5_ready_state_repository(
+        request=request,
+        chunk=chunk,
+        final_rows=(
+            replace(
+                _embedded_row(chunk, (0.875,) * 1024),
+                embedding=embedding,
+            ),
+        ),
+    )
+
+    with pytest.raises(AppError) as raised:
+        _make_task5_importer(
+            repository=repository,
+            passage_embedder=FakeTask5PassageEmbedder(),
+        ).import_corpus(request)
+
+    assert raised.value.code == "RAG_V2_INVALID_LIFECYCLE"
+    assert repository.mark_failed_calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_label", "   "),
+        ("source_type", "\t"),
+        ("source_url", "not-a-url"),
+        ("source_url", "http://example.com/source"),
+        ("source_url", "https:///missing-host"),
+        ("source_url", "https://user@example.com/source"),
+        ("source_url", "https://:password@example.com/source"),
+    ],
+)
+def test_task5_requires_complete_structural_provenance_in_final_rows(
+    field: str,
+    value: object,
+) -> None:
+    request = _request()
+    chunk = _chunk()
+    repository = _task5_ready_state_repository(
+        request=request,
+        chunk=chunk,
+        final_rows=(
+            replace(
+                _embedded_row(chunk, (0.875,) * 1024),
+                **{field: value},
+            ),
+        ),
+    )
+
+    with pytest.raises(AppError) as raised:
+        _make_task5_importer(
+            repository=repository,
+            passage_embedder=FakeTask5PassageEmbedder(),
+        ).import_corpus(request)
+
+    assert raised.value.code == "RAG_V2_INVALID_LIFECYCLE"
+    assert repository.mark_failed_calls == []
+
+
+def test_task5_returns_fresh_chunk_rows_in_stable_identity_order() -> None:
+    entries = _two_attraction_entries()
+    request, chunks_by_attraction = _task4_request(entries)
+    metadata_a, metadata_b = entries[0][1], entries[1][1]
+    chunk_a, chunk_b = entries[0][3][0], entries[1][3][0]
+    vector = (0.25,) * 1024
+    repository = FakeRepository(
+        corpus=_corpus(
+            "staging",
+            manifest_hash_value=manifest_hash(request.manifest),
+        ),
+        attraction_versions=(
+            _version_record(metadata_b),
+            _version_record(metadata_a),
+        ),
+        chunk_rows=(_chunk_row(chunk_b), _chunk_row(chunk_a)),
+        reuse_embeddings=(_previous_embedding(chunk_a, vector=vector),),
+        final_attraction_versions=(
+            _version_record(metadata_b),
+            _version_record(metadata_a),
+        ),
+        final_chunk_rows=(
+            _embedded_row(chunk_b, vector),
+            _embedded_row(chunk_a, vector),
+        ),
+        allow_task5_operations=True,
+    )
+    importer = _importer_module().RagV2Importer(
+        identity_source=FakeIdentitySource(
+            resolutions={
+                "xiamen:gulangyu": _CANDIDATE_ID,
+                "xiamen:gulangyu:extra": _OTHER_ID,
+            }
+        ),
+        repository=repository,
+        chunker=FakeChunker(chunks=(), chunks_by_attraction=chunks_by_attraction),
+        passage_embedder=FakeTask5PassageEmbedder(vector=vector),
+    )
+
+    result = importer.import_corpus(request)
+
+    assert result.ready_for_activation is True
+    assert result.chunk_rows == (
+        _embedded_row(chunk_a, vector),
+        _embedded_row(chunk_b, vector),
+    )
+    assert repository.forbidden_calls == []
