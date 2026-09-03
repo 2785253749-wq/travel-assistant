@@ -425,3 +425,109 @@ def test_evaluator_module_has_no_network_database_or_runtime_dependencies() -> N
         for module in imported_modules
         if any(module == root or module.startswith(f"{root}.") for root in forbidden_module_roots)
     ] == []
+
+
+def test_stage10b4_closure_preserves_root_surface_and_importer_boundary() -> None:
+    import app.rag_v2 as rag_v2
+
+    expected_root_exports = (
+        "RagV2Schema",
+        "DestinationLevel",
+        "ChunkType",
+        "AttractionLifecycleStatus",
+        "AttractionVersionStatus",
+        "ChunkStatus",
+        "EmbeddingTask",
+        "Destination",
+        "EmbeddingProfile",
+        "SourceProvenance",
+        "StableAttraction",
+        "AttractionVersionMetadata",
+        "SemanticSection",
+        "normalize_text",
+        "normalize_content",
+        "content_hash",
+        "canonical_metadata_json",
+        "metadata_hash",
+        "EmbeddingInput",
+        "build_embedding_input",
+        "canonical_embedding_text",
+        "embedding_input_hash",
+        "ManifestChunk",
+        "ManifestAttraction",
+        "ManifestInput",
+        "canonical_manifest_json",
+        "manifest_hash",
+        "AttractionIdentitySource",
+        "rename_attraction",
+        "merge_attraction",
+        "retire_attraction",
+        "handle_corpus_absence",
+        "SemanticChunk",
+        "CHUNK_KEY_SCHEMA_VERSION",
+        "DEFAULT_CHUNK_BUDGET",
+        "chunk_key_for",
+        "SemanticChunker",
+        "IncrementalSubject",
+        "IncrementalAction",
+        "EmbeddingIdentity",
+        "PreviousEmbedding",
+        "IncrementalCandidate",
+        "IncrementalDecisionResult",
+        "decide_incremental",
+    )
+    assert tuple(rag_v2.__all__) == expected_root_exports
+
+    assert {
+        "AdministrativeCode",
+        "PassageEmbeddingProvider",
+        "PassageEmbedder",
+        "JinaPassageProvider",
+        "JinaPassageEmbedder",
+        "ImportAttraction",
+        "CorpusImportInput",
+        "CorpusImportResult",
+        "RagV2Importer",
+        "EvaluationCase",
+        "EvaluationObservation",
+    }.isdisjoint(rag_v2.__all__)
+
+    project_root = Path(__file__).resolve().parents[2]
+    importer_path = project_root / "app" / "rag_v2" / "importer.py"
+    importer_tree = ast.parse(importer_path.read_text(encoding="utf-8"))
+    assert [
+        node
+        for node in ast.walk(importer_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "activate_corpus"
+    ] == []
+
+    assert (project_root / "supabase" / "migrations" / "014_rag_v2.sql").exists()
+    assert not (project_root / "supabase" / "migrations" / "015_rag_v2.sql").exists()
+
+    forbidden_module_roots = (
+        "app.agent",
+        "app.composition",
+        "app.frontend",
+        "app.planner",
+        "app.runtime",
+    )
+    for module_name in ("importer.py", "passage_embedding.py", "evaluation.py"):
+        module_path = project_root / "app" / "rag_v2" / module_name
+        tree = ast.parse(module_path.read_text(encoding="utf-8"))
+        imported_modules: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_modules.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                imported_modules.append(node.module)
+
+        assert [
+            module
+            for module in imported_modules
+            if any(
+                module == root or module.startswith(f"{root}.")
+                for root in forbidden_module_roots
+            )
+        ] == []

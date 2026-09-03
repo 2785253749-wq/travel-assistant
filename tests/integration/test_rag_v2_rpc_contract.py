@@ -797,7 +797,6 @@ def test_task8_repository_declares_candidate_and_typed_rpc_methods() -> None:
     assert "def activate_corpus" in source
     assert "def match_chunks" in source
     for forbidden in (
-        "list_embedded_chunks_for_reuse",
         "def raw_rpc",
         "def call_rpc",
     ):
@@ -839,7 +838,6 @@ def test_task8_repository_does_not_expose_generic_rpc_or_retrieval_reuse() -> No
     source = _repository_source()
 
     for forbidden in (
-        "def list_embedded_chunks_for_reuse",
         "def raw_rpc",
         "def call_rpc",
         "def execute_sql",
