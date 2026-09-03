@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, fields, replace
 from datetime import date, datetime, timezone
 from importlib import import_module
 from uuid import UUID
@@ -34,6 +34,7 @@ from app.rag_v2.models import (
 )
 from app.rag_v2.repository import (
     AttractionVersionRecord,
+    ChunkInsert,
     ChunkRow,
     CorpusVersion,
 )
@@ -271,8 +272,14 @@ class FakeIdentitySource:
 
 
 class FakeChunker:
-    def __init__(self, *, chunks: tuple[SemanticChunk, ...]) -> None:
+    def __init__(
+        self,
+        *,
+        chunks: tuple[SemanticChunk, ...],
+        chunks_by_attraction: dict[UUID, tuple[SemanticChunk, ...]] | None = None,
+    ) -> None:
         self.chunks = chunks
+        self.chunks_by_attraction = chunks_by_attraction or {}
         self.calls: list[dict[str, object]] = []
 
     def chunk(
@@ -282,7 +289,7 @@ class FakeChunker:
         attraction: AttractionVersionMetadata,
     ) -> tuple[SemanticChunk, ...]:
         self.calls.append({"section": section, "attraction": attraction})
-        return self.chunks
+        return self.chunks_by_attraction.get(section.attraction_id, self.chunks)
 
 
 class FakePassageEmbedder:
@@ -312,8 +319,17 @@ class FakeRepository:
         self.create_calls: list[dict[str, object]] = []
         self.attraction_version_calls: list[UUID] = []
         self.chunk_row_calls: list[UUID] = []
+        self.inserted_attraction_versions: list[
+            tuple[AttractionVersionRecord, ...]
+        ] = []
+        self.inserted_chunks: list[tuple[ChunkInsert, ...]] = []
+        self.inserted_chunk_rows: list[tuple[ChunkRow, ...]] = []
+        self.mark_failed_calls: list[UUID] = []
+        self.operation_log: list[str] = []
+        self.forbidden_calls: list[str] = []
 
     def create_corpus_version(self, **kwargs: object) -> CorpusVersion:
+        self.operation_log.append("create_corpus_version")
         self.create_calls.append(kwargs)
         if self.create_error is not None:
             raise self.create_error
@@ -324,16 +340,60 @@ class FakeRepository:
         *,
         corpus_version_id: UUID,
     ) -> tuple[AttractionVersionRecord, ...]:
+        self.operation_log.append("list_attraction_versions")
         self.attraction_version_calls.append(corpus_version_id)
         if self.snapshot_error is not None:
             raise self.snapshot_error
         return self.attraction_versions
 
     def list_chunk_rows(self, *, corpus_version_id: UUID) -> tuple[ChunkRow, ...]:
+        self.operation_log.append("list_chunk_rows")
         self.chunk_row_calls.append(corpus_version_id)
         if self.snapshot_error is not None:
             raise self.snapshot_error
         return self.chunk_rows
+
+    def insert_attraction_versions(
+        self,
+        records: tuple[AttractionVersionRecord, ...],
+    ) -> tuple[AttractionVersionRecord, ...]:
+        self.operation_log.append("insert_attraction_versions")
+        inserted = tuple(records)
+        self.inserted_attraction_versions.append(inserted)
+        return inserted
+
+    def insert_chunks(
+        self,
+        inserts: tuple[ChunkInsert, ...],
+    ) -> tuple[ChunkRow, ...]:
+        self.operation_log.append("insert_chunks")
+        inserted = tuple(inserts)
+        self.inserted_chunks.append(inserted)
+        rows = tuple(
+            _chunk_row(item.chunk, corpus_version_id=item.corpus_version_id)
+            for item in inserted
+        )
+        self.inserted_chunk_rows.append(rows)
+        return rows
+
+    def mark_corpus_failed(self, *, corpus_version_id: UUID) -> CorpusVersion:
+        self.operation_log.append("mark_corpus_failed")
+        self.mark_failed_calls.append(corpus_version_id)
+        return replace(self.corpus, status="failed")
+
+    def __getattr__(self, name: str) -> object:
+        if name in {
+            "list_embedded_chunks_for_reuse",
+            "decide_incremental",
+            "embed_passage",
+            "mark_chunk_embedded",
+            "mark_chunk_embedding_failed",
+            "reset_chunk_embedding_for_retry",
+            "activate_corpus",
+        }:
+            self.forbidden_calls.append(name)
+            raise AssertionError(f"Task 4 must not call {name}")
+        raise AttributeError(name)
 
 
 def _make_importer(
@@ -759,3 +819,376 @@ def test_task3_preserves_repository_app_error_identity_without_failure_mutation(
     assert raised.value is original_error
     assert repository.attraction_version_calls == []
     assert repository.chunk_row_calls == []
+
+
+def _version_record(
+    metadata: AttractionVersionMetadata,
+    *,
+    corpus_version_id: UUID = _CORPUS_ID,
+) -> AttractionVersionRecord:
+    return AttractionVersionRecord(
+        corpus_version_id=corpus_version_id,
+        metadata=metadata,
+        metadata_hash=metadata_hash(metadata),
+    )
+
+
+def _manifest_for_entries(
+    entries: tuple[
+        tuple[AttractionVersionMetadata, tuple[SemanticChunk, ...]],
+        ...,
+    ],
+) -> ManifestInput:
+    return ManifestInput(
+        schema_version="rag-v2-manifest-v1",
+        dataset_key=_DATASET_KEY,
+        embedding_profile=EmbeddingProfile(
+            model="jina-embeddings-v3",
+            task=EmbeddingTask.passage,
+            dimensions=1024,
+            input_schema_version="rag-v2-embedding-input-v1",
+        ),
+        attractions=tuple(
+            ManifestAttraction(
+                attraction_id=metadata.attraction_id,
+                metadata_hash=metadata_hash(metadata),
+                chunks=tuple(
+                    ManifestChunk(
+                        chunk_key=chunk.chunk_key,
+                        chunk_type=chunk.chunk_type,
+                        ordinal=chunk.ordinal,
+                        content_hash=chunk.content_hash,
+                        embedding_input_hash=chunk.embedding_input_hash,
+                        source_label=chunk.source_label,
+                        source_url=chunk.source_url,
+                        source_type=chunk.source_type,
+                        reviewed_on=chunk.reviewed_on,
+                    )
+                    for chunk in chunks
+                ),
+            )
+            for metadata, chunks in entries
+        ),
+    )
+
+
+def _task4_request(
+    entries: tuple[
+        tuple[
+            str,
+            AttractionVersionMetadata,
+            tuple[SemanticSection, ...],
+            tuple[SemanticChunk, ...],
+        ],
+        ...,
+    ],
+):
+    module = _importer_module()
+    manifest = _manifest_for_entries(
+        tuple((metadata, chunks) for _, metadata, _, chunks in entries)
+    )
+    request = module.CorpusImportInput(
+        corpus_version_id=_CORPUS_ID,
+        dataset_key=_DATASET_KEY,
+        version_label=_VERSION_LABEL,
+        manifest=manifest,
+        attractions=tuple(
+            module.ImportAttraction(
+                registry_key=registry_key,
+                metadata=metadata,
+                sections=sections,
+            )
+            for registry_key, metadata, sections, _ in entries
+        ),
+    )
+    chunks_by_attraction = {
+        metadata.attraction_id: chunks
+        for _, metadata, _, chunks in entries
+    }
+    return request, chunks_by_attraction
+
+
+def _two_attraction_entries():
+    metadata_a = _metadata(_CANDIDATE_ID)
+    section_a = _section(_CANDIDATE_ID)
+    chunk_a = _chunk(_CANDIDATE_ID, section=section_a)
+    metadata_b = _metadata(_OTHER_ID)
+    section_b = _section(
+        _OTHER_ID,
+        chunk_type=ChunkType.highlights,
+        content="鼓浪屿保留了丰富的历史建筑。",
+    )
+    chunk_b = _chunk(_OTHER_ID, section=section_b)
+    return (
+        ("xiamen:gulangyu", metadata_a, (section_a,), (chunk_a,)),
+        ("xiamen:gulangyu:extra", metadata_b, (section_b,), (chunk_b,)),
+    )
+
+
+def _make_task4_importer(
+    *,
+    repository: FakeRepository,
+    chunks_by_attraction: dict[UUID, tuple[SemanticChunk, ...]],
+):
+    module = _importer_module()
+    identity_source = FakeIdentitySource(
+        resolutions={
+            "xiamen:gulangyu": _CANDIDATE_ID,
+            "xiamen:gulangyu:extra": _OTHER_ID,
+        }
+    )
+    return module.RagV2Importer(
+        identity_source=identity_source,
+        repository=repository,
+        chunker=FakeChunker(
+            chunks=(),
+            chunks_by_attraction=chunks_by_attraction,
+        ),
+        passage_embedder=FakePassageEmbedder(),
+    )
+
+
+def test_task4_preserves_matching_rows_and_inserts_only_missing_rows() -> None:
+    entries = _two_attraction_entries()
+    request, chunks_by_attraction = _task4_request(entries)
+    authoritative_corpus_id = _ALLOCATED_ID
+    metadata_a, metadata_b = entries[0][1], entries[1][1]
+    chunk_a, chunk_b = entries[0][3][0], entries[1][3][0]
+    repository = FakeRepository(
+        corpus=_corpus(
+            "staging",
+            corpus_version_id=authoritative_corpus_id,
+            manifest_hash_value=manifest_hash(request.manifest),
+        ),
+        attraction_versions=(
+            _version_record(metadata_a, corpus_version_id=authoritative_corpus_id),
+        ),
+        chunk_rows=(_chunk_row(chunk_a, corpus_version_id=authoritative_corpus_id),),
+    )
+
+    result = _make_task4_importer(
+        repository=repository,
+        chunks_by_attraction=chunks_by_attraction,
+    ).import_corpus(request)
+
+    assert repository.inserted_attraction_versions == [
+        (_version_record(metadata_b, corpus_version_id=authoritative_corpus_id),)
+    ]
+    assert repository.inserted_chunks == [
+        (ChunkInsert(corpus_version_id=authoritative_corpus_id, chunk=chunk_b),)
+    ]
+    assert repository.inserted_chunk_rows == [
+        (_chunk_row(chunk_b, corpus_version_id=authoritative_corpus_id),)
+    ]
+    assert result.corpus.status == "staging"
+    assert result.ready_for_activation is False
+    assert repository.forbidden_calls == []
+
+
+def test_task4_marks_attraction_version_immutable_conflict_and_does_not_replace_it() -> None:
+    entries = _two_attraction_entries()[:1]
+    request, chunks_by_attraction = _task4_request(entries)
+    metadata = entries[0][1]
+    conflicting_metadata = metadata.model_copy(update={"category": "different"})
+    repository = FakeRepository(
+        corpus=_corpus(
+            "staging",
+            manifest_hash_value=manifest_hash(request.manifest),
+        ),
+        attraction_versions=(_version_record(conflicting_metadata),),
+    )
+
+    with pytest.raises(AppError) as raised:
+        _make_task4_importer(
+            repository=repository,
+            chunks_by_attraction=chunks_by_attraction,
+        ).import_corpus(request)
+
+    assert raised.value.code == "RAG_V2_VERSION_CONFLICT"
+    assert raised.value.message == "RAG V2 corpus version conflicts with existing data"
+    assert repository.inserted_attraction_versions == []
+    assert repository.mark_failed_calls == [_CORPUS_ID]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("attraction_id", _OTHER_ID),
+        ("chunk_type", ChunkType.highlights),
+        ("ordinal", 1),
+        ("content", "不同的规范化内容"),
+        ("content_hash", "a" * 64),
+        ("embedding_input_hash", "b" * 64),
+        ("embedding_input_schema_version", "rag-v2-embedding-input-v2"),
+        ("source_label", "另一来源"),
+        ("source_url", "https://other.example/guide"),
+        ("source_type", "secondary"),
+        ("reviewed_on", date(2026, 2, 3)),
+        ("embedding_model", "jina-embeddings-v4"),
+        ("embedding_task", "retrieval.query"),
+        ("embedding_dimensions", 1536),
+    ],
+)
+def test_task4_marks_chunk_immutable_conflict_and_does_not_replace_it(
+    field: str,
+    value: object,
+) -> None:
+    entries = _two_attraction_entries()[:1]
+    request, chunks_by_attraction = _task4_request(entries)
+    chunk = entries[0][3][0]
+    conflicting_row = replace(_chunk_row(chunk), **{field: value})
+    repository = FakeRepository(
+        corpus=_corpus(
+            "staging",
+            manifest_hash_value=manifest_hash(request.manifest),
+        ),
+        attraction_versions=(_version_record(entries[0][1]),),
+        chunk_rows=(conflicting_row,),
+    )
+
+    with pytest.raises(AppError) as raised:
+        _make_task4_importer(
+            repository=repository,
+            chunks_by_attraction=chunks_by_attraction,
+        ).import_corpus(request)
+
+    assert raised.value.code == "RAG_V2_VERSION_CONFLICT"
+    assert raised.value.message == "RAG V2 corpus version conflicts with existing data"
+    assert repository.inserted_chunks == []
+    assert repository.mark_failed_calls == [_CORPUS_ID]
+
+
+def test_task4_reads_both_authoritative_snapshots_before_any_insert() -> None:
+    entries = _two_attraction_entries()
+    request, chunks_by_attraction = _task4_request(entries)
+    repository = FakeRepository(
+        corpus=_corpus(
+            "staging",
+            manifest_hash_value=manifest_hash(request.manifest),
+        )
+    )
+
+    _make_task4_importer(
+        repository=repository,
+        chunks_by_attraction=chunks_by_attraction,
+    ).import_corpus(request)
+
+    read_positions = [
+        index
+        for index, operation in enumerate(repository.operation_log)
+        if operation in {"list_attraction_versions", "list_chunk_rows"}
+    ]
+    insert_positions = [
+        index
+        for index, operation in enumerate(repository.operation_log)
+        if operation in {"insert_attraction_versions", "insert_chunks"}
+    ]
+    assert read_positions
+    assert insert_positions
+    assert max(read_positions) < min(insert_positions)
+
+
+def test_task4_partial_rerun_keeps_matching_rows_and_is_not_ready() -> None:
+    entries = _two_attraction_entries()
+    request, chunks_by_attraction = _task4_request(entries)
+    metadata_a, metadata_b = entries[0][1], entries[1][1]
+    chunk_a, chunk_b = entries[0][3][0], entries[1][3][0]
+    repository = FakeRepository(
+        corpus=_corpus(
+            "staging",
+            manifest_hash_value=manifest_hash(request.manifest),
+        ),
+        attraction_versions=(_version_record(metadata_a),),
+        chunk_rows=(_chunk_row(chunk_a),),
+    )
+
+    result = _make_task4_importer(
+        repository=repository,
+        chunks_by_attraction=chunks_by_attraction,
+    ).import_corpus(request)
+
+    assert repository.inserted_attraction_versions == [(_version_record(metadata_b),)]
+    assert repository.inserted_chunks == [
+        (ChunkInsert(corpus_version_id=_CORPUS_ID, chunk=chunk_b),)
+    ]
+    assert repository.attraction_versions == (_version_record(metadata_a),)
+    assert repository.chunk_rows == (_chunk_row(chunk_a),)
+    assert result.ready_for_activation is False
+    assert repository.forbidden_calls == []
+
+
+# Regression coverage: Task 3 already provides this observable staging no-op.
+def test_task4_complete_staging_rerun_is_idempotent_and_does_not_claim_readiness() -> None:
+    entries = _two_attraction_entries()
+    request, chunks_by_attraction = _task4_request(entries)
+    existing_versions = tuple(
+        _version_record(metadata) for _, metadata, _, _ in entries
+    )
+    existing_rows = tuple(
+        _chunk_row(chunk)
+        for _, _, _, chunks in entries
+        for chunk in chunks
+    )
+    repository = FakeRepository(
+        corpus=_corpus(
+            "staging",
+            manifest_hash_value=manifest_hash(request.manifest),
+        ),
+        attraction_versions=existing_versions,
+        chunk_rows=existing_rows,
+    )
+
+    result = _make_task4_importer(
+        repository=repository,
+        chunks_by_attraction=chunks_by_attraction,
+    ).import_corpus(request)
+
+    assert repository.inserted_attraction_versions == []
+    assert repository.inserted_chunks == []
+    assert result.corpus.status == "staging"
+    assert result.chunk_rows == existing_rows
+    assert result.ready_for_activation is False
+    assert repository.forbidden_calls == []
+
+
+def test_task4_result_chunk_order_is_independent_of_caller_order() -> None:
+    entries = _two_attraction_entries()
+    canonical_request, canonical_chunks = _task4_request(entries)
+    reversed_request, reversed_chunks = _task4_request(tuple(reversed(entries)))
+
+    canonical_result = _make_task4_importer(
+        repository=FakeRepository(
+            corpus=_corpus(
+                "staging",
+                manifest_hash_value=manifest_hash(canonical_request.manifest),
+            )
+        ),
+        chunks_by_attraction=canonical_chunks,
+    ).import_corpus(canonical_request)
+    reversed_result = _make_task4_importer(
+        repository=FakeRepository(
+            corpus=_corpus(
+                "staging",
+                manifest_hash_value=manifest_hash(reversed_request.manifest),
+            )
+        ),
+        chunks_by_attraction=reversed_chunks,
+    ).import_corpus(reversed_request)
+
+    def row_order(rows: tuple[ChunkRow, ...]) -> tuple[tuple[object, ...], ...]:
+        return tuple(
+            (
+                str(row.attraction_id),
+                row.chunk_type.value,
+                row.ordinal,
+                row.chunk_key,
+            )
+            for row in rows
+        )
+
+    expected_order = tuple(sorted(row_order(canonical_result.chunk_rows)))
+    assert row_order(canonical_result.chunk_rows) == expected_order
+    assert row_order(reversed_result.chunk_rows) == expected_order
+    assert row_order(reversed_result.chunk_rows) == row_order(
+        canonical_result.chunk_rows
+    )
