@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import database_operation
+from app.rag_v2.incremental import EmbeddingIdentity, PreviousEmbedding
 from app.rag_v2.models import (
     AttractionLifecycleStatus,
     AttractionVersionMetadata,
@@ -276,6 +277,129 @@ class RagV2Repository:
         except AppError:
             raise
         except (APIError, httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError):
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+
+    def list_embedded_chunks_for_reuse(
+        self,
+        *,
+        dataset_key: str,
+        embedding_input_hash: str,
+        exclude_corpus_version_id: UUID,
+    ) -> tuple[PreviousEmbedding, ...]:
+        try:
+            with database_operation("rag_v2.chunk.list_reuse"):
+                response = (
+                    self._client.table("rag_attraction_chunks")
+                    .select(
+                        "*, rag_corpus_versions!inner(corpus_version_id, dataset_key, status)"
+                    )
+                    .eq("rag_corpus_versions.dataset_key", dataset_key)
+                    .eq("embedding_input_hash", embedding_input_hash)
+                    .in_("rag_corpus_versions.status", ("active", "superseded"))
+                    .neq("corpus_version_id", str(exclude_corpus_version_id))
+                    .eq("status", ChunkStatus.embedded.value)
+                    .not_.is_("embedding", "null")
+                    .order("chunk_key")
+                    .order("corpus_version_id")
+                    .execute()
+                )
+                rows = self._batch_rows(response)
+                reusable = []
+                for row in rows:
+                    source = row["rag_corpus_versions"]
+                    if not isinstance(source, dict):
+                        raise ValueError("malformed source corpus")
+                    source_dataset_key = self._required_string(source["dataset_key"])
+                    source_status = self._required_string(source["status"])
+                    source_corpus_version_id = UUID(str(row["corpus_version_id"]))
+                    if (
+                        source_dataset_key != dataset_key
+                        or source_status not in {"active", "superseded"}
+                        or source_corpus_version_id == exclude_corpus_version_id
+                        or row["status"] != ChunkStatus.embedded.value
+                    ):
+                        continue
+                    reusable.append(
+                        self._previous_embedding_from_row(
+                            row,
+                            dataset_key=dataset_key,
+                            embedding_input_hash=embedding_input_hash,
+                            exclude_corpus_version_id=exclude_corpus_version_id,
+                        )
+                    )
+                return tuple(reusable)
+        except AppError:
+            raise
+        except (
+            APIError,
+            httpx.HTTPError,
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            ValidationError,
+        ):
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+
+    def list_attraction_versions(
+        self,
+        *,
+        corpus_version_id: UUID,
+    ) -> tuple[AttractionVersionRecord, ...]:
+        try:
+            with database_operation("rag_v2.attraction_version.list"):
+                response = (
+                    self._client.table("rag_attraction_versions")
+                    .select("*")
+                    .eq("corpus_version_id", str(corpus_version_id))
+                    .order("attraction_id")
+                    .execute()
+                )
+                rows = self._batch_rows(response)
+                return tuple(self._attraction_version_from_row(row) for row in rows)
+        except AppError:
+            raise
+        except (
+            APIError,
+            httpx.HTTPError,
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            ValidationError,
+        ):
+            raise self._app_error("RAG_V2_UNAVAILABLE") from None
+
+    def list_chunk_rows(
+        self,
+        *,
+        corpus_version_id: UUID,
+    ) -> tuple[ChunkRow, ...]:
+        try:
+            with database_operation("rag_v2.chunk.list"):
+                response = (
+                    self._client.table("rag_attraction_chunks")
+                    .select("*")
+                    .eq("corpus_version_id", str(corpus_version_id))
+                    .order("attraction_id")
+                    .order("chunk_type")
+                    .order("ordinal")
+                    .order("chunk_key")
+                    .execute()
+                )
+                rows = self._batch_rows(response)
+                return tuple(self._chunk_from_row(row) for row in rows)
+        except AppError:
+            raise
+        except (
+            APIError,
+            httpx.HTTPError,
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            ValidationError,
+        ):
             raise self._app_error("RAG_V2_UNAVAILABLE") from None
 
     def insert_attraction(self, attraction: StableAttraction) -> StableAttraction:
@@ -740,6 +864,80 @@ class RagV2Repository:
                 row.get("embedding_error_message")
             ),
         )
+
+    @classmethod
+    def _previous_embedding_from_row(
+        cls,
+        row: dict,
+        *,
+        dataset_key: str,
+        embedding_input_hash: str,
+        exclude_corpus_version_id: UUID,
+    ) -> PreviousEmbedding:
+        source = row["rag_corpus_versions"]
+        if not isinstance(source, dict):
+            raise ValueError("malformed source corpus")
+        source_dataset_key = cls._required_string(source["dataset_key"])
+        source_status = cls._required_string(source["status"])
+        source_corpus_version_id = UUID(str(row["corpus_version_id"]))
+        if (
+            source_dataset_key != dataset_key
+            or source_status not in {"active", "superseded"}
+            or source_corpus_version_id == exclude_corpus_version_id
+            or row["status"] != ChunkStatus.embedded.value
+        ):
+            raise ValueError("row is not an eligible reusable embedding")
+        if cls._required_string(row["embedding_input_hash"]) != embedding_input_hash:
+            raise ValueError("row embedding input hash does not match request")
+
+        embedding_dimensions = row["embedding_dimensions"]
+        if isinstance(embedding_dimensions, bool) or not isinstance(
+            embedding_dimensions, int
+        ):
+            raise ValueError("invalid embedding dimensions")
+        embedding_model = cls._required_string(row["embedding_model"])
+        embedding_task = cls._required_string(row["embedding_task"])
+        embedding_input_schema_version = cls._required_string(
+            row["embedding_input_schema_version"]
+        )
+        if (
+            embedding_model != _RAG_V2_EMBEDDING_MODEL
+            or embedding_task != _RAG_V2_EMBEDDING_TASK
+            or embedding_dimensions != _RAG_V2_EMBEDDING_DIMENSIONS
+            or embedding_input_schema_version != _RAG_V2_EMBEDDING_INPUT_SCHEMA
+        ):
+            raise ValueError("invalid embedding profile")
+        vector = cls._reusable_embedding(row.get("embedding"))
+        return PreviousEmbedding(
+            chunk_key=cls._required_string(row["chunk_key"]),
+            identity=EmbeddingIdentity(
+                embedding_input_hash=embedding_input_hash,
+                embedding_model=embedding_model,
+                embedding_task=embedding_task,
+                embedding_dimensions=embedding_dimensions,
+                embedding_input_schema_version=embedding_input_schema_version,
+            ),
+            vector=vector,
+            validated_corpus=True,
+        )
+
+    @classmethod
+    def _reusable_embedding(cls, value: object) -> tuple[float, ...]:
+        if value is None:
+            raise ValueError("reusable embedding is missing")
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                raise ValueError("malformed embedding") from None
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("malformed embedding")
+        if any(isinstance(item, bool) for item in value):
+            raise ValueError("malformed embedding")
+        vector = cls._returned_embedding(value)
+        if vector is None:
+            raise ValueError("reusable embedding is missing")
+        return vector
 
     @classmethod
     def _candidate_from_row(cls, row: dict) -> RagV2Candidate:

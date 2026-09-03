@@ -25,6 +25,7 @@ from app.rag_v2.models import (
     SemanticChunk,
     StableAttraction,
 )
+from app.rag_v2.incremental import EmbeddingIdentity, PreviousEmbedding
 
 
 DATASET_KEY = "travel-attractions-cn"
@@ -56,6 +57,8 @@ class FakeQuery:
         self.selected = None
         self.payload = None
         self.filters = []
+        self.orders = []
+        self.not_ = _FakeNotQuery(self)
 
     def select(self, columns):
         if self.operation is None:
@@ -65,6 +68,22 @@ class FakeQuery:
 
     def eq(self, column, value):
         self.filters.append((column, value))
+        return self
+
+    def neq(self, column, value):
+        self.filters.append(("neq", column, value))
+        return self
+
+    def in_(self, column, values):
+        self.filters.append(("in", column, tuple(values)))
+        return self
+
+    def is_(self, column, value):
+        self.filters.append(("is", column, value))
+        return self
+
+    def order(self, column, *, desc=False, nullsfirst=None):
+        self.orders.append((column, desc, nullsfirst))
         return self
 
     def insert(self, payload, *, returning=None):
@@ -90,6 +109,7 @@ class FakeQuery:
                 "returning": getattr(self, "returning", None),
                 "payload": self.payload,
                 "filters": tuple(self.filters),
+                "orders": tuple(self.orders),
             }
         )
         if not self.client.responses:
@@ -98,6 +118,15 @@ class FakeQuery:
         if isinstance(response, BaseException):
             raise response
         return SimpleNamespace(data=response)
+
+
+class _FakeNotQuery:
+    def __init__(self, query):
+        self.query = query
+
+    def is_(self, column, value):
+        self.query.filters.append(("not_is", column, value))
+        return self.query
 
 
 class FakeRpcQuery:
@@ -1482,13 +1511,12 @@ def test_rag_v2_candidate_is_exact_frozen_dataclass():
         instance.score = 0.1
 
 
-def test_task8_repository_methods_exist_without_reuse_or_raw_rpc_surface():
+def test_task8_repository_methods_exist_without_raw_rpc_surface():
     repository = _repository(FakeClient())
 
     assert hasattr(repository, "activate_corpus")
     assert hasattr(repository, "match_chunks")
     for name in (
-        "list_embedded_chunks_for_reuse",
         "raw_rpc",
         "call_rpc",
     ):
@@ -1945,3 +1973,462 @@ def test_match_chunks_maps_unexpected_http_failure_without_raw_text(caplog):
     )
     assert "retrieval provider secret" not in str(error.value)
     assert "secret" not in caplog.text
+
+
+TASK1_CORPUS_A = UUID("99999999-9999-9999-9999-999999999999")
+TASK1_CORPUS_B = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+TASK1_EMBEDDING_HASH = "f" * 64
+
+
+def _task1_reuse_row(
+    *,
+    corpus_version_id=TASK1_CORPUS_A,
+    chunk_key="chunk-a",
+    corpus_status="active",
+    dataset_key=DATASET_KEY,
+    embedding_input_hash=TASK1_EMBEDDING_HASH,
+    embedding=TASK7_VECTOR,
+):
+    row = _task7_chunk_row(
+        _task7_chunk(chunk_key=chunk_key),
+        embedding=embedding,
+        status="embedded",
+    )
+    row.update(
+        {
+            "corpus_version_id": str(corpus_version_id),
+            "embedding_input_hash": embedding_input_hash,
+            "dataset_key": dataset_key,
+            "corpus_status": corpus_status,
+            "rag_corpus_versions": {
+                "corpus_version_id": str(corpus_version_id),
+                "dataset_key": dataset_key,
+                "status": corpus_status,
+            },
+        }
+    )
+    return row
+
+
+def _task1_version_row(*, attraction_id):
+    record = _task7_version_record(attraction_id=attraction_id)
+    row = _task7_version_row(record)
+    row["corpus_version_id"] = str(TASK1_CORPUS_A)
+    return row
+
+
+def _task1_chunk_row(
+    *,
+    attraction_id=TASK7_ATTRACTION_A,
+    chunk_key="chunk-a",
+    status="embedded",
+    embedding=TASK7_VECTOR,
+    embedding_error_code=None,
+    embedding_error_message=None,
+):
+    row = _task7_chunk_row(
+        _task7_chunk(attraction_id=attraction_id, chunk_key=chunk_key),
+        embedding=embedding,
+        status=status,
+        embedding_error_code=embedding_error_code,
+        embedding_error_message=embedding_error_message,
+    )
+    row["corpus_version_id"] = str(TASK1_CORPUS_A)
+    return row
+
+
+def test_list_embedded_chunks_for_reuse_encodes_exact_filters_and_order():
+    client = FakeClient([_task1_reuse_row()])
+
+    result = _repository(client).list_embedded_chunks_for_reuse(
+        dataset_key=DATASET_KEY,
+        embedding_input_hash=TASK1_EMBEDDING_HASH,
+        exclude_corpus_version_id=CALLER_CORPUS_ID,
+    )
+
+    assert len(result) == 1
+    call = client.calls[0]
+    assert call["table"] == "rag_attraction_chunks"
+    assert call["operation"] == "select"
+    assert ("rag_corpus_versions.dataset_key", DATASET_KEY) in call["filters"]
+    assert ("embedding_input_hash", TASK1_EMBEDDING_HASH) in call["filters"]
+    assert (
+        "in",
+        "rag_corpus_versions.status",
+        ("active", "superseded"),
+    ) in call["filters"]
+    assert (
+        "neq",
+        "corpus_version_id",
+        str(CALLER_CORPUS_ID),
+    ) in call["filters"]
+    assert ("status", "embedded") in call["filters"]
+    assert any(
+        entry in call["filters"]
+        for entry in (
+            ("not_is", "embedding", "null"),
+            ("neq", "embedding", None),
+        )
+    )
+    assert call["orders"] == (
+        ("chunk_key", False, None),
+        ("corpus_version_id", False, None),
+    )
+    assert client.rpc_calls == []
+
+
+@pytest.mark.parametrize("corpus_status", ["active", "superseded"])
+def test_reuse_accepts_active_and_superseded_corpora(corpus_status):
+    client = FakeClient([_task1_reuse_row(corpus_status=corpus_status)])
+
+    result = _repository(client).list_embedded_chunks_for_reuse(
+        dataset_key=DATASET_KEY,
+        embedding_input_hash=TASK1_EMBEDDING_HASH,
+        exclude_corpus_version_id=CALLER_CORPUS_ID,
+    )
+
+    assert [row.chunk_key for row in result] == ["chunk-a"]
+
+
+@pytest.mark.parametrize("corpus_status", ["staging", "failed"])
+def test_reuse_excludes_staging_and_failed_corpora(corpus_status):
+    client = FakeClient([_task1_reuse_row(corpus_status=corpus_status)])
+
+    result = _repository(client).list_embedded_chunks_for_reuse(
+        dataset_key=DATASET_KEY,
+        embedding_input_hash=TASK1_EMBEDDING_HASH,
+        exclude_corpus_version_id=CALLER_CORPUS_ID,
+    )
+
+    assert result == ()
+    assert (
+        "in",
+        "rag_corpus_versions.status",
+        ("active", "superseded"),
+    ) in client.calls[0]["filters"]
+
+
+def test_reuse_excludes_current_corpus_even_when_row_matches_other_filters():
+    client = FakeClient(
+        [
+            _task1_reuse_row(
+                corpus_version_id=CALLER_CORPUS_ID,
+            )
+        ]
+    )
+
+    result = _repository(client).list_embedded_chunks_for_reuse(
+        dataset_key=DATASET_KEY,
+        embedding_input_hash=TASK1_EMBEDDING_HASH,
+        exclude_corpus_version_id=CALLER_CORPUS_ID,
+    )
+
+    assert result == ()
+    assert (
+        "neq",
+        "corpus_version_id",
+        str(CALLER_CORPUS_ID),
+    ) in client.calls[0]["filters"]
+
+
+def test_reuse_maps_existing_previous_embedding_and_preserves_order():
+    rows = [
+        _task1_reuse_row(
+            corpus_version_id=TASK1_CORPUS_A,
+            chunk_key="chunk-a",
+        ),
+        _task1_reuse_row(
+            corpus_version_id=TASK1_CORPUS_B,
+            chunk_key="chunk-b",
+        ),
+    ]
+    client = FakeClient(rows)
+
+    result = _repository(client).list_embedded_chunks_for_reuse(
+        dataset_key=DATASET_KEY,
+        embedding_input_hash=TASK1_EMBEDDING_HASH,
+        exclude_corpus_version_id=CALLER_CORPUS_ID,
+    )
+
+    identity = EmbeddingIdentity(
+        embedding_input_hash=TASK1_EMBEDDING_HASH,
+        embedding_model="jina-embeddings-v3",
+        embedding_task="retrieval.passage",
+        embedding_dimensions=1024,
+        embedding_input_schema_version="rag-v2-embedding-input-v1",
+    )
+    assert result == (
+        PreviousEmbedding(
+            chunk_key="chunk-a",
+            identity=identity,
+            vector=tuple(TASK7_VECTOR),
+            validated_corpus=True,
+        ),
+        PreviousEmbedding(
+            chunk_key="chunk-b",
+            identity=identity,
+            vector=tuple(TASK7_VECTOR),
+            validated_corpus=True,
+        ),
+    )
+    assert client.calls[0]["orders"] == (
+        ("chunk_key", False, None),
+        ("corpus_version_id", False, None),
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "bad_value"),
+    [
+        ("embedding_model", "other-model"),
+        ("embedding_task", "retrieval.query"),
+        ("embedding_dimensions", 1536),
+        ("embedding_input_schema_version", "other-schema"),
+    ],
+)
+def test_reuse_wrong_persisted_profile_maps_to_unavailable(field_name, bad_value):
+    row = _task1_reuse_row()
+    row[field_name] = bad_value
+    client = FakeClient([row])
+
+    with pytest.raises(AppError) as error:
+        _repository(client).list_embedded_chunks_for_reuse(
+            dataset_key=DATASET_KEY,
+            embedding_input_hash=TASK1_EMBEDDING_HASH,
+            exclude_corpus_version_id=CALLER_CORPUS_ID,
+        )
+
+    _assert_app_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+
+
+@pytest.mark.parametrize(
+    "embedding",
+    [
+        None,
+        [0.0] * 1023,
+        ["not-a-number"] + [0.0] * 1023,
+        [True] + [0.0] * 1023,
+        [math.nan] + [0.0] * 1023,
+        [math.inf] + [0.0] * 1023,
+        [-math.inf] + [0.0] * 1023,
+    ],
+)
+def test_reuse_malformed_vectors_map_to_unavailable(embedding):
+    client = FakeClient([_task1_reuse_row(embedding=embedding)])
+
+    with pytest.raises(AppError) as error:
+        _repository(client).list_embedded_chunks_for_reuse(
+            dataset_key=DATASET_KEY,
+            embedding_input_hash=TASK1_EMBEDDING_HASH,
+            exclude_corpus_version_id=CALLER_CORPUS_ID,
+        )
+
+    _assert_app_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+
+
+def test_empty_reuse_result_is_an_empty_tuple():
+    client = FakeClient([])
+
+    result = _repository(client).list_embedded_chunks_for_reuse(
+        dataset_key=DATASET_KEY,
+        embedding_input_hash=TASK1_EMBEDDING_HASH,
+        exclude_corpus_version_id=CALLER_CORPUS_ID,
+    )
+
+    assert result == ()
+
+
+def test_list_attraction_versions_maps_rows_orders_by_attraction_and_filters_corpus():
+    client = FakeClient(
+        [
+            _task1_version_row(attraction_id=TASK7_ATTRACTION_A),
+            _task1_version_row(attraction_id=TASK7_ATTRACTION_B),
+        ]
+    )
+
+    result = _repository(client).list_attraction_versions(
+        corpus_version_id=TASK1_CORPUS_A,
+    )
+
+    assert [row.metadata.attraction_id for row in result] == [
+        TASK7_ATTRACTION_A,
+        TASK7_ATTRACTION_B,
+    ]
+    assert result[0].corpus_version_id == TASK1_CORPUS_A
+    assert result[0].metadata.canonical_name == "Task 7 attraction"
+    assert result[0].metadata.aliases == ("Alias one", "Alias two")
+    assert result[0].metadata.destination.destination_code == "350200"
+    assert result[0].metadata.destination.destination_level is DestinationLevel.prefecture_city
+    assert result[0].metadata.destination.destination_name == "Xiamen"
+    assert result[0].metadata.destination.province_code == "350000"
+    assert result[0].metadata.destination.province_name == "Fujian"
+    assert result[0].metadata.destination.district_name == "思明区"
+    assert result[0].metadata.category == "scenic"
+    assert result[0].metadata.tags == ("coast", "city")
+    assert result[0].metadata.destination.latitude == 24.4798
+    assert result[0].metadata.destination.longitude == 118.0894
+    assert result[0].metadata.status is AttractionVersionStatus.included
+    assert result[0].metadata_hash == "c" * 64
+    assert client.calls[0]["filters"] == (
+        ("corpus_version_id", str(TASK1_CORPUS_A)),
+    )
+    assert client.calls[0]["orders"] == (("attraction_id", False, None),)
+
+
+def test_list_attraction_versions_empty_result_is_an_empty_tuple():
+    client = FakeClient([])
+
+    assert (
+        _repository(client).list_attraction_versions(
+            corpus_version_id=TASK1_CORPUS_A,
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        [{"corpus_version_id": str(TASK1_CORPUS_A)}],
+        APIError({"code": "PGRST000", "message": "raw database secret"}),
+    ],
+)
+def test_list_attraction_versions_maps_malformed_or_database_failure(response):
+    client = FakeClient(response)
+
+    with pytest.raises(AppError) as error:
+        _repository(client).list_attraction_versions(
+            corpus_version_id=TASK1_CORPUS_A,
+        )
+
+    _assert_app_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+    assert "raw database secret" not in str(error.value)
+
+
+def test_list_chunk_rows_maps_all_fields_orders_and_decodes_vector():
+    client = FakeClient([_task1_chunk_row()])
+
+    result = _repository(client).list_chunk_rows(
+        corpus_version_id=TASK1_CORPUS_A,
+    )
+
+    row = result[0]
+    assert row.corpus_version_id == TASK1_CORPUS_A
+    assert row.attraction_id == TASK7_ATTRACTION_A
+    assert row.chunk_key == "chunk-a"
+    assert row.chunk_type is ChunkType.overview
+    assert row.ordinal == 0
+    assert row.content == "Normalized task 7 content."
+    assert row.content_hash == "d" * 64
+    assert row.embedding_input_hash == "e" * 64
+    assert row.embedding_input_schema_version == "rag-v2-embedding-input-v1"
+    assert row.source_label == "official source"
+    assert row.source_url == "https://example.com/task7"
+    assert row.source_type == "official"
+    assert row.reviewed_on == TASK7_REVIEWED_ON
+    assert row.embedding_model == "jina-embeddings-v3"
+    assert row.embedding_task == "retrieval.passage"
+    assert row.embedding_dimensions == 1024
+    assert row.embedding == tuple(TASK7_VECTOR)
+    assert row.status is ChunkStatus.embedded
+    assert row.embedding_error_code is None
+    assert row.embedding_error_message is None
+    assert client.calls[0]["filters"] == (
+        ("corpus_version_id", str(TASK1_CORPUS_A)),
+    )
+    assert client.calls[0]["orders"] == (
+        ("attraction_id", False, None),
+        ("chunk_type", False, None),
+        ("ordinal", False, None),
+        ("chunk_key", False, None),
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "embedding", "error_code", "error_message"),
+    [
+        ("pending", None, None, None),
+        (
+            "failed",
+            None,
+            "RAG_V2_EMBEDDING_UNAVAILABLE",
+            "RAG V2 embedding is unavailable",
+        ),
+    ],
+)
+def test_list_chunk_rows_preserves_pending_and_failed_null_vectors(
+    status,
+    embedding,
+    error_code,
+    error_message,
+):
+    client = FakeClient(
+        [
+            _task1_chunk_row(
+                status=status,
+                embedding=embedding,
+                embedding_error_code=error_code,
+                embedding_error_message=error_message,
+            )
+        ]
+    )
+
+    result = _repository(client).list_chunk_rows(
+        corpus_version_id=TASK1_CORPUS_A,
+    )
+
+    assert len(result) == 1
+    assert result[0].embedding is None
+    assert result[0].status.value == status
+    assert result[0].embedding_error_code == error_code
+    assert result[0].embedding_error_message == error_message
+
+
+def test_list_chunk_rows_empty_result_is_an_empty_tuple():
+    client = FakeClient([])
+
+    assert _repository(client).list_chunk_rows(corpus_version_id=TASK1_CORPUS_A) == ()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        [{"corpus_version_id": str(TASK1_CORPUS_A)}],
+        APIError({"code": "PGRST000", "message": "raw chunk database secret"}),
+    ],
+)
+def test_list_chunk_rows_maps_malformed_or_database_failure(response):
+    client = FakeClient(response)
+
+    with pytest.raises(AppError) as error:
+        _repository(client).list_chunk_rows(corpus_version_id=TASK1_CORPUS_A)
+
+    _assert_app_error(
+        error,
+        "RAG_V2_UNAVAILABLE",
+        "RAG V2 persistence is unavailable",
+    )
+    assert "raw chunk database secret" not in str(error.value)
+
+
+def test_task1_reads_use_private_table_selects_without_rpc_or_runtime_escape():
+    client = FakeClient([])
+    repository = _repository(client)
+
+    assert repository.list_attraction_versions(corpus_version_id=TASK1_CORPUS_A) == ()
+    assert client.rpc_calls == []
+    assert len(client.calls) == 1
+    assert client.calls[0]["operation"] == "select"
+    assert client.calls[0]["table"] == "rag_attraction_versions"
