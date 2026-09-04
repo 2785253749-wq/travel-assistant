@@ -39,9 +39,9 @@ Stage 10C-1 will:
 4. import the official three-destination authoring source as a production staging corpus;
 5. prove same-manifest idempotent rerun behavior;
 6. prove controlled incremental reuse and selective re-embedding on an isolated acceptance dataset;
-7. run a small versioned retrieval acceptance case set;
-8. present an explicit activation preview;
-9. activate only after explicit operator confirmation; and
+7. present an explicit activation preview;
+8. activate only after explicit operator confirmation;
+9. run a small versioned retrieval acceptance case set against the newly active production corpus; and
 10. run a representative post-activation retrieval smoke.
 
 ## 5. Non-Goals
@@ -90,7 +90,7 @@ The exact version labels are operator inputs recorded in each report. The keys a
 
 Production authoring is the only canonical real corpus source. Smoke and acceptance imports read the same production authoring when they need representative data; they do not maintain duplicate full-corpus copies. The acceptance incremental fixture is the only artificial content and is applied in memory.
 
-The acceptance baseline may be explicitly activated within its own isolated dataset solely to create an `active` historical source for reuse testing. That activation is not production activation and is never performed automatically. If no active or superseded acceptance baseline exists, `incremental-check` fails clearly and instructs the operator to establish one through the normal explicit activation command.
+The acceptance baseline must be explicitly activated within its own isolated dataset before the first controlled historical-reuse test, solely to create an `active` historical source for reuse testing. That activation is not production activation and is never performed automatically. The same-manifest rerun may remain staging for no-op validation. If no active or superseded acceptance baseline exists before `incremental-check`, the command fails clearly and instructs the operator to establish one through the normal explicit activation command.
 
 ## 8. V2 Authoring Schema
 
@@ -208,9 +208,9 @@ smoke
 acceptance-import
 incremental-check
 production-import
-retrieval-check
 activation-preview
 activate
+retrieval-check
 post-activation-smoke
 ```
 
@@ -238,7 +238,7 @@ Render Dashboard configuration is operator-verified separately after deployment 
 
 ## 13. Smoke Flow
 
-`smoke` uses a tiny subset of the production authoring source under the smoke dataset key. It proves:
+`smoke` uses a tiny subset of the production authoring source under the smoke dataset key. It imports the corpus as staging, then requires an explicit isolated smoke activation through the existing activation boundary before retrieval. It proves:
 
 ```text
 authoring
@@ -246,21 +246,22 @@ authoring
 → JinaPassageEmbedder / retrieval.passage
 → Supabase staging persistence
 → authoritative readiness
+→ explicit isolated smoke activation
 → JinaQueryEmbedder / retrieval.query
 → match_rag_v2_chunks
 → RetrievalService
 → evidence checks
 ```
 
-Smoke remains staging and is never activated. It is intentionally small and is not evidence of production retrieval quality.
+Smoke activation is not production activation. The smoke dataset remains isolated and is never a production activation candidate. The `smoke` command itself does not bypass the rule that only the explicit `activate` boundary may call `activate_corpus`. Smoke is intentionally small and is not evidence of production retrieval quality.
 
 ## 14. Acceptance and Incremental Flow
 
-`acceptance-import` imports the full official authoring source under `rag-v2-acceptance`. The operator may rerun the exact same manifest. The rerun must demonstrate no duplicate logical rows and zero unnecessary passage-provider calls, using authoritative state and observed provider-call instrumentation rather than a hardcoded vector count.
+`acceptance-import` imports the full official authoring source under `rag-v2-acceptance`. The operator may rerun the exact same manifest while it remains staging. The rerun must demonstrate no duplicate logical rows and zero unnecessary passage-provider calls, using authoritative state and observed provider-call instrumentation rather than a hardcoded vector count.
 
-`incremental-check` requires an active or superseded acceptance baseline, loads the controlled patch in memory, generates the next manifest, and imports it as staging. It compares generated identity sets and records which chunks reused exact historical vectors and which required new passage embeddings. It verifies the new version is ready, remains staging, and was not promoted automatically.
+Before the first controlled incremental-reuse test, the operator explicitly activates the acceptance baseline within the isolated acceptance dataset. `incremental-check` then requires that active or superseded acceptance baseline, loads the controlled patch in memory, generates the next manifest, and imports it as staging. It compares generated identity sets and records which chunks reused exact historical vectors and which required new passage embeddings. It verifies the new version is ready, remains staging, and was not promoted automatically.
 
-The incremental runner does not mark a source active to manufacture its own prerequisite. Baseline activation, when needed, is an explicit operator action against the isolated acceptance dataset.
+The incremental runner does not mark a source active to manufacture its own prerequisite. Acceptance baseline activation is an explicit operator action against the isolated acceptance dataset and is never production activation.
 
 ## 15. Production Import Flow
 
@@ -273,11 +274,11 @@ ready_for_activation=True
 corpus.status=staging
 ```
 
-before retrieval acceptance. It fails on incomplete provenance, pending/failed chunks, manifest mismatch, unsafe vectors, or any authoritative snapshot conflict. It never calls activation.
+It fails on incomplete provenance, pending/failed chunks, manifest mismatch, unsafe vectors, or any authoritative snapshot conflict. It never calls activation and does not run retrieval acceptance while the candidate is staging.
 
 ## 16. Retrieval Gate
 
-`retrieval-check` runs the fixed case set against the production staging candidate using real query embedding, the existing repository match RPC, and the existing `RetrievalService`. It then applies the deterministic evaluator and mode-specific expected-chunk policy.
+`retrieval-check` runs only after the explicit production `activate` command succeeds. It runs the fixed case set against the newly active production corpus using real query embedding, the existing active-corpus repository match RPC, and the existing `RetrievalService`. It then applies the deterministic evaluator and mode-specific expected-chunk policy.
 
 For every case the report includes:
 
@@ -289,7 +290,7 @@ returned attraction IDs
 returned chunk keys
 ```
 
-Every required case must pass before production activation. This is a focused acceptance gate, not a precision/recall/MRR/NDCG benchmark and not a general claim about model quality.
+Every required case must pass for Stage 10C-1 completion. This is a focused acceptance gate, not a precision/recall/MRR/NDCG benchmark and not a general claim about model quality.
 
 ## 17. Manual Activation
 
@@ -308,14 +309,16 @@ failed count
 ready_for_activation
 current active corpus
 candidate corpus
-required acceptance PASS/FAIL summary
+retrieval acceptance: NOT YET RUN
 ```
 
 It does not invoke the activation RPC.
 
-`activate` re-reads authoritative state and verifies `dataset_key`, `corpus_version_id`, `manifest_hash`, staging status, readiness, and the required-case summary. It asks for explicit confirmation equal to `ACTIVATE`. Only after that confirmation does it call the existing three-argument `activate_corpus(...)` method. It does not trust process memory from an earlier command and does not auto-activate merely because readiness is true.
+`activate` re-reads authoritative state and verifies `dataset_key`, `corpus_version_id`, `manifest_hash`, staging status, and readiness. Retrieval acceptance has not run at preview time; it is performed against the newly active corpus after this command succeeds. The command asks for explicit confirmation equal to `ACTIVATE`. Only after that confirmation does it call the existing three-argument `activate_corpus(...)` method. It does not trust process memory from an earlier command and does not auto-activate merely because readiness is true.
 
 Activation failure is reported with the existing safe repository error contract. There is no automatic retry or rollback.
+
+If activation succeeds but required retrieval acceptance or post-activation smoke fails, Stage 10C-1 is `FAILED`. The report identifies the failure, the current active corpus, and the previous active corpus when available. No automatic rollback occurs; the operator may manually restore the previous corpus through the existing activation mechanics.
 
 ## 18. Post-Activation Smoke
 
@@ -407,16 +410,19 @@ Stage 10C-1 is complete only when all of the following have raw operator evidenc
 4. live Supabase RAG V2 schema, RPC, pgvector, and service-role prerequisites are verified;
 5. a real Jina `retrieval.passage` call succeeds;
 6. a real Jina `retrieval.query` call succeeds;
-7. the smoke dataset imports and retrieves successfully;
-8. the full acceptance dataset imports successfully;
-9. an exact-manifest rerun proves no unnecessary passage re-embedding;
-10. the controlled incremental variant proves identity-derived reuse and selective re-embedding;
-11. the official production corpus imports as staging;
-12. the production candidate reports `ready_for_activation=True`;
-13. every required retrieval acceptance case passes;
-14. a human reviews the activation preview;
-15. explicit manual production activation succeeds; and
-16. post-activation retrieval smoke succeeds.
+7. the smoke dataset imports as staging;
+8. the smoke dataset is explicitly activated in its isolated smoke dataset;
+9. smoke retrieval succeeds against the active smoke corpus;
+10. the full acceptance baseline imports successfully;
+11. an exact-manifest rerun proves no unnecessary passage re-embedding;
+12. the acceptance baseline is explicitly activated in its isolated acceptance dataset;
+13. the controlled incremental variant proves identity-derived reuse and selective re-embedding;
+14. the official production corpus imports as staging;
+15. the production candidate reports `ready_for_activation=True`;
+16. a human reviews the activation preview;
+17. explicit manual production activation succeeds;
+18. every required production retrieval acceptance case passes against the newly active corpus; and
+19. post-activation smoke succeeds.
 
 Completion of this checklist does not claim Planner/runtime integration.
 
@@ -441,6 +447,8 @@ None of these are implemented, tested as live behavior, or claimed by Stage 10C-
 - `app/scripts/rag_v2_acceptance.py` is a thin local operator CLI; no public endpoint is added.
 - `014_rag_v2.sql` is deployed manually and never modified or executed by acceptance tooling.
 - Smoke and acceptance datasets are isolated from official production activation; production authoring remains the sole canonical real source.
+- Stage 10C-1 does not add staging-aware retrieval support; retrieval remains active-corpus-only because that existing contract is sufficient for this graduation project.
+- No staging retrieval RPC, staging repository retrieval method, temporary public retrieval API, or `015` migration is added.
 - The only real production destinations are Xiamen, Fuzhou, and Dali.
 - The V2 authoring schema is `rag-v2-authoring-v1` and legacy authoring remains untouched.
 - The controlled incremental patch is in-memory and never overwrites production authoring.
