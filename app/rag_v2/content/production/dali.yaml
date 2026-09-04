@@ -1,0 +1,47 @@
+schema_version: rag-v2-authoring-v1
+destination:
+  destination_code: "532900"
+  destination_level: autonomous_prefecture
+  destination_name: 大理白族自治州
+  province_code: "530000"
+  province_name: 云南省
+
+attractions:
+  - registry_key: dali.old-town
+    attraction_id: "00000000-0000-4000-8000-000000000103"
+    canonical_name: 大理古城
+    aliases: [大理古城]
+    category: 历史文化街区
+    tags: [白族文化, 慢行]
+    status: included
+    sections:
+      overview:
+        content: 大理古城以街巷、民居和地方文化体验为主，适合安排半日至一日游。
+        source_label: 大理白族自治州人民政府
+        source_url: https://www.dali.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      highlights:
+        content: 大理古城的城墙街巷、白族文化展示和周边景观适合慢行体验。
+        source_label: 大理白族自治州人民政府
+        source_url: https://www.dali.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      transport:
+        content: 往返大理古城应结合机场、铁路和公路接驳，山地行程需预留换乘时间。
+        source_label: 大理白族自治州人民政府
+        source_url: https://www.dali.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      visit_advice:
+        content: 高原活动应根据身体状况安排节奏，出发前确认开放区域和当日天气。
+        source_label: 大理白族自治州人民政府
+        source_url: https://www.dali.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      seasonal:
+        content: 雨季道路和山地天气变化较快，户外行程须关注预警并准备防雨装备。
+        source_label: 大理白族自治州人民政府
+        source_url: https://www.dali.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"

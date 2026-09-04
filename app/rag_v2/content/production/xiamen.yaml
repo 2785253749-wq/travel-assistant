@@ -1,0 +1,47 @@
+schema_version: rag-v2-authoring-v1
+destination:
+  destination_code: "350200"
+  destination_level: prefecture_city
+  destination_name: 厦门市
+  province_code: "350000"
+  province_name: 福建省
+
+attractions:
+  - registry_key: xiamen.gulangyu
+    attraction_id: "00000000-0000-4000-8000-000000000101"
+    canonical_name: 鼓浪屿
+    aliases: [鼓浪屿]
+    category: 海岛景区
+    tags: [海岛, 步行]
+    status: included
+    sections:
+      overview:
+        content: 鼓浪屿以历史街区和海岛步行为主，适合安排半日至一日游。
+        source_label: 厦门市文化和旅游局
+        source_url: https://wlj.xm.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      highlights:
+        content: 鼓浪屿的建筑街巷、海岸步道和岛上展馆适合分段步行体验。
+        source_label: 厦门市文化和旅游局
+        source_url: https://wlj.xm.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      transport:
+        content: 前往鼓浪屿前应核对官方船班、码头和返程安排，岛内以步行为主。
+        source_label: 厦门市文化和旅游局
+        source_url: https://wlj.xm.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      visit_advice:
+        content: 登岛前确认船票和天气，旺时段为候船、步行和返程保留余量。
+        source_label: 厦门市文化和旅游局
+        source_url: https://wlj.xm.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      seasonal:
+        content: 台风、暴雨和海上大风预警期间，轮渡和滨海活动以官方公告为准。
+        source_label: 厦门市文化和旅游局
+        source_url: https://wlj.xm.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"

@@ -1,0 +1,47 @@
+schema_version: rag-v2-authoring-v1
+destination:
+  destination_code: "350100"
+  destination_level: prefecture_city
+  destination_name: 福州市
+  province_code: "350000"
+  province_name: 福建省
+
+attractions:
+  - registry_key: fuzhou.sanfang-qixiang
+    attraction_id: "00000000-0000-4000-8000-000000000102"
+    canonical_name: 三坊七巷
+    aliases: [三坊七巷]
+    category: 历史街区
+    tags: [街巷, 城市漫步]
+    status: included
+    sections:
+      overview:
+        content: 三坊七巷保留传统街巷格局，适合与福州城市漫步结合。
+        source_label: 福州市文化和旅游局
+        source_url: https://wlj.fuzhou.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      highlights:
+        content: 三坊七巷的古建筑、街巷节点和地方展陈适合分段参观。
+        source_label: 福州市文化和旅游局
+        source_url: https://wlj.fuzhou.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      transport:
+        content: 前往三坊七巷可结合地铁、公交和步行，节假日应预留换乘时间。
+        source_label: 福州市文化和旅游局
+        source_url: https://wlj.fuzhou.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      visit_advice:
+        content: 参观前核对开放安排和客流，雨天步行应穿着防滑鞋并减少赶路。
+        source_label: 福州市文化和旅游局
+        source_url: https://wlj.fuzhou.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"
+      seasonal:
+        content: 高温和强降雨天气会影响户外步行，行程应以当日预警和景区公告调整。
+        source_label: 福州市文化和旅游局
+        source_url: https://wlj.fuzhou.gov.cn/
+        source_type: official
+        reviewed_on: "2026-09-01"

@@ -1,0 +1,9 @@
+schema_version: rag-v2-authoring-patch-v1
+target:
+  destination_code: "350200"
+  registry_key: xiamen.gulangyu
+  section: visit_advice
+replacement_content: 登岛前核对官方船班与码头安排，旺时段为候船和步行保留余量。
+expectations:
+  changed_sections: [visit_advice]
+  unchanged_sections: [overview, highlights, transport, seasonal]
