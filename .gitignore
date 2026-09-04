@@ -26,3 +26,4 @@ dist/
 node_modules/
 .worktrees/
 .superpowers/
+.rag-v2-reports/
