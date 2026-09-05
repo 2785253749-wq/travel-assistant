@@ -2000,10 +2000,14 @@ def _task1_reuse_row(
             "embedding_input_hash": embedding_input_hash,
             "dataset_key": dataset_key,
             "corpus_status": corpus_status,
-            "rag_corpus_versions": {
+            "rag_attraction_versions": {
                 "corpus_version_id": str(corpus_version_id),
-                "dataset_key": dataset_key,
-                "status": corpus_status,
+                "attraction_id": str(TASK7_ATTRACTION_A),
+                "rag_corpus_versions": {
+                    "corpus_version_id": str(corpus_version_id),
+                    "dataset_key": dataset_key,
+                    "status": corpus_status,
+                },
             },
         }
     )
@@ -2050,11 +2054,14 @@ def test_list_embedded_chunks_for_reuse_encodes_exact_filters_and_order():
     call = client.calls[0]
     assert call["table"] == "rag_attraction_chunks"
     assert call["operation"] == "select"
-    assert ("rag_corpus_versions.dataset_key", DATASET_KEY) in call["filters"]
+    assert (
+        "rag_attraction_versions.rag_corpus_versions.dataset_key",
+        DATASET_KEY,
+    ) in call["filters"]
     assert ("embedding_input_hash", TASK1_EMBEDDING_HASH) in call["filters"]
     assert (
         "in",
-        "rag_corpus_versions.status",
+        "rag_attraction_versions.rag_corpus_versions.status",
         ("active", "superseded"),
     ) in call["filters"]
     assert (
@@ -2075,6 +2082,50 @@ def test_list_embedded_chunks_for_reuse_encodes_exact_filters_and_order():
         ("corpus_version_id", False, None),
     )
     assert client.rpc_calls == []
+
+
+def test_list_embedded_chunks_for_reuse_traverses_version_to_corpus_relationship():
+    row = _task1_reuse_row()
+    client = FakeClient([row])
+
+    result = _repository(client).list_embedded_chunks_for_reuse(
+        dataset_key=DATASET_KEY,
+        embedding_input_hash=TASK1_EMBEDDING_HASH,
+        exclude_corpus_version_id=CALLER_CORPUS_ID,
+    )
+
+    identity = EmbeddingIdentity(
+        embedding_input_hash=TASK1_EMBEDDING_HASH,
+        embedding_model="jina-embeddings-v3",
+        embedding_task="retrieval.passage",
+        embedding_dimensions=1024,
+        embedding_input_schema_version="rag-v2-embedding-input-v1",
+    )
+    assert result == (
+        PreviousEmbedding(
+            chunk_key="chunk-a",
+            identity=identity,
+            vector=tuple(TASK7_VECTOR),
+            validated_corpus=True,
+        ),
+    )
+
+    call = client.calls[0]
+    assert call["selected"] == (
+        "*, rag_attraction_versions!inner("
+        "corpus_version_id, attraction_id, "
+        "rag_corpus_versions!inner(corpus_version_id, dataset_key, status)"
+        ")"
+    )
+    assert (
+        "rag_attraction_versions.rag_corpus_versions.dataset_key",
+        DATASET_KEY,
+    ) in call["filters"]
+    assert (
+        "in",
+        "rag_attraction_versions.rag_corpus_versions.status",
+        ("active", "superseded"),
+    ) in call["filters"]
 
 
 @pytest.mark.parametrize("corpus_status", ["active", "superseded"])
@@ -2103,7 +2154,7 @@ def test_reuse_excludes_staging_and_failed_corpora(corpus_status):
     assert result == ()
     assert (
         "in",
-        "rag_corpus_versions.status",
+        "rag_attraction_versions.rag_corpus_versions.status",
         ("active", "superseded"),
     ) in client.calls[0]["filters"]
 

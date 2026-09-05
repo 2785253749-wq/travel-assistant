@@ -291,11 +291,20 @@ class RagV2Repository:
                 response = (
                     self._client.table("rag_attraction_chunks")
                     .select(
-                        "*, rag_corpus_versions!inner(corpus_version_id, dataset_key, status)"
+                        "*, rag_attraction_versions!inner("
+                        "corpus_version_id, attraction_id, "
+                        "rag_corpus_versions!inner(corpus_version_id, dataset_key, status)"
+                        ")"
                     )
-                    .eq("rag_corpus_versions.dataset_key", dataset_key)
+                    .eq(
+                        "rag_attraction_versions.rag_corpus_versions.dataset_key",
+                        dataset_key,
+                    )
                     .eq("embedding_input_hash", embedding_input_hash)
-                    .in_("rag_corpus_versions.status", ("active", "superseded"))
+                    .in_(
+                        "rag_attraction_versions.rag_corpus_versions.status",
+                        ("active", "superseded"),
+                    )
                     .neq("corpus_version_id", str(exclude_corpus_version_id))
                     .eq("status", ChunkStatus.embedded.value)
                     .not_.is_("embedding", "null")
@@ -306,7 +315,10 @@ class RagV2Repository:
                 rows = self._batch_rows(response)
                 reusable = []
                 for row in rows:
-                    source = row["rag_corpus_versions"]
+                    version = row["rag_attraction_versions"]
+                    if not isinstance(version, dict):
+                        raise ValueError("malformed source attraction version")
+                    source = version["rag_corpus_versions"]
                     if not isinstance(source, dict):
                         raise ValueError("malformed source corpus")
                     source_dataset_key = self._required_string(source["dataset_key"])
@@ -874,7 +886,10 @@ class RagV2Repository:
         embedding_input_hash: str,
         exclude_corpus_version_id: UUID,
     ) -> PreviousEmbedding:
-        source = row["rag_corpus_versions"]
+        version = row["rag_attraction_versions"]
+        if not isinstance(version, dict):
+            raise ValueError("malformed source attraction version")
+        source = version["rag_corpus_versions"]
         if not isinstance(source, dict):
             raise ValueError("malformed source corpus")
         source_dataset_key = cls._required_string(source["dataset_key"])
