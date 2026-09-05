@@ -5,11 +5,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 
 from app.rag_v2.acceptance import AcceptanceReport
+from app.rag_v2.importer import CorpusImportInput
 from app.rag_v2.repository import CorpusVersion
 from app.scripts.rag_v2_acceptance import (
     activate_dataset,
@@ -151,6 +152,65 @@ def test_cli_dispatches_smoke_without_hidden_activation(monkeypatch: pytest.Monk
     )
 
     assert run_cli(["smoke"]) == 0
+    assert repository.activation_calls == []
+    assert reports
+
+
+def test_bare_smoke_builds_isolated_single_attraction_import_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _FakeRepository(_corpus(status="active"))
+    context = _context(repository)
+    import_calls: list[dict[str, object]] = []
+    authoring_paths: list[Path] = []
+    reports: list[object] = []
+
+    from app.rag_v2 import authoring
+
+    real_loader = authoring.load_authoring_directory
+
+    def load_production_authoring(directory: Path) -> tuple[object, ...]:
+        authoring_paths.append(directory)
+        return real_loader(directory)
+
+    monkeypatch.setattr(
+        "app.scripts.rag_v2_acceptance._build_context",
+        lambda _args: context,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.rag_v2.authoring.load_authoring_directory",
+        load_production_authoring,
+    )
+
+    def capture_import(**kwargs: object) -> SimpleNamespace:
+        import_calls.append(kwargs)
+        return SimpleNamespace(ready_for_activation=True)
+
+    monkeypatch.setattr(
+        "app.scripts.rag_v2_acceptance.run_import",
+        capture_import,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.scripts.rag_v2_acceptance.write_report",
+        lambda **kwargs: reports.append(kwargs["report"]),
+        raising=False,
+    )
+
+    assert run_cli(["smoke"]) == 0
+    assert len(import_calls) == 1
+    request = import_calls[0]["request"]
+    assert isinstance(request, CorpusImportInput)
+    assert request.dataset_key == "rag-v2-smoke"
+    assert request.version_label == "stage10c1-smoke-v1"
+    assert request.corpus_version_id == uuid5(
+        NAMESPACE_URL,
+        "travel-assistant:rag-v2-smoke:stage10c1-smoke-v1",
+    )
+    assert len(request.attractions) == 1
+    assert request.attractions[0].registry_key == "xiamen.gulangyu"
+    assert authoring_paths == [Path("app/rag_v2/content/production")]
     assert repository.activation_calls == []
     assert reports
 

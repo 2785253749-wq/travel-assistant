@@ -20,6 +20,7 @@ from app.rag_v2.hashing import (
     normalize_content,
 )
 from app.rag_v2.models import (
+    AttractionLifecycleStatus,
     AttractionVersionMetadata,
     AttractionVersionStatus,
     ChunkStatus,
@@ -33,6 +34,7 @@ from app.rag_v2.models import (
     ManifestInput,
     SemanticChunk,
     SemanticSection,
+    StableAttraction,
 )
 from app.rag_v2.repository import (
     AttractionVersionRecord,
@@ -310,6 +312,7 @@ class FakeRepository:
         corpus: CorpusVersion,
         attraction_versions: tuple[AttractionVersionRecord, ...] = (),
         chunk_rows: tuple[ChunkRow, ...] = (),
+        stable_attractions: tuple[StableAttraction, ...] = (),
         reuse_embeddings: tuple[PreviousEmbedding, ...] = (),
         final_corpus: CorpusVersion | None = None,
         final_attraction_versions: tuple[AttractionVersionRecord, ...] | None = None,
@@ -323,6 +326,7 @@ class FakeRepository:
         self.corpus = corpus
         self.attraction_versions = attraction_versions
         self.chunk_rows = chunk_rows
+        self.stable_attractions = list(stable_attractions)
         self.reuse_embeddings = reuse_embeddings
         self.final_corpus = final_corpus
         self.final_attraction_versions = final_attraction_versions
@@ -338,6 +342,8 @@ class FakeRepository:
         self.inserted_attraction_versions: list[
             tuple[AttractionVersionRecord, ...]
         ] = []
+        self.get_attraction_calls: list[UUID] = []
+        self.inserted_attractions: list[StableAttraction] = []
         self.inserted_chunks: list[tuple[ChunkInsert, ...]] = []
         self.inserted_chunk_rows: list[tuple[ChunkRow, ...]] = []
         self.mark_failed_calls: list[UUID] = []
@@ -390,6 +396,24 @@ class FakeRepository:
         self.operation_log.append("get_corpus_version")
         self.corpus_reads.append(corpus_version_id)
         return self.final_corpus if self.final_corpus is not None else self.corpus
+
+    def get_attraction(self, *, attraction_id: UUID) -> StableAttraction | None:
+        self.operation_log.append("get_attraction")
+        self.get_attraction_calls.append(attraction_id)
+        return next(
+            (
+                attraction
+                for attraction in self.stable_attractions
+                if attraction.attraction_id == attraction_id
+            ),
+            None,
+        )
+
+    def insert_attraction(self, attraction: StableAttraction) -> StableAttraction:
+        self.operation_log.append("insert_attraction")
+        self.inserted_attractions.append(attraction)
+        self.stable_attractions.append(attraction)
+        return attraction
 
     def list_embedded_chunks_for_reuse(
         self,
@@ -650,6 +674,53 @@ def test_task3_accepts_structurally_complete_https_source() -> None:
     result = _make_importer(repository=repository).import_corpus(request)
 
     assert result.ready_for_activation is False
+
+
+def test_import_persists_missing_stable_attraction_before_version_child() -> None:
+    class _StopAfterVersionInsert(Exception):
+        pass
+
+    class StableParentRepository(FakeRepository):
+        def __init__(self) -> None:
+            super().__init__(corpus=_corpus("staging"))
+            self.get_attraction_calls: list[UUID] = []
+            self.inserted_attractions: list[StableAttraction] = []
+
+        def get_attraction(self, *, attraction_id: UUID) -> None:
+            self.operation_log.append("get_attraction")
+            self.get_attraction_calls.append(attraction_id)
+            return None
+
+        def insert_attraction(self, attraction: StableAttraction) -> StableAttraction:
+            self.operation_log.append("insert_attraction")
+            self.inserted_attractions.append(attraction)
+            return attraction
+
+        def insert_attraction_versions(
+            self,
+            records: tuple[AttractionVersionRecord, ...],
+        ) -> tuple[AttractionVersionRecord, ...]:
+            super().insert_attraction_versions(records)
+            raise _StopAfterVersionInsert
+
+    repository = StableParentRepository()
+
+    with pytest.raises(_StopAfterVersionInsert):
+        _make_importer(repository=repository).import_corpus(_request())
+
+    assert repository.get_attraction_calls == [_CANDIDATE_ID]
+    assert len(repository.inserted_attractions) == 1
+    stable = repository.inserted_attractions[0]
+    assert isinstance(stable, StableAttraction)
+    assert stable.attraction_id == _CANDIDATE_ID
+    assert stable.lifecycle_status is AttractionLifecycleStatus.active
+    assert stable.retired_at is None
+    assert stable.merged_into_attraction_id is None
+    assert stable.created_at.tzinfo is not None
+    assert stable.created_at.utcoffset() is not None
+    assert repository.operation_log.index("get_attraction") < repository.operation_log.index(
+        "insert_attraction"
+    ) < repository.operation_log.index("insert_attraction_versions")
 
 
 def test_task3_rejects_duplicate_registry_keys_before_persistence() -> None:

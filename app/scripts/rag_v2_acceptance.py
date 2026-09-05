@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from app.rag_v2.acceptance import (
     DATASET_KEYS,
@@ -22,6 +22,14 @@ from app.rag_v2.acceptance import (
     validate_dataset_key,
 )
 from app.rag_v2.acceptance_cases import load_acceptance_cases
+from app.rag_v2.authoring import AuthoringDocument
+
+
+_SMOKE_VERSION_LABEL = "stage10c1-smoke-v1"
+_SMOKE_CORPUS_VERSION_ID = uuid5(
+    NAMESPACE_URL,
+    "travel-assistant:rag-v2-smoke:stage10c1-smoke-v1",
+)
 
 
 class _AcceptanceCommandError(ValueError):
@@ -340,6 +348,22 @@ def _request_from_args(args: argparse.Namespace) -> object:
     from app.rag_v2.chunking import SemanticChunker
 
     if (
+        args.command == "smoke"
+        and args.authoring_dir is None
+        and args.version_label is None
+        and args.corpus_version_id is None
+    ):
+        authoring_dir = Path("app/rag_v2/content/production")
+        documents = _smoke_documents(load_authoring_directory(authoring_dir))
+        return build_import_request(
+            documents=documents,
+            dataset_key=args.dataset_key,
+            version_label=_SMOKE_VERSION_LABEL,
+            corpus_version_id=_SMOKE_CORPUS_VERSION_ID,
+            chunker=SemanticChunker(),
+        )
+
+    if (
         args.dataset_key is None
         or args.version_label is None
         or args.corpus_version_id is None
@@ -358,6 +382,23 @@ def _request_from_args(args: argparse.Namespace) -> object:
         corpus_version_id=args.corpus_version_id,
         chunker=SemanticChunker(),
     )
+
+
+def _smoke_documents(
+    documents: Sequence[AuthoringDocument],
+) -> tuple[AuthoringDocument, ...]:
+    matches = tuple(
+        (document, attraction)
+        for document in documents
+        for attraction in document.attractions
+        if attraction.registry_key == "xiamen.gulangyu"
+    )
+    if len(matches) != 1:
+        raise _AcceptanceCommandError(
+            "smoke authoring must contain exactly one xiamen.gulangyu attraction"
+        )
+    document, attraction = matches[0]
+    return (replace(document, attractions=(attraction,)),)
 
 
 def _documents_from_args(args: argparse.Namespace) -> tuple[object, ...]:

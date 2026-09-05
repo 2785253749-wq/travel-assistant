@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -22,11 +22,13 @@ from app.rag_v2.incremental import (
     decide_incremental,
 )
 from app.rag_v2.models import (
+    AttractionLifecycleStatus,
     AttractionVersionMetadata,
     ChunkStatus,
     ManifestInput,
     SemanticChunk,
     SemanticSection,
+    StableAttraction,
 )
 from app.rag_v2.passage_embedding import PassageEmbedder
 from app.rag_v2.repository import (
@@ -115,6 +117,19 @@ class RagV2Importer:
             raise self._version_conflict()
         if corpus.status != "staging":
             raise ValueError("unsupported corpus status")
+
+        for attraction in resolved_attractions:
+            attraction_id = attraction.metadata.attraction_id
+            if self._repository.get_attraction(attraction_id=attraction_id) is None:
+                self._repository.insert_attraction(
+                    StableAttraction(
+                        attraction_id=attraction_id,
+                        lifecycle_status=AttractionLifecycleStatus.active,
+                        created_at=datetime.now(timezone.utc),
+                        retired_at=None,
+                        merged_into_attraction_id=None,
+                    )
+                )
 
         attraction_versions = self._repository.list_attraction_versions(
             corpus_version_id=corpus.corpus_version_id
