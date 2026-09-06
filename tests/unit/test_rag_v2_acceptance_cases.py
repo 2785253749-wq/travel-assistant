@@ -178,6 +178,97 @@ def test_case_file_hash_is_sha256_of_bytes(tmp_path: Path) -> None:
     assert case_file_sha256(path) == hashlib.sha256(payload).hexdigest()
 
 
+def test_canonical_stage10c1_case_file_has_approved_contract() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    cases_path = project_root / "tests" / "rag_v2_acceptance" / "cases-v1.jsonl"
+
+    assert cases_path.is_file(), (
+        "Stage 10C-1 canonical acceptance cases artifact is missing"
+    )
+
+    cases = load_acceptance_cases(cases_path)
+    expected_ids = (
+        "xiamen-gulangyu-exact",
+        "xiamen-transport-attraction",
+        "xiamen-visit-advice-attraction",
+        "fuzhou-sanfang-qixiang-exact",
+        "fuzhou-transport-attraction",
+        "dali-old-town-exact",
+        "dali-seasonal-attraction",
+        "cross-destination-xiamen",
+        "no-answer-unrelated",
+        "provenance-completeness",
+        "optional-dali-no-answer",
+        "optional-fuzhou-attraction",
+    )
+    assert len(cases) == 12
+    assert tuple(case.case_id for case in cases) == expected_ids
+    assert tuple(case.required for case in cases) == (True,) * 10 + (False,) * 2
+
+    by_id = {case.case_id: case for case in cases}
+    approved_destinations = {
+        UUID("00000000-0000-4000-8000-000000000101"): "350200",
+        UUID("00000000-0000-4000-8000-000000000102"): "350100",
+        UUID("00000000-0000-4000-8000-000000000103"): "532900",
+    }
+
+    expected_modes = {
+        "xiamen-gulangyu-exact": "exact",
+        "xiamen-transport-attraction": "attraction",
+        "xiamen-visit-advice-attraction": "attraction",
+        "fuzhou-sanfang-qixiang-exact": "exact",
+        "fuzhou-transport-attraction": "attraction",
+        "dali-old-town-exact": "exact",
+        "dali-seasonal-attraction": "attraction",
+        "cross-destination-xiamen": "attraction",
+        "no-answer-unrelated": "no-answer",
+        "optional-dali-no-answer": "no-answer",
+        "optional-fuzhou-attraction": "attraction",
+    }
+    for case_id, expected_mode in expected_modes.items():
+        assert by_id[case_id].match_mode == expected_mode
+
+    for case in cases:
+        assert set(case.expected_attraction_ids) <= set(approved_destinations)
+        assert all(
+            approved_destinations[attraction_id] == destination_code
+            for attraction_id, destination_code in case.attraction_destinations
+        )
+
+    expected_exact_cases = {
+        "xiamen-gulangyu-exact": _ATTRACTION_A,
+        "fuzhou-sanfang-qixiang-exact": UUID(
+            "00000000-0000-4000-8000-000000000102"
+        ),
+        "dali-old-town-exact": UUID("00000000-0000-4000-8000-000000000103"),
+    }
+    for case_id, attraction_id in expected_exact_cases.items():
+        case = by_id[case_id]
+        assert case.expected_attraction_ids == (attraction_id,)
+        assert case.expected_destination_code == approved_destinations[attraction_id]
+        assert case.expected_chunk_keys == (
+            f"rag-v2-chunk-key-v1|{attraction_id}|overview|0",
+        )
+
+    for case_id in ("no-answer-unrelated", "optional-dali-no-answer"):
+        case = by_id[case_id]
+        assert case.expected_attraction_ids == ()
+        assert case.expected_chunk_keys == ()
+        assert case.expect_no_answer is True
+
+    for case_id in (
+        "xiamen-transport-attraction",
+        "xiamen-visit-advice-attraction",
+        "fuzhou-transport-attraction",
+        "dali-seasonal-attraction",
+        "cross-destination-xiamen",
+        "optional-fuzhou-attraction",
+    ):
+        assert by_id[case_id].expected_chunk_keys == ()
+
+    assert by_id["provenance-completeness"].require_source_urls is True
+
+
 def test_exact_mode_requires_destination_expectation() -> None:
     with pytest.raises(ValueError):
         _case(expected_destination_code=None)
