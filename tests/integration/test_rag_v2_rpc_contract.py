@@ -422,6 +422,51 @@ def _match_body(sql: str) -> str:
     return _match_definition(sql).group("body")
 
 
+def test_latest_match_rag_v2_chunks_definition_avoids_plpgsql_output_name_ambiguity() -> None:
+    migration_paths = sorted((PROJECT_ROOT / "supabase" / "migrations").glob("*.sql"))
+    definitions: list[tuple[Path, re.Match[str]]] = []
+    for migration_path in migration_paths:
+        sql = migration_path.read_text(encoding="utf-8").lower()
+        if re.search(
+            r"create\s+(?:or\s+replace\s+)?function\s+"
+            r"public\.match_rag_v2_chunks\s*\(",
+            sql,
+            flags=re.IGNORECASE,
+        ):
+            definitions.append((migration_path, _match_definition(sql)))
+
+    assert definitions, "expected at least one match_rag_v2_chunks migration definition"
+    latest_path, definition = definitions[-1]
+    assert latest_path.name != "014_rag_v2.sql", (
+        "the effective match_rag_v2_chunks definition is still the deployed "
+        "ambiguous 014 function; add a follow-up migration after 014"
+    )
+
+    body = definition.group("body")
+    active_lookup = re.search(
+        r"select\s+(?P<alias>[a-z_][a-z0-9_]*)\.corpus_version_id\s+"
+        r"into\s+active_corpus_version_id\s+"
+        r"from\s+public\.rag_corpus_versions\s+as\s+(?P=alias)\b",
+        body,
+        flags=re.IGNORECASE,
+    )
+    assert active_lookup is not None, (
+        "latest match_rag_v2_chunks must qualify the active corpus lookup "
+        "through a table alias"
+    )
+    assert not re.search(
+        r"select\s+corpus_version_id\s+into\s+active_corpus_version_id",
+        body,
+        flags=re.IGNORECASE,
+    )
+    assert not re.search(
+        r"order\s+by\s+score\s+desc\s*,\s*"
+        r"attraction_id\s+asc\s*,\s*chunk_key\s+asc",
+        body,
+        flags=re.IGNORECASE,
+    ), "latest ordering must not expose RETURNS TABLE names unqualified"
+
+
 def _match_execute_statements(
     sql: str,
     action: str,
