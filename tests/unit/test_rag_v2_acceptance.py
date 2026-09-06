@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
@@ -27,6 +27,7 @@ from app.rag_v2.acceptance import (
     run_preflight,
     run_retrieval_check,
     run_same_manifest_check,
+    _json_safe,
     validate_dataset_key,
     write_report,
 )
@@ -875,6 +876,33 @@ def test_acceptance_report_round_trips_json(tmp_path: Path) -> None:
     assert payload["details"] == {
         "ready_for_activation": True,
         "required_cases_passed": 10,
+    }
+
+
+def test_json_safe_serializes_nested_date_and_datetime_values() -> None:
+    @dataclass(frozen=True)
+    class TemporalValues:
+        created_at: datetime
+        reviewed_on: date
+
+    value = TemporalValues(
+        created_at=datetime(
+            2026,
+            9,
+            6,
+            12,
+            34,
+            56,
+            tzinfo=timezone.utc,
+        ),
+        reviewed_on=date(2026, 9, 6),
+    )
+
+    assert _json_safe({"result": value}) == {
+        "result": {
+            "created_at": "2026-09-06T12:34:56+00:00",
+            "reviewed_on": "2026-09-06",
+        }
     }
 
 

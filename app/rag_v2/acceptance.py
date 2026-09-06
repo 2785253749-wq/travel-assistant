@@ -4,6 +4,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, is_dataclass, replace
+from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -216,6 +217,10 @@ def _require_probe_vector(vector: object) -> None:
 def _json_safe(value: object) -> object:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, Mapping):
