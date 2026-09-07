@@ -272,7 +272,7 @@ The frozen conceptual API is:
         attraction_id: UUID | None = None,
         candidate_k: int = 40,
         final_k: int = 6,
-        score_threshold: float = 0.70,
+        score_threshold: float = 0.60,
     ) -> RetrievalResult
 
 The operation may be exposed as a service method with equivalent dependency
@@ -316,7 +316,7 @@ values must also satisfy final_k >= 1. Values such as True, False, 1.5,
 
     ValueError("final_k must be at least 1")
 
-score_threshold defaults to 0.70 and is also an UNVALIDATED DEFAULT. It
+score_threshold defaults to 0.60 and is also an UNVALIDATED DEFAULT. It
 accepts Python int or float values only; bool is invalid. The accepted value
 is converted to float and must be finite. Numeric strings, None, NaN,
 positive infinity, and negative infinity are invalid and raise:
@@ -632,7 +632,7 @@ all of the following without reopening earlier contracts:
    score_threshold accepts only Python int or float values other than bool,
    converts to float, requires finiteness, and has no [0, 1] restriction,
    using the exact frozen ValueError for every invalid value.
-6. candidate_k = 40, final_k = 6, and score_threshold = 0.70 are
+6. candidate_k = 40, final_k = 6, and score_threshold = 0.60 are
    explicitly documented as UNVALIDATED DEFAULT values where applicable;
    retrieval owns final_k and threshold validation while the database owns
    the candidate range.

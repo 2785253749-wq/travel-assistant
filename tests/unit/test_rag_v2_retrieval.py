@@ -346,7 +346,7 @@ def test_retrieval_service_constructor_and_method_have_exact_keyword_only_api() 
     }
     assert retrieve_parameters["candidate_k"].default == 40
     assert retrieve_parameters["final_k"].default == 6
-    assert retrieve_parameters["score_threshold"].default == 0.70
+    assert retrieve_parameters["score_threshold"].default == 0.60
 
 
 def test_retrieve_strips_outer_query_whitespace_once_and_preserves_internal_spacing() -> None:
@@ -530,6 +530,25 @@ def test_retrieve_retains_threshold_equality_and_rejects_lower_scores() -> None:
     )
 
     assert tuple(item.chunk_key for item in result.evidence) == ("equal",)
+
+
+def test_retrieve_default_threshold_accepts_score_at_or_above_060() -> None:
+    service, _, _ = _service(
+        candidates=(
+            _candidate(
+                attraction_id=_ATTRACTION_A,
+                chunk_key="default-threshold",
+                score=0.65,
+            ),
+        )
+    )
+
+    result = service.retrieve(
+        query="厦门日落",
+        dataset_key="travel-attractions-cn",
+    )
+
+    assert tuple(item.chunk_key for item in result.evidence) == ("default-threshold",)
 
 
 def test_retrieve_deduplicates_by_first_content_hash_occurrence() -> None:

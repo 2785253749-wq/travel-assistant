@@ -55,7 +55,7 @@ class RetrievalService:
         attraction_id: UUID | None = None,
         candidate_k: int = 40,
         final_k: int = 6,
-        score_threshold: float = 0.70,
+        score_threshold: float = 0.60,
     ) -> RetrievalResult:
         if not isinstance(query, str):
             raise ValueError("query must be a non-empty string")

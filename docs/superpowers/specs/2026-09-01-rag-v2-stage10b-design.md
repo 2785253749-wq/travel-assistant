@@ -509,11 +509,11 @@ question
 
 - `candidate_k = 40`
 - `final_k = 6`
-- `threshold = 0.70`
+- `threshold = 0.60`
 
 这三个值必须标记为 `UNVALIDATED DEFAULT`。它们不是生产质量结论，Stage 10C 的 frozen corpus + frozen queries + real Jina + real pgvector E2E 后才可校准。
 
-score contract 固定为 pgvector cosine distance：数据库计算 `embedding <=> p_query_embedding`，candidate RPC 对外返回 `score = 1 - (embedding <=> p_query_embedding)`。因此 higher score 表示 more similar；SQL RPC 和 Python retrieval service 必须使用同一 score semantic。threshold 保留规则为 `score >= threshold`，初始规则是 `score >= 0.70`。score 的排序方向固定为 `score DESC`，随后按 `attraction_id ASC`、`chunk_key ASC` 做 deterministic tie-break。
+score contract 固定为 pgvector cosine distance：数据库计算 `embedding <=> p_query_embedding`，candidate RPC 对外返回 `score = 1 - (embedding <=> p_query_embedding)`。因此 higher score 表示 more similar；SQL RPC 和 Python retrieval service 必须使用同一 score semantic。threshold 保留规则为 `score >= threshold`，经 Stage 10C-1 live calibration 后的默认规则是 `score >= 0.60`。score 的排序方向固定为 `score DESC`，随后按 `attraction_id ASC`、`chunk_key ASC` 做 deterministic tie-break。
 
 候选按上述 score contract 排序。content hash dedup 每个 normalized content 只保留最高分一条。attraction diversity 以最高分顺序选择，默认同一 attraction 只贡献一个 final evidence chunk；若候选不足，再按分数顺序补足而不跨 active corpus。
 
