@@ -97,3 +97,22 @@ class RagV2KnowledgeAdapter:
             reply=reply,
             evidence=evidence,
         )
+
+
+class UnavailableRagV2KnowledgeAdapter:
+    def answer(
+        self,
+        query: str,
+        *,
+        destination_code: str | None = None,
+        destination_level: DestinationLevel | None = None,
+        province_code: str | None = None,
+        attraction_id: UUID | None = None,
+    ) -> V2KnowledgeResult:
+        del query, destination_code, destination_level, province_code, attraction_id
+        return V2KnowledgeResult(
+            status="unavailable",
+            reply=None,
+            evidence=(),
+            error_code="RAG_V2_UNAVAILABLE",
+        )

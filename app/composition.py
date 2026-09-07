@@ -64,6 +64,14 @@ from app.rag.service import (
     SearchRepository,
     UnavailableKnowledgeAnswerService,
 )
+from app.rag_v2.embedding import JinaQueryEmbedder, JinaQueryProvider, _HttpClient
+from app.rag_v2.knowledge import (
+    RagV2KnowledgeAdapter,
+    UnavailableRagV2KnowledgeAdapter,
+    V2KnowledgeAnswerer,
+)
+from app.rag_v2.repository import RagV2Repository
+from app.rag_v2.retrieval import QueryEmbedder, RetrievalService
 from app.schemas import TravelProfile
 from app.travel_notes.in_memory import (
     InMemoryTravelNoteRepository,
@@ -622,6 +630,50 @@ def build_knowledge_answer_service(
 def get_knowledge_answer_service(
 ) -> KnowledgeAnswerService | UnavailableKnowledgeAnswerService:
     return build_knowledge_answer_service()
+
+
+def build_rag_v2_knowledge_service(
+    *,
+    settings: Settings | None = None,
+    retrieval: RetrievalService | None = None,
+    repository: RagV2Repository | None = None,
+    query_embedder: QueryEmbedder | None = None,
+    http_client: _HttpClient | None = None,
+) -> V2KnowledgeAnswerer:
+    if retrieval is not None:
+        return RagV2KnowledgeAdapter(retrieval=retrieval)
+
+    settings = settings or get_settings()
+    if (
+        settings.jina_api_key is None
+        or not settings.jina_api_key.get_secret_value().strip()
+        or settings.supabase_url is None
+        or settings.supabase_service_key is None
+        or not settings.supabase_service_key.get_secret_value().strip()
+    ):
+        return UnavailableRagV2KnowledgeAdapter()
+
+    if repository is None:
+        repository = RagV2Repository(settings=settings)
+    if query_embedder is None:
+        provider = JinaQueryProvider(
+            api_key=settings.jina_api_key,
+            timeout_seconds=settings.weather_timeout_seconds,
+            client=http_client,
+        )
+        query_embedder = JinaQueryEmbedder(provider=provider)
+
+    return RagV2KnowledgeAdapter(
+        retrieval=RetrievalService(
+            embedder=query_embedder,
+            repository=repository,
+        )
+    )
+
+
+@lru_cache(maxsize=1)
+def get_rag_v2_knowledge_service() -> V2KnowledgeAnswerer:
+    return build_rag_v2_knowledge_service()
 
 
 def build_weather_service(
