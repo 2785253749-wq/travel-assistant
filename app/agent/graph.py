@@ -44,6 +44,7 @@ from app.schemas import (
     WeatherCard,
 )
 from app.rag.service import RagAnswer, UnavailableKnowledgeAnswerService
+from app.rag_v2.knowledge import V2KnowledgeAnswerer
 from app.trips.models import Trip
 from app.locations.service import LocationServiceError
 from app.trips.transport import (
@@ -697,6 +698,7 @@ class SafeTravelAgent:
         usage_guard: UsageGuard | None = None,
         evidence_provider: TrustedEvidenceProvider | None = None,
         knowledge: KnowledgeAnswerer | None = None,
+        rag_v2_knowledge: V2KnowledgeAnswerer | None = None,
         weather: DailyWeatherProvider | None = None,
         initial_profile: TravelProfile | None = None,
         train_extractor: Any | None = None,
@@ -713,6 +715,7 @@ class SafeTravelAgent:
         self._usage_guard = usage_guard
         self._evidence_provider = evidence_provider or NullEvidenceProvider()
         self._knowledge = knowledge or UnavailableKnowledgeAnswerService()
+        self._rag_v2_knowledge = rag_v2_knowledge
         self._weather = weather or NullWeatherService()
         self._initial_profile = initial_profile or TravelProfile()
         self._train_extractor = train_extractor or TrainQueryExtractor()
@@ -1087,6 +1090,23 @@ class SafeTravelAgent:
 
     def _special_intent_result(self, intent: Intent, message: str) -> ChatResult | None:
         if intent == "travel_knowledge":
+            if self._rag_v2_knowledge is not None:
+                answer = self._rag_v2_knowledge.answer(
+                    message,
+                    destination_code=None,
+                    destination_level=None,
+                    province_code=None,
+                    attraction_id=None,
+                )
+                if answer.status == "grounded":
+                    citations = _rag_v2_citations(answer)
+                    return ChatResult(
+                        answer.reply,
+                        "collecting",
+                        {},
+                        sources=[citation.model_dump(mode="json") for citation in citations],
+                        intent=intent,
+                    )
             region = _knowledge_region(message)
             if region is None:
                 return ChatResult(
@@ -1679,6 +1699,24 @@ def _rag_citations(answer: RagAnswer):
             source_label=chunk.source_label,
         ))
     return citations
+
+
+def _rag_v2_citations(answer: Any):
+    from app.schemas import SourceCitation
+
+    timestamp = datetime.now(UTC)
+    return [
+        SourceCitation(
+            evidence_id=f"rag-v2:{evidence.content_hash}",
+            source_url=evidence.source_url,
+            source_type=evidence.source_type,
+            fetched_at=timestamp,
+            freshness=f"RAG V2 evidence reviewed {evidence.reviewed_on.isoformat()}.",
+            fact=evidence.content,
+            source_label=evidence.source_label,
+        )
+        for evidence in answer.evidence
+    ]
 
 
 def _attach_booking_links(itinerary: Itinerary, booking_links: object | None) -> Itinerary:

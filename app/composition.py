@@ -775,6 +775,7 @@ def build_chat_application(user: Any | None) -> TravelChatApplication:
             planner=ModelStructuredPlanner(),
             evidence_provider=providers,
             knowledge=get_knowledge_answer_service(),
+            rag_v2_knowledge=get_rag_v2_knowledge_service(),
             weather=get_weather_service(),
             initial_profile=initial_profile,
             train_extractor=TrainQueryExtractor(),

@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from unittest.mock import Mock
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
@@ -8,6 +9,9 @@ from app.agent.graph import SafeTravelAgent, TrustedEvidence, _knowledge_region,
 from app.agent.intent import IntentResult
 from app.rag.models import RetrievedChunk
 from app.rag.service import RagAnswer
+from app.rag_v2.knowledge import V2KnowledgeResult
+from app.rag_v2.models import ChunkType
+from app.rag_v2.retrieval import RetrievalEvidence
 from app.schemas import ItineraryWeather
 from app.agent.planning import PlanValidationError, Planner, validate_itinerary
 from app.providers.base import ProviderResult
@@ -111,6 +115,185 @@ def test_knowledge_question_returns_chinese_source_labels_without_planner_call()
     assert "来源：厦门市交通运输局公开信息" in result.reply
     assert result.sources and result.sources[0]["source_label"] == "厦门市交通运输局公开信息"
     planner.invoke.assert_not_called()
+
+
+def test_travel_knowledge_uses_v2_before_legacy_and_preserves_real_source_url() -> None:
+    message = "厦门鼓浪屿有哪些值得了解的特点？"
+    call_order: list[str] = []
+
+    class Classifier:
+        def classify(self, *_args):
+            return IntentResult(intent="travel_knowledge", confidence=1.0)
+
+    class V2Knowledge:
+        def answer(self, query, **filters):
+            call_order.append("v2")
+            assert query == message
+            assert filters == {
+                "destination_code": None,
+                "destination_level": None,
+                "province_code": None,
+                "attraction_id": None,
+            }
+            return V2KnowledgeResult(
+                status="grounded",
+                reply="鼓浪屿是厦门的海岛景点。\n\n建议提前核对航线。",
+                evidence=(
+                    RetrievalEvidence(
+                        attraction_id=UUID("00000000-0000-4000-8000-000000000101"),
+                        chunk_key="private-overview-key",
+                        chunk_type=ChunkType.overview,
+                        content="鼓浪屿是厦门的海岛景点。",
+                        content_hash="overview-hash",
+                        source_label="厦门文旅官方资料",
+                        source_url="https://culture.example.test/gulangyu",
+                        source_type="official",
+                        reviewed_on=date(2026, 9, 6),
+                        score=0.9,
+                    ),
+                    RetrievalEvidence(
+                        attraction_id=UUID("00000000-0000-4000-8000-000000000101"),
+                        chunk_key="private-visit-key",
+                        chunk_type=ChunkType.visit_advice,
+                        content="建议提前核对航线。",
+                        content_hash="visit-hash",
+                        source_label="厦门交通官方资料",
+                        source_url="https://transport.example.test/gulangyu",
+                        source_type="government",
+                        reviewed_on=date(2026, 9, 5),
+                        score=0.8,
+                    ),
+                ),
+            )
+
+    class LegacyKnowledge:
+        def answer(self, *_args, **_kwargs):
+            call_order.append("legacy")
+            raise AssertionError("legacy knowledge must not run after V2 grounding")
+
+    class Planner:
+        def invoke(self, *_args, **_kwargs):
+            raise AssertionError("Planner must not run for travel_knowledge")
+
+    result = SafeTravelAgent(
+        classifier=Classifier(),
+        planner=Planner(),
+        knowledge=LegacyKnowledge(),
+        rag_v2_knowledge=V2Knowledge(),
+    ).run(message, trip=None, user_id=None)
+
+    assert call_order == ["v2"]
+    assert result.reply == "鼓浪屿是厦门的海岛景点。\n\n建议提前核对航线。"
+    assert result.sources[0]["evidence_id"] == "rag-v2:overview-hash"
+    assert result.sources[0]["source_label"] == "厦门文旅官方资料"
+    assert result.sources[0]["source_url"] == "https://culture.example.test/gulangyu"
+    assert result.sources[0]["source_type"] == "official"
+    assert result.sources[0]["fact"] == "鼓浪屿是厦门的海岛景点。"
+    assert result.sources[1]["source_label"] == "厦门交通官方资料"
+    assert result.sources[1]["source_url"] == "https://transport.example.test/gulangyu"
+    assert result.sources[1]["source_type"] == "government"
+    assert all("attraction_id" not in source for source in result.sources)
+    assert all("chunk_key" not in source for source in result.sources)
+
+
+def test_v2_empty_result_calls_existing_legacy_knowledge_fallback() -> None:
+    message = "厦门鼓浪屿怎么去比较方便？"
+    call_order: list[str] = []
+
+    class Classifier:
+        def classify(self, *_args):
+            return IntentResult(intent="travel_knowledge", confidence=1.0)
+
+    class V2Knowledge:
+        def answer(self, query, **filters):
+            call_order.append("v2")
+            assert query == message
+            assert filters == {
+                "destination_code": None,
+                "destination_level": None,
+                "province_code": None,
+                "attraction_id": None,
+            }
+            return V2KnowledgeResult(status="empty", reply=None, evidence=())
+
+    class LegacyKnowledge:
+        def answer(self, query, *, region):
+            call_order.append("legacy")
+            assert query == message
+            assert region == "厦门"
+            return RagAnswer.grounded([
+                RetrievedChunk(
+                    chunk_id="legacy-transport",
+                    content="请提前核对轮渡班次。",
+                    source_label="legacy source",
+                    score=0.9,
+                )
+            ])
+
+    result = SafeTravelAgent(
+        classifier=Classifier(),
+        planner=Mock(),
+        knowledge=LegacyKnowledge(),
+        rag_v2_knowledge=V2Knowledge(),
+    ).run(message, trip=None)
+
+    assert call_order == ["v2", "legacy"]
+    assert result.reply == "请提前核对轮渡班次。\n【来源：legacy source】"
+    assert result.sources[0]["evidence_id"] == "rag:legacy-transport"
+
+
+def test_v2_unavailable_result_calls_existing_legacy_knowledge_fallback() -> None:
+    message = "厦门鼓浪屿游玩有什么建议？"
+
+    class Classifier:
+        def classify(self, *_args):
+            return IntentResult(intent="travel_knowledge", confidence=1.0)
+
+    class V2Knowledge:
+        def __init__(self, error_code):
+            self.error_code = error_code
+
+        def answer(self, query, **filters):
+            assert query == message
+            assert filters == {
+                "destination_code": None,
+                "destination_level": None,
+                "province_code": None,
+                "attraction_id": None,
+            }
+            return V2KnowledgeResult(
+                status="unavailable",
+                reply=None,
+                evidence=(),
+                error_code=self.error_code,
+            )
+
+    class LegacyKnowledge:
+        def __init__(self):
+            self.calls = []
+
+        def answer(self, query, *, region):
+            self.calls.append((query, region))
+            return RagAnswer.grounded([
+                RetrievedChunk(
+                    chunk_id="legacy-advice",
+                    content="请预留充足游览时间。",
+                    source_label="legacy source",
+                    score=0.9,
+                )
+            ])
+
+    for error_code in ("RAG_V2_UNAVAILABLE", "RAG_V2_EMBEDDING_UNAVAILABLE"):
+        legacy = LegacyKnowledge()
+        result = SafeTravelAgent(
+            classifier=Classifier(),
+            planner=Mock(),
+            knowledge=legacy,
+            rag_v2_knowledge=V2Knowledge(error_code),
+        ).run(message, trip=None)
+
+        assert legacy.calls == [(message, "厦门")]
+        assert result.reply == "请预留充足游览时间。\n【来源：legacy source】"
 
 
 def test_standalone_multi_day_weather_question_calls_weather_only() -> None:

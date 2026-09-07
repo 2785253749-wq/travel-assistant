@@ -35,6 +35,64 @@ def test_chat_api_keeps_legacy_response_shape(monkeypatch):
     }
 
 
+def test_v2_source_citation_survives_public_chat_validation(monkeypatch):
+    from app.main import app
+    from app import composition
+    from app.rag_v2.knowledge import V2KnowledgeResult
+    from app.rag_v2.models import ChunkType
+    from app.rag_v2.retrieval import RetrievalEvidence
+
+    class V2Knowledge:
+        def answer(self, query, **filters):
+            assert query == "厦门鼓浪屿有哪些值得了解的特点？"
+            assert filters == {
+                "destination_code": None,
+                "destination_level": None,
+                "province_code": None,
+                "attraction_id": None,
+            }
+            return V2KnowledgeResult(
+                status="grounded",
+                reply="鼓浪屿是厦门的海岛景点。",
+                evidence=(
+                    RetrievalEvidence(
+                        attraction_id=UUID("00000000-0000-4000-8000-000000000101"),
+                        chunk_key="private-chunk-key",
+                        chunk_type=ChunkType.overview,
+                        content="鼓浪屿是厦门的海岛景点。",
+                        content_hash="v2-public-content-hash",
+                        source_label="厦门文旅官方资料",
+                        source_url="https://culture.example.test/gulangyu",
+                        source_type="official",
+                        reviewed_on=datetime(2026, 9, 6, tzinfo=UTC).date(),
+                        score=0.9,
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(
+        composition,
+        "get_rag_v2_knowledge_service",
+        lambda: V2Knowledge(),
+    )
+
+    response = TestClient(app).post(
+        "/api/chat",
+        json={
+            "message": "厦门鼓浪屿有哪些值得了解的特点？",
+            "thread_id": "v2-public-citation",
+        },
+    )
+
+    assert response.status_code == 200
+    citation = response.json()["sources"][0]
+    assert citation["source_label"] == "厦门文旅官方资料"
+    assert citation["source_url"] == "https://culture.example.test/gulangyu"
+    assert citation["source_type"] == "official"
+    for forbidden in ("attraction_id", "chunk_key", "content_hash", "score", "reviewed_on"):
+        assert forbidden not in citation
+
+
 def test_chat_api_serializes_train_result_without_raw_provider_payload(monkeypatch):
     from app.main import app
     from app.api import chat as chat_api

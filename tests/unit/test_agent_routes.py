@@ -16,6 +16,7 @@ from app.agent.graph import (
     TrustedEvidence,
     chat,
 )
+from app.agent.hotel_nearby_query import HotelNearbyQueryExtractor
 from app.agent.intent import IntentResult
 from app.agent.safety import assess_message
 from app.agent.safety import REFUSALS
@@ -174,6 +175,26 @@ def test_train_query_uses_train_branch_without_planner_or_trip_persistence():
     assert result.train_result is not None
     assert "G25" in result.reply
     assert train_service.calls == [query]
+    planner.invoke.assert_not_called()
+
+
+def test_hotel_nearby_branch_does_not_call_rag_v2():
+    class RagV2Guard:
+        def answer(self, *_args, **_kwargs):
+            raise AssertionError("hotel_nearby must not call RAG V2")
+
+    planner = Mock()
+    result = SafeTravelAgent(
+        classifier=StubClassifier("hotel_nearby"),
+        extractor=StubExtractor(),
+        planner=planner,
+        hotel_nearby_extractor=HotelNearbyQueryExtractor(),
+        hotel_nearby_application=None,
+        rag_v2_knowledge=RagV2Guard(),
+    ).run("帮我找厦门大学附近的酒店", trip=None)
+
+    assert result.intent == "hotel_nearby"
+    assert result.error_code == "HOTEL_NEARBY_UNAVAILABLE"
     planner.invoke.assert_not_called()
 
 
