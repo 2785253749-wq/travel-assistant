@@ -41,3 +41,39 @@ def test_chat_composition_injects_hotel_nearby_dependencies(monkeypatch) -> None
     assert captured["hotel_nearby_application"] is application
     assert captured["hotel_nearby_extractor"] is extractor
     assert captured["hotel_nearby_renderer"] is renderer
+
+
+def test_chat_composition_without_baidu_keeps_rag_v2_and_disables_hotel(
+    monkeypatch,
+) -> None:
+    from app import composition
+    from app.core.config import Settings
+    from app.schemas import TravelProfile
+
+    settings = Settings(baidu_map_ak=None, _env_file=None)
+    rag_v2_knowledge = object()
+
+    monkeypatch.setattr(composition, "get_settings", lambda: settings)
+    monkeypatch.setattr(composition, "get_provider_evidence_aggregator", object)
+    monkeypatch.setattr(composition, "JuheTrainProvider", lambda **_: object())
+    monkeypatch.setattr(composition, "TrainService", lambda **_: object())
+    monkeypatch.setattr(composition, "get_knowledge_answer_service", object)
+    monkeypatch.setattr(
+        composition,
+        "get_rag_v2_knowledge_service",
+        lambda: rag_v2_knowledge,
+    )
+    monkeypatch.setattr(composition, "get_weather_service", object)
+    monkeypatch.setattr(composition, "get_usage_guard", lambda: object())
+    monkeypatch.setattr(composition, "HotelNearbyQueryExtractor", object)
+    monkeypatch.setattr(composition, "HotelNearbyReplyRenderer", object)
+
+    composition.get_hotel_nearby_application.cache_clear()
+    try:
+        chat_application = composition.build_chat_application(None)
+        agent = chat_application._agent_factory(TravelProfile())
+    finally:
+        composition.get_hotel_nearby_application.cache_clear()
+
+    assert agent._rag_v2_knowledge is rag_v2_knowledge
+    assert agent._hotel_nearby_application is None

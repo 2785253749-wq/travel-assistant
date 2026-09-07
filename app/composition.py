@@ -51,7 +51,10 @@ from app.providers.aggregate import ProviderEvidenceAggregator
 from app.providers.amap_district import AmapDistrictProvider
 from app.providers.amap_weather import AmapWeatherProvider
 from app.providers.baidu_hotel import BaiduHotelProvider
-from app.providers.baidu_location import BaiduLocationProvider
+from app.providers.baidu_location import (
+    BaiduLocationProvider,
+    BaiduLocationProviderError,
+)
 from app.providers.juhe_train import JuheTrainProvider
 from app.trains.service import TrainService
 from app.hotels.service import HotelService
@@ -766,7 +769,10 @@ def build_chat_application(user: Any | None) -> TravelChatApplication:
     """The sole concrete composition root for the public chat use case."""
     providers = get_provider_evidence_aggregator()
     train_service = TrainService(provider=JuheTrainProvider(settings=get_settings()))
-    hotel_nearby_application = get_hotel_nearby_application()
+    try:
+        hotel_nearby_application = get_hotel_nearby_application()
+    except BaiduLocationProviderError:
+        hotel_nearby_application = None
 
     def agent_factory(initial_profile: TravelProfile) -> SafeTravelAgent:
         return SafeTravelAgent(

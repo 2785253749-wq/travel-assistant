@@ -81,11 +81,15 @@ def test_v2_source_citation_survives_public_chat_validation(monkeypatch):
         json={
             "message": "厦门鼓浪屿有哪些值得了解的特点？",
             "thread_id": "v2-public-citation",
+            "action": "collect",
         },
     )
 
     assert response.status_code == 200
-    citation = response.json()["sources"][0]
+    payload = response.json()
+    assert payload["reply"] == "鼓浪屿是厦门的海岛景点。"
+    assert "PROFILE_INCOMPLETE" not in response.text
+    citation = payload["sources"][0]
     assert citation["source_label"] == "厦门文旅官方资料"
     assert citation["source_url"] == "https://culture.example.test/gulangyu"
     assert citation["source_type"] == "official"
