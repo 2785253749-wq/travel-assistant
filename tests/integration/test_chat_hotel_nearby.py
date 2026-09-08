@@ -204,3 +204,78 @@ def test_chat_api_maps_ambiguous_location_with_three_ordered_candidates(
     assert "候选地点4" not in reply
     assert "synthetic-location-1" not in reply
     assert len(fake_hotel_nearby_application.requests) == 1
+
+
+def test_chat_api_recovers_hotel_location_selection_across_collect_requests(
+    client: TestClient,
+    fake_hotel_nearby_application: FakeHotelNearbyApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import composition
+
+    class RagV2MustNotRun:
+        def answer(self, *_args, **_kwargs):
+            raise AssertionError("hotel selection must not call RAG V2")
+
+    monkeypatch.setattr(
+        composition,
+        "get_rag_v2_knowledge_service",
+        lambda: RagV2MustNotRun(),
+    )
+
+    candidates = [
+        LocationCandidate(
+            id="gulangyu-scenic-area",
+            name="鼓浪屿风景名胜区",
+            latitude=24.45,
+            longitude=118.07,
+            provider="fake",
+        ),
+        LocationCandidate(
+            id="piano-wharf",
+            name="厦门鼓浪屿钢琴码头",
+            latitude=24.45,
+            longitude=118.08,
+            provider="fake",
+        ),
+        LocationCandidate(
+            id="ferry-station",
+            name="鼓浪屿-轮渡站",
+            latitude=24.45,
+            longitude=118.09,
+            provider="fake",
+        ),
+    ]
+    fake_hotel_nearby_application.error = LocationServiceError(
+        "LOCATION_AMBIGUOUS", candidates=candidates
+    )
+
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "厦门鼓浪屿附近酒店推荐",
+            "action": "collect",
+            "thread_id": "hotel-http-selection-recovery",
+        },
+    )
+
+    assert first.status_code == 200
+    assert first.json()["error_code"] == "LOCATION_AMBIGUOUS"
+
+    fake_hotel_nearby_application.error = None
+    second = client.post(
+        "/api/chat",
+        json={
+            "message": "鼓浪屿风景名胜区",
+            "action": "collect",
+            "thread_id": "hotel-http-selection-recovery",
+        },
+    )
+
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload.get("error_code") is None
+    assert "测试酒店1" in second_payload["reply"]
+    assert len(fake_hotel_nearby_application.requests) == 2
+    assert fake_hotel_nearby_application.requests[1].location_query == "鼓浪屿风景名胜区"
+    assert fake_hotel_nearby_application.requests[1].city == "厦门"

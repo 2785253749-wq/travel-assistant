@@ -166,9 +166,14 @@ def api_chat(
     anonymous_session: Annotated[str | None, Cookie(alias=_SESSION_COOKIE)] = None,
 ) -> ChatResponse | JSONResponse:
     settings = get_settings()
+
+
+
     request_intent = RuleIntentClassifier().classify(
         request.message, request.trip_id is not None
     ).intent
+
+
     http_request.state.log_intent = request_intent
     if user is not None:
         session_scope = f"user:{user.id}"
@@ -229,6 +234,11 @@ def api_chat(
                     quota_subject=quota_subject,
                     action=request.action,
                 )
+                print("DEBUG API RESULT:")
+                print("reply:", result.reply)
+                print("error:", result.error_code)
+                print("intent:", result.intent)
+                print("profile:", result.profile)
             except ProviderUnavailable as exc:
                 code = exc.code if exc.code in {"AI_RATE_LIMITED", "AI_UNAVAILABLE", "AI_CIRCUIT_OPEN"} else "AI_UNAVAILABLE"
                 logging.getLogger("app.api.chat").info(
