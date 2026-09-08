@@ -113,6 +113,49 @@ def test_city_search_uses_region_endpoint_and_maps_a_summary() -> None:
     assert result.fetched_at.tzinfo is not None
 
 
+def test_search_maps_reference_price_and_comment_count_from_detail_info() -> None:
+    payload = search_payload(
+        [
+            hotel_result(
+                detail_info={
+                    "overall_rating": "4.7",
+                    "price": "328",
+                    "comment_num": "1234",
+                    "distance": "213",
+                }
+            )
+        ]
+    )
+    transport = RecordingTransport([json_response(payload)])
+
+    result = provider_for(transport).search(HotelNearbySearchRequest(
+        latitude=24.4798,
+        longitude=118.0894,
+    ))
+
+    hotel = result.items[0]
+    assert hotel.rating == 4.7
+    assert hotel.price == 328
+    assert hotel.comment_num == 1234
+
+
+def test_search_keeps_rating_price_and_comment_count_missing_as_none() -> None:
+    payload = search_payload(
+        [hotel_result(detail_info={"distance": "213"})]
+    )
+    transport = RecordingTransport([json_response(payload)])
+
+    result = provider_for(transport).search(HotelNearbySearchRequest(
+        latitude=24.4798,
+        longitude=118.0894,
+    ))
+
+    hotel = result.items[0]
+    assert hotel.rating is None
+    assert hotel.price is None
+    assert hotel.comment_num is None
+
+
 def test_page_is_converted_and_small_domain_page_size_is_trimmed_locally() -> None:
     payload = search_payload(
         [hotel_result(uid=f"baidu-{index}", name=f"酒店 {index}") for index in range(4)],
@@ -169,6 +212,33 @@ def test_nearby_search_uses_around_endpoint_and_gcj02_coordinates() -> None:
     assert result.status == "success"
     assert result.items == []
     assert result.total == 0
+
+
+@pytest.mark.parametrize(
+    ("sort_by", "expected_filter"),
+    [
+        ("rating", "industry_type:hotel|sort_name:overall_rating|sort_rule:0"),
+        ("price", "industry_type:hotel|sort_name:price|sort_rule:1"),
+        ("distance", "industry_type:hotel|sort_name:distance|sort_rule:1"),
+    ],
+)
+def test_nearby_search_encodes_requested_sort_in_baidu_filter(
+    sort_by: str,
+    expected_filter: str,
+) -> None:
+    transport = RecordingTransport([json_response(search_payload([] , total=0))])
+    provider = provider_for(transport)
+
+    provider.search(
+        HotelNearbySearchRequest(
+            latitude=24.4798,
+            longitude=118.0894,
+            sort_by=sort_by,
+        )
+    )
+
+    query = parse_qs(urlparse(str(transport.requests[0].url)).query)
+    assert query["filter"] == [expected_filter]
 
 
 def test_invalid_optional_fields_do_not_discard_valid_hotel() -> None:

@@ -142,6 +142,28 @@ def test_search_passes_latitude_and_longitude_without_swapping() -> None:
     assert request.longitude == 118.987
 
 
+def test_search_forwards_hotel_sort_preference_unchanged() -> None:
+    from app.application.hotel_nearby import (
+        HotelNearbyApplication,
+        HotelNearbyApplicationRequest,
+    )
+
+    hotel_service = FakeHotelService(hotel_result())
+    application = HotelNearbyApplication(
+        location_service=FakeLocationService(resolved_location()),
+        hotel_service=hotel_service,
+    )
+
+    application.search(
+        HotelNearbyApplicationRequest(
+            location_query="厦门大学",
+            sort_by="price",
+        )
+    )
+
+    assert hotel_service.requests[0].sort_by == "price"
+
+
 def test_location_not_found_is_propagated_without_calling_hotel_service() -> None:
     from app.application.hotel_nearby import (
         HotelNearbyApplication,

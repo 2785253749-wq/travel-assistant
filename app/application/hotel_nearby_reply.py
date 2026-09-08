@@ -30,6 +30,12 @@ class HotelNearbyReplyRenderer:
         lines = [f"“{location_name}”附近 {radius_text}内{count_text}："]
         for index, hotel in enumerate(hotels.items[: self._MAX_ITEMS], start=1):
             details = [f"{index}. {hotel.name}"]
+            if hotel.rating is not None:
+                details.append(f"评分：{hotel.rating:g}")
+            if hotel.price is not None:
+                details.append(f"参考价格：¥{hotel.price:g}")
+            if hotel.comment_num is not None:
+                details.append(f"评论数：{hotel.comment_num}")
             if hotel.distance is not None:
                 details.append(f"距离：{_format_distance(hotel.distance)}")
             lines.append("，".join(details))

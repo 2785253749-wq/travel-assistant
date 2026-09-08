@@ -96,6 +96,58 @@ def test_renderer_omits_optional_hotel_fields_when_missing() -> None:
     assert "前 3 家" not in reply
 
 
+def test_renderer_shows_rating_reference_price_and_comment_count() -> None:
+    from app.application.hotel_nearby_reply import HotelNearbyReplyRenderer
+
+    reply = HotelNearbyReplyRenderer().render(
+        _result(
+            [
+                HotelSummary(
+                    id="hotel-1",
+                    name="厦门海景酒店",
+                    address="环岛路 1 号",
+                    rating=4.7,
+                    price=328,
+                    comment_num=1234,
+                    distance=213,
+                    provider="baidu",
+                )
+            ]
+        ),
+        radius=2000,
+    )
+
+    assert "评分：4.7" in reply
+    assert "参考价格：¥328" in reply
+    assert "评论数：1234" in reply
+    assert "距离：213 米" in reply
+    assert "地址：环岛路 1 号" in reply
+
+
+def test_renderer_does_not_invent_missing_rating_price_or_comment_count() -> None:
+    from app.application.hotel_nearby_reply import HotelNearbyReplyRenderer
+
+    reply = HotelNearbyReplyRenderer().render(
+        _result(
+            [
+                HotelSummary(
+                    id="hotel-1",
+                    name="无扩展数据酒店",
+                    rating=None,
+                    price=None,
+                    comment_num=None,
+                    provider="baidu",
+                )
+            ]
+        ),
+        radius=500,
+    )
+
+    assert "4.7" not in reply
+    assert "¥328" not in reply
+    assert "1234" not in reply
+
+
 def test_renderer_does_not_claim_a_prefix_when_all_three_hotels_are_shown() -> None:
     from app.application.hotel_nearby_reply import HotelNearbyReplyRenderer
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+from app.hotels.models import HotelSortBy
+
 
 @dataclass(frozen=True)
 class HotelNearbyQueryExtraction:
@@ -13,6 +15,7 @@ class HotelNearbyQueryExtraction:
     location_query: str | None = None
     city: str | None = None
     radius: int | None = None
+    sort_by: HotelSortBy | None = None
     invalid_fields: tuple[str, ...] = ()
 
     @property
@@ -56,6 +59,7 @@ class HotelNearbyQueryExtractor:
                 break
 
         radius = self._extract_radius(normalized)
+        sort_by = self._extract_sort_by(normalized)
         invalid_fields = (
             ("radius",)
             if radius is not None and not self._MIN_RADIUS <= radius <= self._MAX_RADIUS
@@ -65,6 +69,7 @@ class HotelNearbyQueryExtractor:
             location_query=location or None,
             city=city,
             radius=radius,
+            sort_by=sort_by,
             invalid_fields=invalid_fields,
         )
 
@@ -77,3 +82,13 @@ class HotelNearbyQueryExtractor:
             return cls._CHINESE_KILOMETERS[match.group("chinese")]
         value = float(match.group("value"))
         return int(value * (1000 if match.group("unit") == "公里" else 1))
+
+    @staticmethod
+    def _extract_sort_by(message: str) -> HotelSortBy | None:
+        if any(term in message for term in ("评分最高", "评分好")):
+            return "rating"
+        if any(term in message for term in ("便宜一点", "最便宜", "价格最低")):
+            return "price"
+        if any(term in message for term in ("最近", "离这里最近")):
+            return "distance"
+        return None

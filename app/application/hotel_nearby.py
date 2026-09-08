@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.hotels.models import HotelNearbySearchRequest, HotelSearchResult
+from app.hotels.models import HotelNearbySearchRequest, HotelSearchResult, HotelSortBy
 from app.hotels.service import HotelService
 from app.locations.models import LocationQuery, ResolvedLocation
 from app.locations.service import LocationService
@@ -16,6 +16,7 @@ class HotelNearbyApplicationRequest:
     keyword: str = "酒店"
     page: int = 1
     page_size: int = 10
+    sort_by: HotelSortBy | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class HotelNearbyApplication:
                 keyword=request.keyword,
                 page=request.page,
                 page_size=request.page_size,
+                sort_by=request.sort_by,
             )
         )
         return HotelNearbyApplicationResult(location=location, hotels=hotels)
