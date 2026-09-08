@@ -57,7 +57,10 @@ class BaiduHotelProvider(HotelProvider):
         if not isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be positive and finite")
         self._timeout = timeout
-        self._client = client or httpx.Client(timeout=timeout)
+        self._client = client or httpx.Client(
+            timeout=timeout,
+            trust_env=False,
+            )
 
     def search(
         self,
