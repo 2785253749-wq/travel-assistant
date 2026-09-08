@@ -36,6 +36,7 @@ from app.application.train import TrainRecommendationService
 from app.core.config import get_settings
 from app.core.logging import operational_context
 from app.core.usage import ProviderUnavailable, get_model_gateway
+from app.hotels.models import HotelSortBy
 from app.schemas import (
     CHAT_REPLY_MAX_LENGTH,
     ExtractionResult,
@@ -110,6 +111,7 @@ class PendingHotelNearbySelection:
     city: str
     radius: int
     candidate_names: tuple[str, ...]
+    sort_by: HotelSortBy | None = None
 
     def matches(self, message: str) -> bool:
         normalized = " ".join(message.strip().split()).casefold()
@@ -764,6 +766,7 @@ class SafeTravelAgent:
             location_query=message.strip(),
             city=pending.city,
             radius=pending.radius,
+            sort_by=pending.sort_by,
         )
         return self._hotel_nearby_result(message, extracted=extracted)
 
@@ -1287,6 +1290,7 @@ class SafeTravelAgent:
                     city=extracted.city,
                     radius=radius,
                     candidate_names=tuple(names),
+                    sort_by=extracted.sort_by,
                 )
                 return ChatResult(
                     f"“{extracted.location_query}”对应多个地点，请选择：{choices}。",

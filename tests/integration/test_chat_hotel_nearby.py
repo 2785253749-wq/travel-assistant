@@ -279,3 +279,47 @@ def test_chat_api_recovers_hotel_location_selection_across_collect_requests(
     assert len(fake_hotel_nearby_application.requests) == 2
     assert fake_hotel_nearby_application.requests[1].location_query == "鼓浪屿风景名胜区"
     assert fake_hotel_nearby_application.requests[1].city == "厦门"
+
+
+def test_chat_api_restores_hotel_sort_preference_after_location_selection(
+    client: TestClient,
+    fake_hotel_nearby_application: FakeHotelNearbyApplication,
+) -> None:
+    fake_hotel_nearby_application.error = LocationServiceError(
+        "LOCATION_AMBIGUOUS",
+        candidates=[
+            LocationCandidate(
+                id="gulangyu-scenic-area",
+                name="鼓浪屿风景名胜区",
+                latitude=24.45,
+                longitude=118.07,
+                provider="fake",
+            )
+        ],
+    )
+
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "厦门鼓浪屿附近评分最高的酒店",
+            "action": "collect",
+            "thread_id": "hotel-http-sort-recovery",
+        },
+    )
+
+    assert first.status_code == 200
+    assert first.json()["error_code"] == "LOCATION_AMBIGUOUS"
+
+    fake_hotel_nearby_application.error = None
+    second = client.post(
+        "/api/chat",
+        json={
+            "message": "鼓浪屿风景名胜区",
+            "action": "collect",
+            "thread_id": "hotel-http-sort-recovery",
+        },
+    )
+
+    assert second.status_code == 200
+    assert len(fake_hotel_nearby_application.requests) == 2
+    assert fake_hotel_nearby_application.requests[1].sort_by == "rating"
