@@ -234,11 +234,6 @@ def api_chat(
                     quota_subject=quota_subject,
                     action=request.action,
                 )
-                print("DEBUG API RESULT:")
-                print("reply:", result.reply)
-                print("error:", result.error_code)
-                print("intent:", result.intent)
-                print("profile:", result.profile)
             except ProviderUnavailable as exc:
                 code = exc.code if exc.code in {"AI_RATE_LIMITED", "AI_UNAVAILABLE", "AI_CIRCUIT_OPEN"} else "AI_UNAVAILABLE"
                 logging.getLogger("app.api.chat").info(
