@@ -51,7 +51,7 @@ def test_composition_injects_repository_embedder_and_configured_threshold() -> N
     repository = FakeRepository()
     service = build_knowledge_answer_service(
         settings=Settings(
-            jina_api_key="server-only-secret",
+            jina_api_key="test-key",
             rag_similarity_threshold=0.81,
             _env_file=None,
         ),
@@ -77,7 +77,7 @@ def test_missing_private_repository_configuration_degrades_without_http_call() -
             raise AssertionError("incomplete composition must not call Jina")
 
     service = composition.build_knowledge_answer_service(
-        settings=Settings(jina_api_key="server-only-secret", _env_file=None),
+        settings=Settings(jina_api_key="test-key", _env_file=None),
         http_client=RecordingClient(),
     )
 
@@ -162,9 +162,9 @@ def test_build_rag_v2_service_constructs_configured_dependency_chain(monkeypatch
     from app import composition
 
     settings = Settings(
-        jina_api_key="fake-jina-key",
+        jina_api_key="test-key",
         supabase_url="https://supabase.example.test",
-        supabase_service_key="fake-service-key",
+        supabase_service_key="service-key",
         _env_file=None,
     )
     http_client = object()

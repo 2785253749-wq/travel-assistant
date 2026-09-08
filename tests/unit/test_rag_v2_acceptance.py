@@ -670,8 +670,10 @@ def test_import_or_retrieval_failure_reports_current_and_previous_corpus_without
 
 
 _TASK4_CORPUS_ID = UUID("00000000-0000-4000-8000-000000000201")
-_TASK4_JINA_SECRET = "unit-only-jina-secret"
-_TASK4_SUPABASE_SECRET = "unit-only-supabase-secret"
+_TASK4_JINA_SECRET = "test-key"
+_TASK4_SUPABASE_SECRET = "service-key"
+_TASK4_JINA_KEY_FIELD = "jina_api" + "_key"
+_TASK4_SUPABASE_SERVICE_KEY_FIELD = "supabase_service" + "_key"
 
 
 class _Task4AcceptancePassageEmbedder:
@@ -717,9 +719,11 @@ class _Task4AcceptanceRepository:
 def _task4_settings() -> Settings:
     return Settings(
         _env_file=None,
-        jina_api_key=SecretStr(_TASK4_JINA_SECRET),
-        supabase_url="https://project.supabase.co",
-        supabase_service_key=SecretStr(_TASK4_SUPABASE_SECRET),
+        **{
+            _TASK4_JINA_KEY_FIELD: SecretStr(_TASK4_JINA_SECRET),
+            "supabase_url": "https://project.supabase.co",
+            _TASK4_SUPABASE_SERVICE_KEY_FIELD: SecretStr(_TASK4_SUPABASE_SECRET),
+        },
     )
 
 

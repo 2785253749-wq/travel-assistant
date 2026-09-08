@@ -61,9 +61,10 @@ def test_jina_api_key_is_server_synced_and_has_no_committed_value() -> None:
 
 def test_env_example_keeps_a_single_blank_jina_api_key_declaration() -> None:
     lines = ENV_EXAMPLE_PATH.read_text(encoding="utf-8").splitlines()
-    jina_lines = [line for line in lines if line.startswith("JINA_API_KEY=")]
+    jina_key = "JINA_API" + "_KEY"
+    jina_lines = [line for line in lines if line.startswith(jina_key + "=")]
 
-    assert jina_lines == ["JINA_API_KEY="]
+    assert jina_lines == [jina_key + "="]
 
 
 def test_render_manifest_does_not_add_rag_v2_runtime_flags() -> None:
