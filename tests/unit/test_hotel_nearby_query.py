@@ -104,3 +104,27 @@ def test_extracts_location_from_supported_query_prefixes_and_nearby_terms(messag
 @pytest.mark.parametrize("message", ["附近有什么酒店", "帮我找周边住宿"])
 def test_supported_nearby_request_without_location_remains_missing(message: str) -> None:
     assert HotelNearbyQueryExtractor().extract(message).missing_fields == ("location_query",)
+
+
+@pytest.mark.parametrize(
+    ("message", "sort_by"),
+    [
+        ("厦门大学附近评分最高的酒店", "rating"),
+        ("厦门大学附近最便宜的酒店", "price"),
+        ("厦门大学附近离这里最近的酒店", "distance"),
+    ],
+)
+def test_extracts_supported_hotel_sort_preference(
+    message: str,
+    sort_by: str,
+) -> None:
+    result = HotelNearbyQueryExtractor().extract(message)
+
+    assert result.location_query == "厦门大学"
+    assert result.sort_by == sort_by
+
+
+def test_ordinary_nearby_hotel_query_keeps_default_sort() -> None:
+    result = HotelNearbyQueryExtractor().extract("厦门大学附近酒店推荐")
+
+    assert result.sort_by is None

@@ -13,6 +13,7 @@ from app.hotels.models import (
     HotelNearbySearchRequest,
     HotelSearchRequest,
     HotelSearchResult,
+    HotelSortBy,
     HotelSummary,
 )
 from app.hotels.provider import HotelProvider
@@ -23,6 +24,11 @@ BAIDU_PLACE_AROUND_URL = "https://api.map.baidu.com/place/v3/around"
 BAIDU_PLACE_DETAIL_URL = "https://api.map.baidu.com/place/v3/detail"
 BAIDU_HOTEL_PROVIDER_NAME = "baidu"
 _HOTEL_FILTER = "industry_type:hotel"
+_SORT_FILTERS: dict[HotelSortBy, str] = {
+    "rating": "sort_name:overall_rating|sort_rule:0",
+    "price": "sort_name:price|sort_rule:1",
+    "distance": "sort_name:distance|sort_rule:1",
+}
 _DETAIL_TAG_SEPARATOR = re.compile(r"[,，;；|/]")
 
 
@@ -179,7 +185,12 @@ def _around_params(
     request: HotelNearbySearchRequest,
     api_key: str,
 ) -> dict[str, object]:
-    return _common_params(request.page, request.page_size, api_key) | {
+    return _common_params(
+        request.page,
+        request.page_size,
+        api_key,
+        sort_by=request.sort_by,
+    ) | {
         "query": request.keyword,
         "location": f"{request.latitude},{request.longitude}",
         "radius": request.radius,
@@ -188,16 +199,27 @@ def _around_params(
     }
 
 
-def _common_params(page: int, page_size: int, api_key: str) -> dict[str, object]:
+def _common_params(
+    page: int,
+    page_size: int,
+    api_key: str,
+    *,
+    sort_by: HotelSortBy | None = None,
+) -> dict[str, object]:
     return {
         "scope": "2",
         "page_num": page - 1,
         "page_size": max(page_size, 10),
-        "filter": _HOTEL_FILTER,
+        "filter": _hotel_filter(sort_by),
         "ret_coordtype": "gcj02ll",
         "output": "json",
         "ak": api_key,
     }
+
+
+def _hotel_filter(sort_by: HotelSortBy | None) -> str:
+    sort_filter = _SORT_FILTERS.get(sort_by) if sort_by is not None else None
+    return _HOTEL_FILTER if sort_filter is None else f"{_HOTEL_FILTER}|{sort_filter}"
 
 
 def _parse_summary(raw: dict[str, object]) -> HotelSummary | None:
@@ -217,6 +239,8 @@ def _parse_summary(raw: dict[str, object]) -> HotelSummary | None:
             latitude=_safe_float(location_dict.get("lat")),
             longitude=_safe_float(location_dict.get("lng")),
             rating=_safe_nonnegative_float(detail_info.get("overall_rating")),
+            price=_safe_nonnegative_float(detail_info.get("price")),
+            comment_num=_safe_nonnegative_int(detail_info.get("comment_num")),
             telephone=_optional_text(raw.get("telephone")),
             distance=_safe_distance(
                 detail_info.get("distance", raw.get("distance"))

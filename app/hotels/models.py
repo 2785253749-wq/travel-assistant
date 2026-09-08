@@ -23,6 +23,9 @@ def _normalize_keyword(value: object) -> object:
     return value
 
 
+HotelSortBy = Literal["rating", "price", "distance"]
+
+
 class HotelSearchRequest(StrictSchema):
     city: str = Field(min_length=1, max_length=80)
     keyword: str = Field(default="酒店", min_length=1, max_length=80)
@@ -42,6 +45,7 @@ class HotelNearbySearchRequest(StrictSchema):
     keyword: str = Field(default="酒店", min_length=1, max_length=80)
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=10, ge=1, le=20)
+    sort_by: HotelSortBy | None = None
 
     _normalize_search_keyword = field_validator("keyword", mode="before")(
         _normalize_keyword
@@ -59,6 +63,8 @@ class HotelSummary(StrictSchema):
         default=None, ge=-180, le=180, allow_inf_nan=False
     )
     rating: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    price: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    comment_num: int | None = Field(default=None, ge=0)
     telephone: str | None = Field(default=None, max_length=200)
     distance: int | None = Field(default=None, ge=0)
     provider: str = Field(min_length=1, max_length=80)

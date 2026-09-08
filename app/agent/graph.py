@@ -1263,6 +1263,7 @@ class SafeTravelAgent:
         request_kwargs: dict[str, object] = {
             "location_query": extracted.location_query,
             "city": extracted.city,
+            "sort_by": extracted.sort_by,
         }
         if extracted.radius is not None:
             request_kwargs["radius"] = extracted.radius
