@@ -25,7 +25,7 @@ BAIDU_PLACE_DETAIL_URL = "https://api.map.baidu.com/place/v3/detail"
 BAIDU_HOTEL_PROVIDER_NAME = "baidu"
 _HOTEL_FILTER = "industry_type:hotel"
 _SORT_FILTERS: dict[HotelSortBy, str] = {
-    "rating": "sort_name:overall_rating|sort_rule:0",
+    "rating": "sort_name:total_score|sort_rule:0",
     "price": "sort_name:price|sort_rule:1",
     "distance": "sort_name:distance|sort_rule:1",
 }

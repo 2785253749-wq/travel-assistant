@@ -217,7 +217,7 @@ def test_nearby_search_uses_around_endpoint_and_gcj02_coordinates() -> None:
 @pytest.mark.parametrize(
     ("sort_by", "expected_filter"),
     [
-        ("rating", "industry_type:hotel|sort_name:overall_rating|sort_rule:0"),
+        ("rating", "industry_type:hotel|sort_name:total_score|sort_rule:0"),
         ("price", "industry_type:hotel|sort_name:price|sort_rule:1"),
         ("distance", "industry_type:hotel|sort_name:distance|sort_rule:1"),
     ],
