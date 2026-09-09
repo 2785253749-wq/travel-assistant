@@ -87,7 +87,7 @@ class BaiduAttractionProvider(AttractionProvider):
         if self.contract_state != "configured":
             return _unavailable(
                 request,
-                "ATTRACTION_PROVIDER_CONTRACT_UNVERIFIED",
+                "BAIDU_ATTRACTION_NOT_CONFIGURED",
             )
 
         if isinstance(request, AttractionSearchRequest):

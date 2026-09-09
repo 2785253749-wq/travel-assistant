@@ -114,7 +114,7 @@ def test_missing_filter_contract_is_unverified_without_http() -> None:
     assert result.items == []
     assert result.total is None
     assert result.status == "unavailable"
-    assert result.warning == "ATTRACTION_PROVIDER_CONTRACT_UNVERIFIED"
+    assert result.warning == "BAIDU_ATTRACTION_NOT_CONFIGURED"
     assert transport.requests == []
 
 
@@ -128,7 +128,7 @@ def test_incomplete_sort_contract_is_unverified_without_http() -> None:
 
     assert provider.contract_state == "unverified"
     assert result.status == "unavailable"
-    assert result.warning == "ATTRACTION_PROVIDER_CONTRACT_UNVERIFIED"
+    assert result.warning == "BAIDU_ATTRACTION_NOT_CONFIGURED"
     assert transport.requests == []
 
 
