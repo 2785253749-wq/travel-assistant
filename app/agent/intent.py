@@ -9,7 +9,8 @@ from app.core.usage import ModelGateway, get_model_gateway
 
 Intent = Literal[
     "plan_trip", "modify_trip", "explain_trip", "travel_knowledge",
-    "weather_query", "train_query", "hotel_nearby", "smalltalk", "unsupported"
+    "weather_query", "train_query", "hotel_nearby", "attraction_search",
+    "smalltalk", "unsupported"
 ]
 
 
@@ -52,7 +53,8 @@ _INTENT_PROMPT = """你只负责识别用户消息的意图，并返回符合 JS
 - plan_trip：开始规划中国境内 2 至 7 天、1 至 6 人的自由行，或补充这类行程资料。
 - modify_trip：修改已有行程的内容。
 - explain_trip：解释已有行程的推荐或安排。
-- travel_knowledge：询问试点目的地的景点、交通、餐饮、季节或避坑资料。
+- attraction_search：查询某城市有哪些景点，或查询某个地点附近的景点，包括评分最高、距离最近等明确 POI 列表检索。
+- travel_knowledge：已知景点/目的地的特点、攻略、历史、交通、餐饮、季节、避坑等知识型问题。
 - weather_query：询问某个试点目的地的天气、气温、降雨或风况。
 - train_query：查询中国铁路车次/高铁/动车，包含出发地、目的地或日期等车次信息。
 - smalltalk：问候、闲聊且不要求旅行服务。

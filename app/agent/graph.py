@@ -301,6 +301,8 @@ class RuleIntentClassifier:
             return IntentResult(intent="unsupported", confidence=1.0)
         if self._is_hotel_nearby_query(normalized):
             return IntentResult(intent="hotel_nearby", confidence=1.0)
+        if self._is_attraction_search_query(normalized):
+            return IntentResult(intent="attraction_search", confidence=1.0)
         if any(
             term in normalized
             for term in (
@@ -346,6 +348,18 @@ class RuleIntentClassifier:
         nearby_positions = [message.find(term) for term in ("附近", "周边", "周围")]
         nearby_position = min(position for position in nearby_positions if position >= 0)
         return nearby_position < message.find("酒店")
+
+    @staticmethod
+    def _is_attraction_search_query(message: str) -> bool:
+        if "景点" not in message:
+            return False
+        if any(term in message for term in ("附近", "周边", "周围")):
+            return True
+        if "景点推荐" in message:
+            return True
+        if any(term in message for term in ("评分最高", "最近")):
+            return True
+        return any(term in message for term in ("有哪些景点", "有什么好玩的景点"))
 
     @classmethod
     def _has_planning_context(cls, message: str) -> bool:
