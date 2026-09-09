@@ -353,8 +353,26 @@ class RuleIntentClassifier:
     def _is_attraction_search_query(message: str) -> bool:
         if "景点" not in message:
             return False
+        if any(
+            term in message
+            for term in (
+                "有什么特点",
+                "特点",
+                "历史",
+                "怎么去",
+                "如何去",
+                "交通",
+                "攻略",
+                "注意",
+                "注意事项",
+                "介绍",
+            )
+        ):
+            return False
         if any(term in message for term in ("附近", "周边", "周围")):
-            return True
+            return "有什么景点" in message or "景点推荐" in message or any(
+                term in message for term in ("评分最高", "最近")
+            )
         if "景点推荐" in message:
             return True
         if any(term in message for term in ("评分最高", "最近")):

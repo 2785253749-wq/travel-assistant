@@ -60,6 +60,24 @@ def test_rule_classifier_does_not_steal_ambiguous_fun_query_for_attraction_searc
     )
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "鼓浪屿附近的景点有什么特点",
+        "厦门大学周边景点有什么历史",
+        "鼓浪屿附近景点怎么去",
+        "厦门大学附近景点需要注意什么",
+    ],
+)
+def test_rule_classifier_does_not_steal_nearby_attraction_knowledge_questions(
+    message: str,
+) -> None:
+    assert (
+        RuleIntentClassifier().classify(message, has_trip=False).intent
+        == "travel_knowledge"
+    )
+
+
 class FakeIntentModel:
     def __init__(self, result: IntentResult):
         self.result = result
