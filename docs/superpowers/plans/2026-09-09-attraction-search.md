@@ -432,7 +432,7 @@ def test_unverified_provider_returns_safe_unavailable_without_http_call(): ...
 
 Assert safe common parameters exactly: `scope=2`, `ret_coordtype=gcj02ll`, `output=json`, pagination, `region`/`region_limit` for city, and `location`/`radius`/`radius_limit`/`coord_type` for nearby. Assert that the request includes one provider-controlled category filter and never a user-supplied raw filter.
 
-The tests must not freeze an unverified category literal or rating sort field. Use a constructor-injected internal contract seam for the controlled filter and sort mapping, and assert that the provider uses those values without exposing them to request callers. Also assert the unconfigured state: with both values omitted, the provider reports `contract_state="unverified"`, returns `AttractionSearchResult(items=[], total=None, status="unavailable", warning="ATTRACTION_PROVIDER_CONTRACT_UNVERIFIED", ...)`, and makes no HTTP call.
+The tests must not freeze an unverified category literal or rating sort field. Use a constructor-injected internal contract seam for the controlled filter and sort mapping, and assert that the provider uses those values without exposing them to request callers. Also assert the unconfigured state: with both values omitted, the provider reports `contract_state="unverified"`, returns `AttractionSearchResult(items=[], total=None, status="unavailable", warning="BAIDU_ATTRACTION_NOT_CONFIGURED", ...)`, and makes no HTTP call.
 
 - [ ] **Step 2: Run provider tests and verify RED**
 
