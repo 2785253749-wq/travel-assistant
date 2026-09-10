@@ -32,7 +32,10 @@ from app.application.hotel_nearby import (
     HotelNearbyApplicationRequest,
 )
 from app.application.hotel_nearby_reply import HotelNearbyReplyRenderer
-from app.application.attraction_search import AttractionCityApplicationRequest
+from app.application.attraction_search import (
+    AttractionCityApplicationRequest,
+    AttractionNearbyApplicationRequest,
+)
 from app.application.attraction_search_reply import AttractionReplyRenderer
 from app.core.errors import AppError
 from app.application.train import TrainRecommendationService
@@ -1361,23 +1364,34 @@ class SafeTravelAgent:
 
     def _attraction_search_result(self, message: str) -> ChatResult:
         extracted = self._attraction_search_extractor.extract(message)
-        if extracted.mode != "city":
-            return ChatResult(
-                "附近景点查询暂不可用，请稍后重试。",
-                "collecting",
-                {},
-                intent="attraction_search",
-            )
         if extracted.missing_fields:
+            if extracted.mode == "nearby":
+                if "city" in extracted.missing_fields:
+                    reply = "请补充所在城市，例如“厦门鼓浪屿附近有什么景点”。"
+                else:
+                    reply = "请补充要查询附近景点的地点，例如“厦门大学附近有什么景点”。"
+            else:
+                reply = "请补充要查询的城市，例如“厦门有哪些景点”。"
             return ChatResult(
-                "请补充要查询的城市，例如“厦门有哪些景点”。",
+                reply,
                 "collecting",
                 {},
                 intent="attraction_search",
             )
         if extracted.invalid_fields:
+            if "radius" in extracted.invalid_fields:
+                reply = "查询半径请设置在 500 米到 20 公里之间。"
+            else:
+                reply = "城市景点查询暂不支持按距离排序，请改为评分排序或普通景点查询。"
             return ChatResult(
-                "城市景点查询暂不支持按距离排序，请改为评分排序或普通景点查询。",
+                reply,
+                "collecting",
+                {},
+                intent="attraction_search",
+            )
+        if extracted.mode not in {"city", "nearby"}:
+            return ChatResult(
+                "附近景点查询暂不可用，请稍后重试。",
                 "collecting",
                 {},
                 intent="attraction_search",
@@ -1390,27 +1404,65 @@ class SafeTravelAgent:
                 intent="attraction_search",
             )
 
-        request = AttractionCityApplicationRequest(
-            city=extracted.city,
-            sort_by=extracted.sort_by,
-        )
         try:
-            application_result = self._attraction_search_application.search_city(
-                request
-            )
+            if extracted.mode == "city":
+                request = AttractionCityApplicationRequest(
+                    city=extracted.city,
+                    sort_by=extracted.sort_by,
+                )
+                application_result = self._attraction_search_application.search_city(
+                    request
+                )
+            else:
+                request = AttractionNearbyApplicationRequest(
+                    location_query=extracted.location_query,
+                    city=extracted.city,
+                    radius=extracted.radius or 2000,
+                    sort_by=extracted.sort_by,
+                )
+                application_result = self._attraction_search_application.search_nearby(
+                    request
+                )
+        except LocationServiceError as exc:
+            if exc.code == "LOCATION_NOT_FOUND":
+                return ChatResult(
+                    f"未找到“{extracted.location_query}”这个地点，请换一个更明确的地点名称。",
+                    "collecting",
+                    {},
+                    error_code=exc.code,
+                    intent="attraction_search",
+                )
+            if exc.code == "LOCATION_AMBIGUOUS":
+                names = [candidate.name for candidate in exc.candidates[:3]]
+                lines = ["找到多个地点，请选择一个："]
+                lines.extend(
+                    f"{index}. {name}" for index, name in enumerate(names, start=1)
+                )
+                return ChatResult(
+                    "\n".join(lines),
+                    "collecting",
+                    {},
+                    error_code=exc.code,
+                    intent="attraction_search",
+                )
+            return self._attraction_search_unavailable(exc.code)
         except AppError as exc:
-            return ChatResult(
-                "景点查询服务暂不可用，请稍后重试。",
-                "collecting",
-                {},
-                error_code=exc.code,
-                intent="attraction_search",
-            )
+            return self._attraction_search_unavailable(exc.code)
 
         return ChatResult(
             self._attraction_search_renderer.render(application_result),
             "collecting",
             {},
+            intent="attraction_search",
+        )
+
+    @staticmethod
+    def _attraction_search_unavailable(error_code: str) -> ChatResult:
+        return ChatResult(
+            "景点查询服务暂不可用，请稍后重试。",
+            "collecting",
+            {},
+            error_code=error_code,
             intent="attraction_search",
         )
 
