@@ -20,6 +20,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_deepseek import ChatDeepSeek
 
 from app.agent.extraction import ExtractionCandidate, build_extraction_candidate, merge_profile, validate_profile
+from app.agent.attraction_search_query import AttractionSearchQueryExtractor
 from app.agent.hotel_nearby_query import (
     HotelNearbyQueryExtraction,
     HotelNearbyQueryExtractor,
@@ -31,6 +32,8 @@ from app.application.hotel_nearby import (
     HotelNearbyApplicationRequest,
 )
 from app.application.hotel_nearby_reply import HotelNearbyReplyRenderer
+from app.application.attraction_search import AttractionCityApplicationRequest
+from app.application.attraction_search_reply import AttractionReplyRenderer
 from app.core.errors import AppError
 from app.application.train import TrainRecommendationService
 from app.core.config import get_settings
@@ -758,6 +761,9 @@ class SafeTravelAgent:
         hotel_nearby_extractor: Any | None = None,
         hotel_nearby_application: Any | None = None,
         hotel_nearby_renderer: Any | None = None,
+        attraction_search_extractor: Any | None = None,
+        attraction_search_application: Any | None = None,
+        attraction_search_renderer: Any | None = None,
     ) -> None:
         self._classifier = classifier or ModelIntentClassifier()
         self._extractor = extractor or ModelTravelExtractor()
@@ -775,6 +781,13 @@ class SafeTravelAgent:
         self._hotel_nearby_extractor = hotel_nearby_extractor or HotelNearbyQueryExtractor()
         self._hotel_nearby_application = hotel_nearby_application
         self._hotel_nearby_renderer = hotel_nearby_renderer or HotelNearbyReplyRenderer()
+        self._attraction_search_extractor = (
+            attraction_search_extractor or AttractionSearchQueryExtractor()
+        )
+        self._attraction_search_application = attraction_search_application
+        self._attraction_search_renderer = (
+            attraction_search_renderer or AttractionReplyRenderer()
+        )
         self._pending_hotel_nearby: PendingHotelNearbySelection | None = None
         self._transport_resolver = (
             TripTransportResolver(train_service, self._train_recommendation)
@@ -824,6 +837,8 @@ class SafeTravelAgent:
                 return special
             if intent == "hotel_nearby":
                 return self._hotel_nearby_result(message)
+            if intent == "attraction_search":
+                return self._attraction_search_result(message)
             if intent == "train_query":
                 return self._train_query_result(message)
             if intent == "unsupported":
@@ -1058,6 +1073,8 @@ class SafeTravelAgent:
                 return special
             if intent == "hotel_nearby":
                 return self._hotel_nearby_result(message)
+            if intent == "attraction_search":
+                return self._attraction_search_result(message)
             if intent == "train_query":
                 return self._train_query_result(message)
             if intent == "smalltalk":
@@ -1340,6 +1357,61 @@ class SafeTravelAgent:
             "collecting",
             {},
             intent="hotel_nearby",
+        )
+
+    def _attraction_search_result(self, message: str) -> ChatResult:
+        extracted = self._attraction_search_extractor.extract(message)
+        if extracted.mode != "city":
+            return ChatResult(
+                "附近景点查询暂不可用，请稍后重试。",
+                "collecting",
+                {},
+                intent="attraction_search",
+            )
+        if extracted.missing_fields:
+            return ChatResult(
+                "请补充要查询的城市，例如“厦门有哪些景点”。",
+                "collecting",
+                {},
+                intent="attraction_search",
+            )
+        if extracted.invalid_fields:
+            return ChatResult(
+                "城市景点查询暂不支持按距离排序，请改为评分排序或普通景点查询。",
+                "collecting",
+                {},
+                intent="attraction_search",
+            )
+        if self._attraction_search_application is None:
+            return ChatResult(
+                "景点查询服务暂不可用，请稍后重试。",
+                "collecting",
+                {},
+                intent="attraction_search",
+            )
+
+        request = AttractionCityApplicationRequest(
+            city=extracted.city,
+            sort_by=extracted.sort_by,
+        )
+        try:
+            application_result = self._attraction_search_application.search_city(
+                request
+            )
+        except AppError as exc:
+            return ChatResult(
+                "景点查询服务暂不可用，请稍后重试。",
+                "collecting",
+                {},
+                error_code=exc.code,
+                intent="attraction_search",
+            )
+
+        return ChatResult(
+            self._attraction_search_renderer.render(application_result),
+            "collecting",
+            {},
+            intent="attraction_search",
         )
 
     @staticmethod
