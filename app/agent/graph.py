@@ -20,7 +20,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_deepseek import ChatDeepSeek
 
 from app.agent.extraction import ExtractionCandidate, build_extraction_candidate, merge_profile, validate_profile
-from app.agent.attraction_search_query import AttractionSearchQueryExtractor
+from app.agent.attraction_search_query import (
+    AttractionSearchQueryExtraction,
+    AttractionSearchQueryExtractor,
+)
 from app.agent.hotel_nearby_query import (
     HotelNearbyQueryExtraction,
     HotelNearbyQueryExtractor,
@@ -37,6 +40,7 @@ from app.application.attraction_search import (
     AttractionNearbyApplicationRequest,
 )
 from app.application.attraction_search_reply import AttractionReplyRenderer
+from app.attractions.models import AttractionSortBy
 from app.core.errors import AppError
 from app.application.train import TrainRecommendationService
 from app.core.config import get_settings
@@ -118,6 +122,21 @@ class PendingHotelNearbySelection:
     radius: int
     candidate_names: tuple[str, ...]
     sort_by: HotelSortBy | None = None
+
+    def matches(self, message: str) -> bool:
+        normalized = " ".join(message.strip().split()).casefold()
+        return normalized in {
+            " ".join(name.strip().split()).casefold()
+            for name in self.candidate_names
+        }
+
+
+@dataclass(frozen=True)
+class PendingAttractionNearbySelection:
+    city: str
+    radius: int
+    candidate_names: tuple[str, ...]
+    sort_by: AttractionSortBy | None = None
 
     def matches(self, message: str) -> bool:
         normalized = " ".join(message.strip().split()).casefold()
@@ -792,6 +811,7 @@ class SafeTravelAgent:
             attraction_search_renderer or AttractionReplyRenderer()
         )
         self._pending_hotel_nearby: PendingHotelNearbySelection | None = None
+        self._pending_attraction_nearby: PendingAttractionNearbySelection | None = None
         self._transport_resolver = (
             TripTransportResolver(train_service, self._train_recommendation)
             if train_service is not None
@@ -801,6 +821,10 @@ class SafeTravelAgent:
     @property
     def pending_hotel_nearby(self) -> PendingHotelNearbySelection | None:
         return self._pending_hotel_nearby
+
+    @property
+    def pending_attraction_nearby(self) -> PendingAttractionNearbySelection | None:
+        return self._pending_attraction_nearby
 
     def collect_hotel_nearby_selection(
         self,
@@ -817,6 +841,23 @@ class SafeTravelAgent:
             sort_by=pending.sort_by,
         )
         return self._hotel_nearby_result(message, extracted=extracted)
+
+    def collect_attraction_nearby_selection(
+        self,
+        message: str,
+        pending: PendingAttractionNearbySelection,
+        trip: Trip | None,
+    ) -> ChatResult:
+        if not pending.matches(message):
+            return self.collect(message, trip)
+        extracted = AttractionSearchQueryExtraction(
+            mode="nearby",
+            location_query=message.strip(),
+            city=pending.city,
+            radius=pending.radius,
+            sort_by=pending.sort_by,
+        )
+        return self._attraction_search_result(message, extracted=extracted)
 
     def collect(self, message: str, trip: Trip | None) -> ChatResult:
         """Normalize travel details and stop before providers or the planner."""
@@ -1362,8 +1403,14 @@ class SafeTravelAgent:
             intent="hotel_nearby",
         )
 
-    def _attraction_search_result(self, message: str) -> ChatResult:
-        extracted = self._attraction_search_extractor.extract(message)
+    def _attraction_search_result(
+        self,
+        message: str,
+        *,
+        extracted: AttractionSearchQueryExtraction | None = None,
+    ) -> ChatResult:
+        self._pending_attraction_nearby = None
+        extracted = extracted or self._attraction_search_extractor.extract(message)
         if extracted.missing_fields:
             if extracted.mode == "nearby":
                 if "city" in extracted.missing_fields:
@@ -1434,6 +1481,15 @@ class SafeTravelAgent:
                 )
             if exc.code == "LOCATION_AMBIGUOUS":
                 names = [candidate.name for candidate in exc.candidates[:3]]
+                if extracted.mode == "nearby":
+                    self._pending_attraction_nearby = (
+                        PendingAttractionNearbySelection(
+                            city=extracted.city,
+                            radius=extracted.radius or 2000,
+                            candidate_names=tuple(names),
+                            sort_by=extracted.sort_by,
+                        )
+                    )
                 lines = ["找到多个地点，请选择一个："]
                 lines.extend(
                     f"{index}. {name}" for index, name in enumerate(names, start=1)

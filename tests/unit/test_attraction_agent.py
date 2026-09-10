@@ -527,3 +527,143 @@ def test_run_nearby_attraction_query_uses_nearby_branch() -> None:
         )
     ]
     assert renderer.calls == [application.result]
+
+
+def test_attraction_ambiguity_persists_default_radius_and_rating_sort() -> None:
+    candidates = [
+        LocationCandidate(
+            id="candidate-1",
+            name="鼓浪屿风景名胜区",
+            latitude=24.45,
+            longitude=118.07,
+            provider="fake-location",
+        ),
+        LocationCandidate(
+            id="candidate-2",
+            name="厦门鼓浪屿钢琴码头",
+            latitude=24.46,
+            longitude=118.08,
+            provider="fake-location",
+        ),
+    ]
+    application = FakeAttractionSearchApplication(
+        _application_result(),
+        error=LocationServiceError("LOCATION_AMBIGUOUS", candidates=candidates),
+    )
+    agent = _agent(
+        AttractionSearchQueryExtraction(
+            mode="nearby",
+            city="厦门",
+            location_query="鼓浪屿",
+            sort_by="rating",
+        ),
+        application,
+    )
+
+    result = agent.collect("厦门鼓浪屿附近评分最高的景点", trip=None)
+
+    pending = getattr(agent, "pending_attraction_nearby", None)
+    assert result.error_code == "LOCATION_AMBIGUOUS"
+    assert pending is not None
+    assert pending.city == "厦门"
+    assert pending.radius == 2000
+    assert pending.sort_by == "rating"
+    assert pending.candidate_names == (
+        "鼓浪屿风景名胜区",
+        "厦门鼓浪屿钢琴码头",
+    )
+
+
+def test_attraction_ambiguity_persists_explicit_radius_and_distance_sort() -> None:
+    candidates = [
+        LocationCandidate(
+            id="candidate-1",
+            name="鼓浪屿风景名胜区",
+            latitude=24.45,
+            longitude=118.07,
+            provider="fake-location",
+        )
+    ]
+    application = FakeAttractionSearchApplication(
+        _application_result(),
+        error=LocationServiceError("LOCATION_AMBIGUOUS", candidates=candidates),
+    )
+    agent = _agent(
+        AttractionSearchQueryExtraction(
+            mode="nearby",
+            city="厦门",
+            location_query="鼓浪屿",
+            radius=3000,
+            sort_by="distance",
+        ),
+        application,
+    )
+
+    agent.collect("厦门鼓浪屿附近3公里最近的景点", trip=None)
+
+    pending = getattr(agent, "pending_attraction_nearby", None)
+    assert pending is not None
+    assert pending.radius == 3000
+    assert pending.sort_by == "distance"
+
+
+def test_attraction_selection_restores_distance_sort() -> None:
+    candidate = LocationCandidate(
+        id="candidate-1",
+        name="鼓浪屿风景名胜区",
+        latitude=24.45,
+        longitude=118.07,
+        provider="fake-location",
+    )
+    application = FakeAttractionSearchApplication(
+        _application_result(),
+        error=LocationServiceError("LOCATION_AMBIGUOUS", candidates=[candidate]),
+    )
+    agent = _agent(
+        AttractionSearchQueryExtraction(
+            mode="nearby",
+            city="厦门",
+            location_query="鼓浪屿",
+            sort_by="distance",
+        ),
+        application,
+    )
+
+    agent.collect("厦门鼓浪屿附近最近的景点", trip=None)
+    pending = getattr(agent, "pending_attraction_nearby", None)
+    assert pending is not None
+
+    application.error = None
+    agent.collect_attraction_nearby_selection(
+        "鼓浪屿风景名胜区", pending, trip=None
+    )
+
+    assert application.nearby_requests[1].sort_by == "distance"
+
+
+def test_attraction_ambiguity_preserves_no_sort_preference() -> None:
+    candidate = LocationCandidate(
+        id="candidate-1",
+        name="鼓浪屿风景名胜区",
+        latitude=24.45,
+        longitude=118.07,
+        provider="fake-location",
+    )
+    application = FakeAttractionSearchApplication(
+        _application_result(),
+        error=LocationServiceError("LOCATION_AMBIGUOUS", candidates=[candidate]),
+    )
+    agent = _agent(
+        AttractionSearchQueryExtraction(
+            mode="nearby",
+            city="厦门",
+            location_query="鼓浪屿",
+        ),
+        application,
+    )
+
+    agent.collect("厦门鼓浪屿附近有什么景点", trip=None)
+
+    pending = getattr(agent, "pending_attraction_nearby", None)
+    assert pending is not None
+    assert pending.sort_by is None

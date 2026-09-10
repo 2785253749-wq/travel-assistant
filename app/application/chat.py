@@ -9,6 +9,7 @@ from uuid import UUID
 
 from app.agent.graph import (
     ChatResult,
+    PendingAttractionNearbySelection,
     PendingHotelNearbySelection,
     SafeTravelAgent,
 )
@@ -56,6 +57,9 @@ class ConfirmationStore:
         self._entries: OrderedDict[tuple[str, str, str], PendingConfirmation] = OrderedDict()
         self._hotel_entries: OrderedDict[
             tuple[str, str, str], PendingHotelNearbySelection
+        ] = OrderedDict()
+        self._attraction_entries: OrderedDict[
+            tuple[str, str, str], PendingAttractionNearbySelection
         ] = OrderedDict()
         self._lock = RLock()
 
@@ -157,6 +161,42 @@ class ConfirmationStore:
         with self._lock:
             self._hotel_entries.pop(self._key(subject, thread_id, trip_id), None)
 
+    def get_attraction_nearby_pending(
+        self,
+        subject: str,
+        thread_id: str,
+        trip_id: UUID | None,
+    ) -> PendingAttractionNearbySelection | None:
+        key = self._key(subject, thread_id, trip_id)
+        with self._lock:
+            value = self._attraction_entries.get(key)
+            if value is not None:
+                self._attraction_entries.move_to_end(key)
+            return value
+
+    def put_attraction_nearby_pending(
+        self,
+        subject: str,
+        thread_id: str,
+        trip_id: UUID | None,
+        pending: PendingAttractionNearbySelection,
+    ) -> None:
+        key = self._key(subject, thread_id, trip_id)
+        with self._lock:
+            self._attraction_entries[key] = pending
+            self._attraction_entries.move_to_end(key)
+            while len(self._attraction_entries) > self._max_entries:
+                self._attraction_entries.popitem(last=False)
+
+    def discard_attraction_nearby_pending(
+        self,
+        subject: str,
+        thread_id: str,
+        trip_id: UUID | None,
+    ) -> None:
+        with self._lock:
+            self._attraction_entries.pop(self._key(subject, thread_id, trip_id), None)
+
     @staticmethod
     def _key(subject: str, thread_id: str, trip_id: UUID | None) -> tuple[str, str, str]:
         return subject, thread_id, str(trip_id) if trip_id else "new"
@@ -194,8 +234,15 @@ class TravelChatApplication:
         hotel_pending = self._confirmation_store.get_hotel_nearby_pending(
             subject, thread_id, trip_id
         )
+        attraction_pending = self._confirmation_store.get_attraction_nearby_pending(
+            subject, thread_id, trip_id
+        )
         if hotel_pending is not None and hotel_pending.matches(message):
             result = agent.collect_hotel_nearby_selection(message, hotel_pending, trip)
+        elif attraction_pending is not None and attraction_pending.matches(message):
+            result = agent.collect_attraction_nearby_selection(
+                message, attraction_pending, trip
+            )
         else:
             result = agent.collect(message, trip)
 
@@ -207,8 +254,20 @@ class TravelChatApplication:
                 trip_id,
                 current_hotel_pending,
             )
-        else:
+        elif result.intent != "attraction_search":
             self._confirmation_store.discard_hotel_nearby_pending(
+                subject, thread_id, trip_id
+            )
+        current_attraction_pending = getattr(agent, "pending_attraction_nearby", None)
+        if current_attraction_pending is not None:
+            self._confirmation_store.put_attraction_nearby_pending(
+                subject,
+                thread_id,
+                trip_id,
+                current_attraction_pending,
+            )
+        elif result.intent != "hotel_nearby":
+            self._confirmation_store.discard_attraction_nearby_pending(
                 subject, thread_id, trip_id
             )
         if result.profile and result.stage != "planned":
