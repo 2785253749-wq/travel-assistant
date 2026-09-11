@@ -20,6 +20,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_deepseek import ChatDeepSeek
 
 from app.agent.extraction import ExtractionCandidate, build_extraction_candidate, merge_profile, validate_profile
+from app.agent.attraction_search_query import (
+    AttractionSearchQueryExtraction,
+    AttractionSearchQueryExtractor,
+)
 from app.agent.hotel_nearby_query import (
     HotelNearbyQueryExtraction,
     HotelNearbyQueryExtractor,
@@ -31,6 +35,12 @@ from app.application.hotel_nearby import (
     HotelNearbyApplicationRequest,
 )
 from app.application.hotel_nearby_reply import HotelNearbyReplyRenderer
+from app.application.attraction_search import (
+    AttractionCityApplicationRequest,
+    AttractionNearbyApplicationRequest,
+)
+from app.application.attraction_search_reply import AttractionReplyRenderer
+from app.attractions.models import AttractionSortBy
 from app.core.errors import AppError
 from app.application.train import TrainRecommendationService
 from app.core.config import get_settings
@@ -112,6 +122,21 @@ class PendingHotelNearbySelection:
     radius: int
     candidate_names: tuple[str, ...]
     sort_by: HotelSortBy | None = None
+
+    def matches(self, message: str) -> bool:
+        normalized = " ".join(message.strip().split()).casefold()
+        return normalized in {
+            " ".join(name.strip().split()).casefold()
+            for name in self.candidate_names
+        }
+
+
+@dataclass(frozen=True)
+class PendingAttractionNearbySelection:
+    city: str
+    radius: int
+    candidate_names: tuple[str, ...]
+    sort_by: AttractionSortBy | None = None
 
     def matches(self, message: str) -> bool:
         normalized = " ".join(message.strip().split()).casefold()
@@ -301,6 +326,8 @@ class RuleIntentClassifier:
             return IntentResult(intent="unsupported", confidence=1.0)
         if self._is_hotel_nearby_query(normalized):
             return IntentResult(intent="hotel_nearby", confidence=1.0)
+        if self._is_attraction_search_query(normalized):
+            return IntentResult(intent="attraction_search", confidence=1.0)
         if any(
             term in normalized
             for term in (
@@ -346,6 +373,37 @@ class RuleIntentClassifier:
         nearby_positions = [message.find(term) for term in ("附近", "周边", "周围")]
         nearby_position = min(position for position in nearby_positions if position >= 0)
         return nearby_position < message.find("酒店")
+
+    @staticmethod
+    def _is_attraction_search_query(message: str) -> bool:
+        if "景点" not in message:
+            return False
+        if any(
+            term in message
+            for term in (
+                "有什么特点",
+                "特点",
+                "资料",
+                "历史",
+                "怎么去",
+                "如何去",
+                "交通",
+                "攻略",
+                "注意",
+                "注意事项",
+                "介绍",
+            )
+        ):
+            return False
+        if any(term in message for term in ("附近", "周边", "周围")):
+            return "有什么景点" in message or "景点推荐" in message or any(
+                term in message for term in ("评分最高", "最近")
+            )
+        if "景点推荐" in message:
+            return True
+        if any(term in message for term in ("评分最高", "最近")):
+            return True
+        return any(term in message for term in ("有哪些景点", "有什么好玩的景点"))
 
     @classmethod
     def _has_planning_context(cls, message: str) -> bool:
@@ -726,6 +784,9 @@ class SafeTravelAgent:
         hotel_nearby_extractor: Any | None = None,
         hotel_nearby_application: Any | None = None,
         hotel_nearby_renderer: Any | None = None,
+        attraction_search_extractor: Any | None = None,
+        attraction_search_application: Any | None = None,
+        attraction_search_renderer: Any | None = None,
     ) -> None:
         self._classifier = classifier or ModelIntentClassifier()
         self._extractor = extractor or ModelTravelExtractor()
@@ -743,7 +804,15 @@ class SafeTravelAgent:
         self._hotel_nearby_extractor = hotel_nearby_extractor or HotelNearbyQueryExtractor()
         self._hotel_nearby_application = hotel_nearby_application
         self._hotel_nearby_renderer = hotel_nearby_renderer or HotelNearbyReplyRenderer()
+        self._attraction_search_extractor = (
+            attraction_search_extractor or AttractionSearchQueryExtractor()
+        )
+        self._attraction_search_application = attraction_search_application
+        self._attraction_search_renderer = (
+            attraction_search_renderer or AttractionReplyRenderer()
+        )
         self._pending_hotel_nearby: PendingHotelNearbySelection | None = None
+        self._pending_attraction_nearby: PendingAttractionNearbySelection | None = None
         self._transport_resolver = (
             TripTransportResolver(train_service, self._train_recommendation)
             if train_service is not None
@@ -753,6 +822,10 @@ class SafeTravelAgent:
     @property
     def pending_hotel_nearby(self) -> PendingHotelNearbySelection | None:
         return self._pending_hotel_nearby
+
+    @property
+    def pending_attraction_nearby(self) -> PendingAttractionNearbySelection | None:
+        return self._pending_attraction_nearby
 
     def collect_hotel_nearby_selection(
         self,
@@ -769,6 +842,23 @@ class SafeTravelAgent:
             sort_by=pending.sort_by,
         )
         return self._hotel_nearby_result(message, extracted=extracted)
+
+    def collect_attraction_nearby_selection(
+        self,
+        message: str,
+        pending: PendingAttractionNearbySelection,
+        trip: Trip | None,
+    ) -> ChatResult:
+        if not pending.matches(message):
+            return self.collect(message, trip)
+        extracted = AttractionSearchQueryExtraction(
+            mode="nearby",
+            location_query=message.strip(),
+            city=pending.city,
+            radius=pending.radius,
+            sort_by=pending.sort_by,
+        )
+        return self._attraction_search_result(message, extracted=extracted)
 
     def collect(self, message: str, trip: Trip | None) -> ChatResult:
         """Normalize travel details and stop before providers or the planner."""
@@ -792,6 +882,8 @@ class SafeTravelAgent:
                 return special
             if intent == "hotel_nearby":
                 return self._hotel_nearby_result(message)
+            if intent == "attraction_search":
+                return self._attraction_search_result(message)
             if intent == "train_query":
                 return self._train_query_result(message)
             if intent == "unsupported":
@@ -1026,6 +1118,8 @@ class SafeTravelAgent:
                 return special
             if intent == "hotel_nearby":
                 return self._hotel_nearby_result(message)
+            if intent == "attraction_search":
+                return self._attraction_search_result(message)
             if intent == "train_query":
                 return self._train_query_result(message)
             if intent == "smalltalk":
@@ -1308,6 +1402,125 @@ class SafeTravelAgent:
             "collecting",
             {},
             intent="hotel_nearby",
+        )
+
+    def _attraction_search_result(
+        self,
+        message: str,
+        *,
+        extracted: AttractionSearchQueryExtraction | None = None,
+    ) -> ChatResult:
+        self._pending_attraction_nearby = None
+        extracted = extracted or self._attraction_search_extractor.extract(message)
+        if extracted.missing_fields:
+            if extracted.mode == "nearby":
+                if "city" in extracted.missing_fields:
+                    reply = "请补充所在城市，例如“厦门鼓浪屿附近有什么景点”。"
+                else:
+                    reply = "请补充要查询附近景点的地点，例如“厦门大学附近有什么景点”。"
+            else:
+                reply = "请补充要查询的城市，例如“厦门有哪些景点”。"
+            return ChatResult(
+                reply,
+                "collecting",
+                {},
+                intent="attraction_search",
+            )
+        if extracted.invalid_fields:
+            if "radius" in extracted.invalid_fields:
+                reply = "查询半径请设置在 500 米到 20 公里之间。"
+            else:
+                reply = "城市景点查询暂不支持按距离排序，请改为评分排序或普通景点查询。"
+            return ChatResult(
+                reply,
+                "collecting",
+                {},
+                intent="attraction_search",
+            )
+        if extracted.mode not in {"city", "nearby"}:
+            return ChatResult(
+                "附近景点查询暂不可用，请稍后重试。",
+                "collecting",
+                {},
+                intent="attraction_search",
+            )
+        if self._attraction_search_application is None:
+            return ChatResult(
+                "景点查询服务暂不可用，请稍后重试。",
+                "collecting",
+                {},
+                intent="attraction_search",
+            )
+
+        try:
+            if extracted.mode == "city":
+                request = AttractionCityApplicationRequest(
+                    city=extracted.city,
+                    sort_by=extracted.sort_by,
+                )
+                application_result = self._attraction_search_application.search_city(
+                    request
+                )
+            else:
+                request = AttractionNearbyApplicationRequest(
+                    location_query=extracted.location_query,
+                    city=extracted.city,
+                    radius=extracted.radius or 2000,
+                    sort_by=extracted.sort_by,
+                )
+                application_result = self._attraction_search_application.search_nearby(
+                    request
+                )
+        except LocationServiceError as exc:
+            if exc.code == "LOCATION_NOT_FOUND":
+                return ChatResult(
+                    f"未找到“{extracted.location_query}”这个地点，请换一个更明确的地点名称。",
+                    "collecting",
+                    {},
+                    error_code=exc.code,
+                    intent="attraction_search",
+                )
+            if exc.code == "LOCATION_AMBIGUOUS":
+                names = [candidate.name for candidate in exc.candidates[:3]]
+                if extracted.mode == "nearby":
+                    self._pending_attraction_nearby = (
+                        PendingAttractionNearbySelection(
+                            city=extracted.city,
+                            radius=extracted.radius or 2000,
+                            candidate_names=tuple(names),
+                            sort_by=extracted.sort_by,
+                        )
+                    )
+                lines = ["找到多个地点，请选择一个："]
+                lines.extend(
+                    f"{index}. {name}" for index, name in enumerate(names, start=1)
+                )
+                return ChatResult(
+                    "\n".join(lines),
+                    "collecting",
+                    {},
+                    error_code=exc.code,
+                    intent="attraction_search",
+                )
+            return self._attraction_search_unavailable(exc.code)
+        except AppError as exc:
+            return self._attraction_search_unavailable(exc.code)
+
+        return ChatResult(
+            self._attraction_search_renderer.render(application_result),
+            "collecting",
+            {},
+            intent="attraction_search",
+        )
+
+    @staticmethod
+    def _attraction_search_unavailable(error_code: str) -> ChatResult:
+        return ChatResult(
+            "景点查询服务暂不可用，请稍后重试。",
+            "collecting",
+            {},
+            error_code=error_code,
+            intent="attraction_search",
         )
 
     @staticmethod

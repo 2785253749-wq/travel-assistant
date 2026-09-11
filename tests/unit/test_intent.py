@@ -1,7 +1,90 @@
 import pytest
 
 from app.agent.graph import RuleIntentClassifier
-from app.agent.intent import IntentResult, classify_intent, route_intent
+from app.agent.intent import _INTENT_PROMPT, IntentResult, classify_intent, route_intent
+
+
+def test_intent_result_accepts_attraction_search() -> None:
+    result = IntentResult(intent="attraction_search", confidence=1.0)
+
+    assert result.intent == "attraction_search"
+
+
+def test_intent_prompt_distinguishes_attraction_search_from_knowledge() -> None:
+    assert "attraction_search" in _INTENT_PROMPT
+    assert "明确 POI 列表检索" in _INTENT_PROMPT
+
+
+def test_api_known_intents_accepts_attraction_search() -> None:
+    from app.api.chat import _KNOWN_INTENTS
+
+    assert "attraction_search" in _KNOWN_INTENTS
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "厦门有哪些景点",
+        "厦门有什么好玩的景点",
+        "厦门评分最高的景点",
+        "厦门大学附近有什么景点",
+        "厦门大学附近评分最高的景点",
+        "厦门大学附近最近的景点",
+        "厦门鼓浪屿附近景点推荐",
+    ],
+)
+def test_rule_classifier_routes_attraction_lists_to_attraction_search(message: str) -> None:
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "attraction_search"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "鼓浪屿有什么特点",
+        "鼓浪屿有哪些值得了解的特点",
+        "鼓浪屿怎么去",
+        "介绍一下鼓浪屿",
+        "厦门有什么值得去的地方",
+    ],
+)
+def test_rule_classifier_keeps_knowledge_questions_on_travel_knowledge_route(message: str) -> None:
+    assert RuleIntentClassifier().classify(message, has_trip=False).intent == "travel_knowledge"
+
+
+def test_attraction_search_does_not_capture_attraction_knowledge_material_query() -> None:
+    assert (
+        RuleIntentClassifier()
+        .classify("去厦门想看海岛风景，有哪些景点资料？", has_trip=False)
+        .intent
+        == "travel_knowledge"
+    )
+
+
+def test_rule_classifier_does_not_steal_ambiguous_fun_query_for_attraction_search() -> None:
+    assert (
+        RuleIntentClassifier()
+        .classify("厦门大学附近有什么好玩的", has_trip=False)
+        .intent
+        != "attraction_search"
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "鼓浪屿附近的景点有什么特点",
+        "厦门大学周边景点有什么历史",
+        "鼓浪屿附近景点怎么去",
+        "厦门大学附近景点需要注意什么",
+    ],
+)
+def test_rule_classifier_does_not_steal_nearby_attraction_knowledge_questions(
+    message: str,
+) -> None:
+    assert (
+        RuleIntentClassifier().classify(message, has_trip=False).intent
+        == "travel_knowledge"
+    )
 
 
 class FakeIntentModel:
