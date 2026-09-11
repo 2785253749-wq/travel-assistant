@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Literal
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -40,6 +41,7 @@ def provider_for(
     category_filter: str | None = TEST_CATEGORY_FILTER,
     sort_filters: dict[str, str] | None = TEST_SORT_FILTERS,
     timeout: float = 2.5,
+    contract_state: Literal["configured", "unverified"] = "configured",
 ):
     return provider_type()(
         api_key=api_key,
@@ -47,6 +49,7 @@ def provider_for(
         timeout=timeout,
         category_filter=category_filter,
         sort_filters=sort_filters,
+        contract_state=contract_state,
     )
 
 
@@ -176,13 +179,40 @@ def test_default_verified_live_contract_allows_nearby_search() -> None:
 
 def test_incomplete_sort_contract_is_unverified_without_http() -> None:
     transport = RecordingTransport([])
-    provider = provider_for(transport, sort_filters={"rating": "test_rating_sort"})
+    provider = provider_for(
+        transport,
+        sort_filters={"rating": "test_rating_sort"},
+        contract_state="unverified",
+    )
 
     result = provider.search(
         AttractionNearbySearchRequest(latitude=24.44, longitude=118.08)
     )
 
     assert provider.contract_state == "unverified"
+    assert result.status == "unavailable"
+    assert result.warning == "BAIDU_ATTRACTION_NOT_CONFIGURED"
+    assert transport.requests == []
+
+
+def test_custom_contract_requires_explicit_configured_state() -> None:
+    transport = RecordingTransport([])
+    provider = provider_type()(
+        api_key=REAL_TEST_AK,
+        client=httpx.Client(transport=transport),
+        category_filter="custom_category",
+        sort_filters={
+            "rating": "custom_rating",
+            "distance": "custom_distance",
+        },
+    )
+
+    try:
+        result = provider.search(AttractionSearchRequest(city="厦门"))
+    except StopIteration:
+        result = None
+
+    assert result is not None
     assert result.status == "unavailable"
     assert result.warning == "BAIDU_ATTRACTION_NOT_CONFIGURED"
     assert transport.requests == []

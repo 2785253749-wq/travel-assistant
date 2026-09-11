@@ -73,15 +73,11 @@ class BaiduAttractionProvider(AttractionProvider):
         if contract_state is not None:
             self.contract_state = contract_state
         else:
-            has_complete_custom_contract = (
-                self._category_filter
-                and all(key in self._sort_filters for key in ("rating", "distance"))
-            )
             uses_builtin_contract = category_filter is None and sort_filters is None
             self.contract_state = (
                 "configured"
                 if self._api_key
-                and (uses_builtin_contract or has_complete_custom_contract)
+                and uses_builtin_contract
                 else "unverified"
             )
         self._client = client or httpx.Client(
