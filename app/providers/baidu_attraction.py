@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from math import isfinite
 import re
-from typing import Mapping
+from typing import Literal, Mapping
 
 import httpx
 from pydantic import SecretStr, ValidationError
@@ -23,6 +23,10 @@ BAIDU_PLACE_REGION_URL = "https://api.map.baidu.com/place/v3/region"
 BAIDU_PLACE_AROUND_URL = "https://api.map.baidu.com/place/v3/around"
 BAIDU_ATTRACTION_PROVIDER_NAME = "baidu"
 _TAG_SEPARATOR = re.compile(r"[,，;；|/]")
+_DEFAULT_SORT_FILTERS: Mapping[AttractionSortBy, str] = {
+    "rating": "industry_type:life|sort_name:overall_rating|sort_rule:0",
+    "distance": "industry_type:life|sort_name:distance|sort_rule:1",
+}
 
 
 class BaiduAttractionProviderError(AppError):
@@ -51,24 +55,35 @@ class BaiduAttractionProvider(AttractionProvider):
         client: httpx.Client | None = None,
         category_filter: str | None = None,
         sort_filters: Mapping[AttractionSortBy, str] | None = None,
+        contract_state: Literal["configured", "unverified"] | None = None,
     ) -> None:
         if not isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be positive and finite")
         self._api_key = _secret_value(api_key)
         self._timeout = timeout
         self._category_filter = _configured_text(category_filter)
+        configured_sort_filters = (
+            _DEFAULT_SORT_FILTERS if sort_filters is None else sort_filters
+        )
         self._sort_filters = {
             key: value.strip()
-            for key, value in (sort_filters or {}).items()
+            for key, value in configured_sort_filters.items()
             if isinstance(value, str) and value.strip()
         }
-        self.contract_state = (
-            "configured"
-            if self._api_key
-            and self._category_filter
-            and all(key in self._sort_filters for key in ("rating", "distance"))
-            else "unverified"
-        )
+        if contract_state is not None:
+            self.contract_state = contract_state
+        else:
+            has_complete_custom_contract = (
+                self._category_filter
+                and all(key in self._sort_filters for key in ("rating", "distance"))
+            )
+            uses_builtin_contract = category_filter is None and sort_filters is None
+            self.contract_state = (
+                "configured"
+                if self._api_key
+                and (uses_builtin_contract or has_complete_custom_contract)
+                else "unverified"
+            )
         self._client = client or httpx.Client(
             timeout=timeout,
             trust_env=False,
@@ -125,7 +140,14 @@ class BaiduAttractionProvider(AttractionProvider):
     def _filter(self, sort_by: AttractionSortBy | None) -> str:
         if sort_by is None:
             return self._category_filter or ""
-        return f"{self._category_filter}|{self._sort_filters[sort_by]}"
+        sort_filter = self._sort_filters[sort_by]
+        if not self._category_filter:
+            return sort_filter
+        if sort_filter == self._category_filter or sort_filter.startswith(
+            f"{self._category_filter}|"
+        ):
+            return sort_filter
+        return f"{self._category_filter}|{sort_filter}"
 
     def _request_json(
         self,

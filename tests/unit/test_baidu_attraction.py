@@ -101,11 +101,12 @@ def test_blank_api_key_returns_not_configured_without_http() -> None:
     assert transport.requests == []
 
 
-def test_missing_filter_contract_is_unverified_without_http() -> None:
+def test_explicit_unverified_contract_returns_not_configured_without_http() -> None:
     transport = RecordingTransport([])
     provider = provider_type()(
         api_key=REAL_TEST_AK,
         client=httpx.Client(transport=transport),
+        contract_state="unverified",
     )
 
     result = provider.search(AttractionSearchRequest(city="厦门"))
@@ -116,6 +117,61 @@ def test_missing_filter_contract_is_unverified_without_http() -> None:
     assert result.status == "unavailable"
     assert result.warning == "BAIDU_ATTRACTION_NOT_CONFIGURED"
     assert transport.requests == []
+
+
+def test_missing_api_key_returns_not_configured_without_http() -> None:
+    transport = RecordingTransport([])
+    provider = provider_type()(
+        api_key=None,
+        client=httpx.Client(transport=transport),
+    )
+
+    result = provider.search(AttractionSearchRequest(city="厦门"))
+
+    assert result.status == "unavailable"
+    assert result.warning == "BAIDU_ATTRACTION_NOT_CONFIGURED"
+    assert transport.requests == []
+
+
+def test_default_verified_live_contract_allows_city_search() -> None:
+    transport = RecordingTransport([json_response(search_payload([]))])
+    provider = provider_type()(
+        api_key=REAL_TEST_AK,
+        client=httpx.Client(transport=transport),
+    )
+
+    result = provider.search(AttractionSearchRequest(city="厦门"))
+
+    assert len(transport.requests) == 1
+    assert result.status == "success"
+    assert result.warning is None
+    query = request_query(transport)
+    assert query["query"] == ["景点"]
+    assert query["region"] == ["厦门"]
+
+
+def test_default_verified_live_contract_allows_nearby_search() -> None:
+    transport = RecordingTransport([json_response(search_payload([], total=0))])
+    provider = provider_type()(
+        api_key=REAL_TEST_AK,
+        client=httpx.Client(transport=transport),
+    )
+
+    result = provider.search(
+        AttractionNearbySearchRequest(
+            latitude=24.4798,
+            longitude=118.0894,
+        )
+    )
+
+    assert len(transport.requests) == 1
+    assert result.status == "success"
+    assert result.warning is None
+    request = transport.requests[0]
+    assert urlparse(str(request.url)).path == "/place/v3/around"
+    query = request_query(transport)
+    assert query["query"] == ["景点"]
+    assert query["radius"] == ["2000"]
 
 
 def test_incomplete_sort_contract_is_unverified_without_http() -> None:
@@ -130,6 +186,46 @@ def test_incomplete_sort_contract_is_unverified_without_http() -> None:
     assert result.status == "unavailable"
     assert result.warning == "BAIDU_ATTRACTION_NOT_CONFIGURED"
     assert transport.requests == []
+
+
+def test_city_rating_request_uses_live_sort_filter_contract() -> None:
+    transport = RecordingTransport([json_response(search_payload([]))])
+    provider = provider_for(
+        transport,
+        category_filter="industry_type:life",
+        sort_filters=None,
+    )
+
+    provider.search(AttractionSearchRequest(city="厦门", sort_by="rating"))
+
+    actual_filter = (
+        request_query(transport)["filter"][0] if transport.requests else None
+    )
+    assert actual_filter == (
+        "industry_type:life|sort_name:overall_rating|sort_rule:0"
+    )
+
+
+def test_nearby_distance_request_uses_live_sort_filter_contract() -> None:
+    transport = RecordingTransport([json_response(search_payload([], total=0))])
+    provider = provider_for(
+        transport,
+        category_filter="industry_type:life",
+        sort_filters=None,
+    )
+
+    provider.search(
+        AttractionNearbySearchRequest(
+            latitude=24.44,
+            longitude=118.08,
+            sort_by="distance",
+        )
+    )
+
+    actual_filter = (
+        request_query(transport)["filter"][0] if transport.requests else None
+    )
+    assert actual_filter == "industry_type:life|sort_name:distance|sort_rule:1"
 
 
 def test_city_search_uses_region_endpoint_and_controlled_filter() -> None:
