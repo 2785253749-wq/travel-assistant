@@ -383,6 +383,7 @@ class RuleIntentClassifier:
             for term in (
                 "有什么特点",
                 "特点",
+                "资料",
                 "历史",
                 "怎么去",
                 "如何去",

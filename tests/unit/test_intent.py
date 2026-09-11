@@ -51,6 +51,15 @@ def test_rule_classifier_keeps_knowledge_questions_on_travel_knowledge_route(mes
     assert RuleIntentClassifier().classify(message, has_trip=False).intent == "travel_knowledge"
 
 
+def test_attraction_search_does_not_capture_attraction_knowledge_material_query() -> None:
+    assert (
+        RuleIntentClassifier()
+        .classify("去厦门想看海岛风景，有哪些景点资料？", has_trip=False)
+        .intent
+        == "travel_knowledge"
+    )
+
+
 def test_rule_classifier_does_not_steal_ambiguous_fun_query_for_attraction_search() -> None:
     assert (
         RuleIntentClassifier()
