@@ -13,6 +13,7 @@ from app.agent.graph import (
 )
 from app.agent.hotel_nearby_query import HotelNearbyQueryExtractor
 from app.agent.train_extraction import TrainQueryExtractor
+from app.application.attraction_search import AttractionSearchApplication
 from app.application.chat import ConfirmationStore, TravelChatApplication
 from app.application.hotel_nearby import HotelNearbyApplication
 from app.application.hotel_nearby_reply import HotelNearbyReplyRenderer
@@ -50,6 +51,7 @@ from app.infrastructure.weather import SupabaseWeatherQuotaRepository
 from app.providers.aggregate import ProviderEvidenceAggregator
 from app.providers.amap_district import AmapDistrictProvider
 from app.providers.amap_weather import AmapWeatherProvider
+from app.providers.baidu_attraction import BaiduAttractionProvider
 from app.providers.baidu_hotel import BaiduHotelProvider
 from app.providers.baidu_location import (
     BaiduLocationProvider,
@@ -59,6 +61,7 @@ from app.providers.juhe_train import JuheTrainProvider
 from app.trains.service import TrainService
 from app.hotels.service import HotelService
 from app.locations.service import LocationService
+from app.attractions.service import AttractionService
 from app.rag.embedding import EmbeddingHttpClient, EmbeddingQuota, JinaEmbedder
 from app.rag.repository import KnowledgeRepository
 from app.rag.service import (
@@ -730,6 +733,28 @@ def get_location_service() -> LocationService:
     return build_location_service()
 
 
+def build_attraction_search_application(
+    *, settings: Settings | None = None
+) -> AttractionSearchApplication:
+    settings = settings or get_settings()
+    api_key = (
+        settings.baidu_map_ak.get_secret_value()
+        if settings.baidu_map_ak is not None
+        else None
+    )
+    return AttractionSearchApplication(
+        location_service=build_location_service(settings=settings),
+        attraction_service=AttractionService(
+            provider=BaiduAttractionProvider(api_key=api_key),
+        ),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_attraction_search_application() -> AttractionSearchApplication:
+    return build_attraction_search_application()
+
+
 def build_hotel_service(*, settings: Settings | None = None) -> HotelService:
     settings = settings or get_settings()
     api_key = (
@@ -774,6 +799,11 @@ def build_chat_application(user: Any | None) -> TravelChatApplication:
     except BaiduLocationProviderError:
         hotel_nearby_application = None
 
+    try:
+        attraction_search_application = get_attraction_search_application()
+    except BaiduLocationProviderError:
+        attraction_search_application = None
+
     def agent_factory(initial_profile: TravelProfile) -> SafeTravelAgent:
         return SafeTravelAgent(
             classifier=RuleIntentClassifier(),
@@ -790,6 +820,7 @@ def build_chat_application(user: Any | None) -> TravelChatApplication:
             hotel_nearby_extractor=HotelNearbyQueryExtractor(),
             hotel_nearby_application=hotel_nearby_application,
             hotel_nearby_renderer=HotelNearbyReplyRenderer(),
+            attraction_search_application=attraction_search_application,
         )
 
     return TravelChatApplication(
