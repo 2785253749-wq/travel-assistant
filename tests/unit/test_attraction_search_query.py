@@ -41,6 +41,73 @@ def test_extracts_city_rating_query() -> None:
     assert result.invalid_fields == ()
 
 
+@pytest.mark.parametrize(
+    ("message", "city", "sort_by"),
+    [
+        ("福州有哪些景点", "福州", None),
+        ("杭州评分最高的景点", "杭州", "rating"),
+        ("北京有哪些景点", "北京", None),
+        ("成都评分最高的景点", "成都", "rating"),
+    ],
+)
+def test_extracts_cross_region_city_attraction_queries(
+    message: str,
+    city: str,
+    sort_by: str | None,
+) -> None:
+    extractor = _extractor_type()()
+
+    result = extractor.extract(message)
+
+    assert result.mode == "city"
+    assert result.city == city
+    assert result.location_query is None
+    assert result.sort_by == sort_by
+    assert result.missing_fields == ()
+
+
+@pytest.mark.parametrize(
+    ("message", "city", "location_query", "sort_by"),
+    [
+        ("北京大学附近有什么景点", "北京", "北京大学", None),
+        ("杭州西湖附近最近的景点", "杭州", "杭州西湖", "distance"),
+        (
+            "成都宽窄巷子附近评分最高的景点",
+            "成都",
+            "成都宽窄巷子",
+            "rating",
+        ),
+        ("福州三坊七巷附近最近的景点", "福州", "福州三坊七巷", "distance"),
+    ],
+)
+def test_extracts_cross_region_nearby_attraction_queries(
+    message: str,
+    city: str,
+    location_query: str,
+    sort_by: str | None,
+) -> None:
+    extractor = _extractor_type()()
+
+    result = extractor.extract(message)
+
+    assert result.mode == "nearby"
+    assert result.city == city
+    assert result.location_query == location_query
+    assert result.sort_by == sort_by
+    assert result.missing_fields == ()
+
+
+def test_extracts_cross_region_city_only_nearby_word() -> None:
+    extractor = _extractor_type()()
+
+    result = extractor.extract("北京附近有什么景点")
+
+    assert result.mode == "city"
+    assert result.city == "北京"
+    assert result.location_query is None
+    assert result.missing_fields == ()
+
+
 def test_extracts_nearby_attraction_query_with_full_poi_name() -> None:
     extractor = _extractor_type()()
 

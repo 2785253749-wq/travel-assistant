@@ -42,8 +42,14 @@ class AttractionSearchQueryExtractor:
     _RADIUS = re.compile(
         r"(?:(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>米|公里)|(?P<chinese>[一二三两])\s*公里)"
     )
-    _EXPLICIT_CITY = re.compile(r"^(?P<city>厦门|泉州)的(?P<location>.+)$")
-    _CITY_PREFIXES = ("厦门", "泉州")
+    _SUPPORTED_CITIES = ("厦门", "泉州", "福州", "杭州", "北京", "成都")
+    _CITY_PREFIX_PATTERN = "|".join(
+        re.escape(city) for city in _SUPPORTED_CITIES
+    )
+    _EXPLICIT_CITY = re.compile(
+        rf"^(?P<city>{_CITY_PREFIX_PATTERN})的(?P<location>.+)$"
+    )
+    _CITY_PREFIXES = _SUPPORTED_CITIES
     _CHINESE_KILOMETERS = {"一": 1000, "二": 2000, "两": 2000, "三": 3000}
     _MIN_RADIUS = 500
     _MAX_RADIUS = 20_000
