@@ -323,3 +323,67 @@ def test_chat_api_restores_hotel_sort_preference_after_location_selection(
     assert second.status_code == 200
     assert len(fake_hotel_nearby_application.requests) == 2
     assert fake_hotel_nearby_application.requests[1].sort_by == "rating"
+
+
+def test_hotel_nearby_missing_city_continues_after_city_clarification() -> None:
+    from app.agent.graph import RuleIntentClassifier, SafeTravelAgent
+    from app.agent.hotel_nearby_query import HotelNearbyQueryExtractor
+    from app.application.chat import ConfirmationStore, TravelChatApplication
+    from app.schemas import TravelProfile
+
+    class GenericTripExtractorMustNotRun:
+        def extract(self, *_args: object) -> object:
+            raise AssertionError("hotel pending clarification must not enter trip extraction")
+
+    class FakeHotelNearbyReplyRenderer:
+        def render(self, _result: HotelNearbyApplicationResult, *, radius: int) -> str:
+            return f"附近酒店结果（{radius}米）"
+
+    application = FakeHotelNearbyApplication(result=_application_result())
+
+    def agent_factory(_initial_profile: TravelProfile) -> SafeTravelAgent:
+        return SafeTravelAgent(
+            classifier=RuleIntentClassifier(),
+            extractor=GenericTripExtractorMustNotRun(),
+            hotel_nearby_extractor=HotelNearbyQueryExtractor(),
+            hotel_nearby_application=application,
+            hotel_nearby_renderer=FakeHotelNearbyReplyRenderer(),
+        )
+
+    chat = TravelChatApplication(
+        agent_factory=agent_factory,
+        usage_guard=object(),
+        confirmation_store=ConfirmationStore(),
+    )
+    thread_id = "hotel-nearby-missing-city-clarification"
+
+    first = chat.collect(
+        user_id=None,
+        subject="test-subject",
+        thread_id=thread_id,
+        trip_id=None,
+        message="西湖附近评分最高的酒店",
+    )
+
+    assert first.intent == "hotel_nearby"
+    assert first.error_code == "HOTEL_NEARBY_CITY_REQUIRED"
+    assert application.requests == []
+
+    second = chat.collect(
+        user_id=None,
+        subject="test-subject",
+        thread_id=thread_id,
+        trip_id=None,
+        message="杭州",
+    )
+
+    assert second.error_code is None
+    assert second.intent == "hotel_nearby"
+    assert application.requests == [
+        HotelNearbyApplicationRequest(
+            location_query="西湖",
+            city="杭州",
+            radius=2000,
+            sort_by="rating",
+        )
+    ]
