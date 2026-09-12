@@ -56,6 +56,21 @@ def test_rule_extractor_splits_chinese_routes_at_city_boundaries(message, origin
     assert profile.destination == destination
 
 
+def test_trip_profile_origin_does_not_include_return_prefix():
+    profile = RuleTravelExtractor(reference_date=date(2026, 9, 1)).extract(
+        "2人9.26出发9.30返回从福州到杭州3天预算9000",
+        TravelProfile(),
+    )
+
+    assert profile.origin == "福州"
+    assert profile.origin != "返回从福州"
+    assert profile.destination == "杭州"
+    assert profile.travelers == 2
+    assert profile.start_date == "2026-09-26"
+    assert profile.end_date == "2026-09-30"
+    assert profile.budget_cny == 9000
+
+
 @pytest.mark.parametrize(
     ("message", "start_date", "end_date", "travelers", "budget"),
     [

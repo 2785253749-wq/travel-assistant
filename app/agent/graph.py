@@ -621,7 +621,16 @@ class RuleTravelExtractor:
         ):
             for match in pattern.finditer(message):
                 masked[match.start():match.end()] = " " * (match.end() - match.start())
-        return "".join(masked)
+        route_message = "".join(masked)
+        explicit_route = re.search(
+            rf"{_ROUTE_SOURCE}\s*{_ROUTE_PLACE_LAZY}(?:出发)?\s*"
+            rf"{_ROUTE_SEPARATOR}\s*{_ROUTE_PLACE}",
+            route_message,
+            re.IGNORECASE,
+        )
+        if explicit_route is not None:
+            return route_message[explicit_route.start():]
+        return route_message
 
     def extract(self, message: str, profile: TravelProfile) -> TravelProfile:
         updates: dict[str, Any] = {}
