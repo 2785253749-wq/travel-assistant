@@ -151,6 +151,12 @@ class PendingAttractionNearbySelection:
         return " ".join(value.strip().split()).casefold()
 
     def resolve(self, message: str) -> ResolvedLocation | None:
+        stripped = message.strip()
+        if stripped.isdecimal():
+            selection = int(stripped)
+            if 1 <= selection <= len(self.candidates):
+                return self.candidates[selection - 1].location
+            return None
         normalized = self._normalize(message)
         matches = [
             candidate.location
