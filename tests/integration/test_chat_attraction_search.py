@@ -228,6 +228,62 @@ def test_duplicate_location_labels_map_to_confirmed_candidate_and_restore_rating
     assert rag.calls == []
 
 
+def test_numeric_selection_resolves_attraction_location_candidate() -> None:
+    application = FakeAttractionSearchApplication(error=_duplicate_kuanzhai_error())
+    rag = RecordingRagAnswerer()
+
+    def agent_factory(_initial_profile: TravelProfile) -> SafeTravelAgent:
+        return SafeTravelAgent(
+            classifier=RuleIntentClassifier(),
+            attraction_search_extractor=AttractionSearchQueryExtractor(),
+            attraction_search_application=application,
+            attraction_search_renderer=FakeAttractionReplyRenderer(),
+            rag_v2_knowledge=rag,
+        )
+
+    chat = TravelChatApplication(
+        agent_factory=agent_factory,
+        usage_guard=NoOpUsageGuard(),
+        confirmation_store=ConfirmationStore(),
+    )
+    thread_id = "attraction-numeric-location-selection"
+
+    first = chat.collect(
+        user_id=None,
+        subject="test-subject",
+        thread_id=thread_id,
+        trip_id=None,
+        message="成都宽窄巷子附近评分最高的景点",
+    )
+
+    assert first.error_code == "LOCATION_AMBIGUOUS"
+    assert "1. 宽窄巷子" in first.reply
+    assert "2. 宽窄巷子" in first.reply
+    assert "3. 宽窄巷子" in first.reply
+
+    application.error = None
+    second = chat.collect(
+        user_id=None,
+        subject="test-subject",
+        thread_id=thread_id,
+        trip_id=None,
+        message="1",
+    )
+
+    assert second.error_code is None
+    assert len(application.requests) == 2
+    request = application.requests[1]
+    assert request.city == "成都"
+    assert request.radius == 2000
+    assert request.sort_by == "rating"
+    confirmed = getattr(request, "resolved_location", None)
+    assert confirmed is not None
+    assert confirmed.id == "chengdu-kuanzhai-1"
+    assert confirmed.latitude == 30.6631
+    assert confirmed.longitude == 104.0550
+    assert rag.calls == []
+
+
 def test_attraction_pending_and_hotel_pending_are_stored_independently() -> None:
     import app.agent.graph as graph
 
