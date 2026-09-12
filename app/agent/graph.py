@@ -60,6 +60,7 @@ from app.schemas import (
 from app.rag.service import RagAnswer, UnavailableKnowledgeAnswerService
 from app.rag_v2.knowledge import V2KnowledgeAnswerer
 from app.trips.models import Trip
+from app.locations.models import ResolvedLocation
 from app.locations.service import LocationServiceError
 from app.trips.transport import (
     TRANSPORT_FALLBACK_WARNING,
@@ -132,18 +133,37 @@ class PendingHotelNearbySelection:
 
 
 @dataclass(frozen=True)
+class PendingAttractionLocationCandidate:
+    label: str
+    location: ResolvedLocation
+
+
+@dataclass(frozen=True)
 class PendingAttractionNearbySelection:
     city: str
     radius: int
-    candidate_names: tuple[str, ...]
+    candidate_names: tuple[str, ...] = ()
     sort_by: AttractionSortBy | None = None
+    candidates: tuple[PendingAttractionLocationCandidate, ...] = ()
+
+    @staticmethod
+    def _normalize(value: str) -> str:
+        return " ".join(value.strip().split()).casefold()
+
+    def resolve(self, message: str) -> ResolvedLocation | None:
+        normalized = self._normalize(message)
+        matches = [
+            candidate.location
+            for candidate in self.candidates
+            if self._normalize(candidate.label) == normalized
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     def matches(self, message: str) -> bool:
-        normalized = " ".join(message.strip().split()).casefold()
-        return normalized in {
-            " ".join(name.strip().split()).casefold()
-            for name in self.candidate_names
-        }
+        if self.candidates:
+            return self.resolve(message) is not None
+        normalized = self._normalize(message)
+        return normalized in {self._normalize(name) for name in self.candidate_names}
 
 
 @dataclass(frozen=True)
@@ -849,16 +869,32 @@ class SafeTravelAgent:
         pending: PendingAttractionNearbySelection,
         trip: Trip | None,
     ) -> ChatResult:
-        if not pending.matches(message):
+        selected_location = pending.resolve(message)
+        if pending.candidates:
+            if selected_location is None:
+                return self.collect(message, trip)
+        elif not pending.matches(message):
             return self.collect(message, trip)
+        resolved_location = None
+        if selected_location is not None:
+            normalized_message = pending._normalize(message)
+            normalized_name = pending._normalize(selected_location.name)
+            if normalized_message != normalized_name:
+                resolved_location = selected_location
         extracted = AttractionSearchQueryExtraction(
             mode="nearby",
-            location_query=message.strip(),
+            location_query=(
+                selected_location.name if selected_location is not None else message.strip()
+            ),
             city=pending.city,
             radius=pending.radius,
             sort_by=pending.sort_by,
         )
-        return self._attraction_search_result(message, extracted=extracted)
+        return self._attraction_search_result(
+            message,
+            extracted=extracted,
+            resolved_location=resolved_location,
+        )
 
     def collect(self, message: str, trip: Trip | None) -> ChatResult:
         """Normalize travel details and stop before providers or the planner."""
@@ -1409,6 +1445,7 @@ class SafeTravelAgent:
         message: str,
         *,
         extracted: AttractionSearchQueryExtraction | None = None,
+        resolved_location: ResolvedLocation | None = None,
     ) -> ChatResult:
         self._pending_attraction_nearby = None
         extracted = extracted or self._attraction_search_extractor.extract(message)
@@ -1467,6 +1504,7 @@ class SafeTravelAgent:
                     city=extracted.city,
                     radius=extracted.radius or 2000,
                     sort_by=extracted.sort_by,
+                    resolved_location=resolved_location,
                 )
                 application_result = self._attraction_search_application.search_nearby(
                     request
@@ -1481,19 +1519,40 @@ class SafeTravelAgent:
                     intent="attraction_search",
                 )
             if exc.code == "LOCATION_AMBIGUOUS":
-                names = [candidate.name for candidate in exc.candidates[:3]]
+                confirmed_candidates = tuple(
+                    ResolvedLocation.model_validate(candidate.model_dump())
+                    for candidate in exc.candidates[:3]
+                )
+                name_counts: dict[str, int] = {}
+                for candidate in confirmed_candidates:
+                    name_counts[candidate.name] = name_counts.get(candidate.name, 0) + 1
+                selections = tuple(
+                    PendingAttractionLocationCandidate(
+                        label=(
+                            f"{candidate.name}（{candidate.address}）"
+                            if name_counts[candidate.name] > 1 and candidate.address
+                            else candidate.name
+                        ),
+                        location=candidate,
+                    )
+                    for candidate in confirmed_candidates
+                )
                 if extracted.mode == "nearby":
                     self._pending_attraction_nearby = (
                         PendingAttractionNearbySelection(
                             city=extracted.city,
                             radius=extracted.radius or 2000,
-                            candidate_names=tuple(names),
+                            candidate_names=tuple(
+                                selection.label for selection in selections
+                            ),
                             sort_by=extracted.sort_by,
+                            candidates=selections,
                         )
                     )
                 lines = ["找到多个地点，请选择一个："]
                 lines.extend(
-                    f"{index}. {name}" for index, name in enumerate(names, start=1)
+                    f"{index}. {selection.label}"
+                    for index, selection in enumerate(selections, start=1)
                 )
                 return ChatResult(
                     "\n".join(lines),

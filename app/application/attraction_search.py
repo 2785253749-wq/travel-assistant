@@ -11,7 +11,7 @@ from app.attractions.models import (
     AttractionSortBy,
 )
 from app.attractions.service import AttractionService
-from app.locations.models import LocationQuery
+from app.locations.models import LocationQuery, ResolvedLocation
 from app.locations.service import LocationService
 
 
@@ -31,6 +31,7 @@ class AttractionNearbyApplicationRequest:
     sort_by: AttractionSortBy | None = None
     page: int = 1
     page_size: int = 10
+    resolved_location: ResolvedLocation | None = None
 
 
 @dataclass(frozen=True)
@@ -79,9 +80,11 @@ class AttractionSearchApplication:
         self,
         request: AttractionNearbyApplicationRequest,
     ) -> AttractionSearchApplicationResult:
-        location = self._location_service.resolve(
-            LocationQuery(query=request.location_query, city=request.city)
-        )
+        location = request.resolved_location
+        if location is None:
+            location = self._location_service.resolve(
+                LocationQuery(query=request.location_query, city=request.city)
+            )
         attractions = self._attraction_service.search_nearby(
             AttractionNearbySearchRequest(
                 latitude=location.latitude,

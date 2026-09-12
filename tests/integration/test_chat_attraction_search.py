@@ -70,6 +70,47 @@ def _ambiguous_error() -> LocationServiceError:
     )
 
 
+def _duplicate_kuanzhai_error() -> LocationServiceError:
+    return LocationServiceError(
+        "LOCATION_AMBIGUOUS",
+        candidates=[
+            LocationCandidate(
+                id="chengdu-kuanzhai-1",
+                name="宽窄巷子",
+                latitude=30.6631,
+                longitude=104.0550,
+                address="四川省成都市青羊区长顺上街127号",
+                city="成都",
+                district="青羊区",
+                province="四川省",
+                provider="fake-location",
+            ),
+            LocationCandidate(
+                id="chengdu-kuanzhai-2",
+                name="宽窄巷子",
+                latitude=30.6632,
+                longitude=104.0551,
+                address="四川省成都市青羊区窄巷子",
+                city="成都",
+                district="青羊区",
+                province="四川省",
+                provider="fake-location",
+            ),
+            LocationCandidate(
+                id="chengdu-kuanzhai-3",
+                name="宽窄巷子",
+                latitude=30.6633,
+                longitude=104.0552,
+                address="四川省成都市青羊区宽巷子",
+                city="成都",
+                district="青羊区",
+                province="四川省",
+                provider="fake-location",
+            ),
+        ],
+    )
+
+
 def test_attraction_ambiguous_selection_preserves_rating_across_collect_requests() -> None:
     application = FakeAttractionSearchApplication(error=_ambiguous_error())
     rag = RecordingRagAnswerer()
@@ -124,6 +165,67 @@ def test_attraction_ambiguous_selection_preserves_rating_across_collect_requests
         )
         is None
     )
+
+
+def test_duplicate_location_labels_map_to_confirmed_candidate_and_restore_rating() -> None:
+    application = FakeAttractionSearchApplication(error=_duplicate_kuanzhai_error())
+    rag = RecordingRagAnswerer()
+
+    def agent_factory(_initial_profile: TravelProfile) -> SafeTravelAgent:
+        return SafeTravelAgent(
+            classifier=RuleIntentClassifier(),
+            attraction_search_extractor=AttractionSearchQueryExtractor(),
+            attraction_search_application=application,
+            attraction_search_renderer=FakeAttractionReplyRenderer(),
+            rag_v2_knowledge=rag,
+        )
+
+    chat = TravelChatApplication(
+        agent_factory=agent_factory,
+        usage_guard=NoOpUsageGuard(),
+        confirmation_store=ConfirmationStore(),
+    )
+    thread_id = "attraction-duplicate-location-rating"
+    labels = (
+        "宽窄巷子（四川省成都市青羊区长顺上街127号）",
+        "宽窄巷子（四川省成都市青羊区窄巷子）",
+        "宽窄巷子（四川省成都市青羊区宽巷子）",
+    )
+
+    first = chat.collect(
+        user_id=None,
+        subject="test-subject",
+        thread_id=thread_id,
+        trip_id=None,
+        message="成都宽窄巷子附近评分最高的景点",
+    )
+
+    assert first.error_code == "LOCATION_AMBIGUOUS"
+    for label in labels:
+        assert label in first.reply
+    assert "1. 宽窄巷子\n" not in first.reply
+    assert "2. 宽窄巷子\n" not in first.reply
+    assert "3. 宽窄巷子\n" not in first.reply
+
+    application.error = None
+    second = chat.collect(
+        user_id=None,
+        subject="test-subject",
+        thread_id=thread_id,
+        trip_id=None,
+        message=labels[0],
+    )
+
+    assert second.error_code is None
+    assert len(application.requests) == 2
+    request = application.requests[1]
+    assert request.city == "成都"
+    assert request.radius == 2000
+    assert request.sort_by == "rating"
+    confirmed = getattr(request, "resolved_location", None)
+    assert confirmed is not None
+    assert confirmed.id == "chengdu-kuanzhai-1"
+    assert rag.calls == []
 
 
 def test_attraction_pending_and_hotel_pending_are_stored_independently() -> None:

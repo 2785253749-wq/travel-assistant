@@ -195,6 +195,47 @@ def test_search_nearby_resolves_location_then_forwards_coordinates() -> None:
     assert application_result.radius == 3000
 
 
+def test_search_nearby_with_confirmed_location_skips_location_resolution() -> None:
+    _, NearbyRequest, Application = application_types()
+    confirmed = ResolvedLocation(
+        id="chengdu-kuanzhai-1",
+        name="宽窄巷子",
+        latitude=30.6631,
+        longitude=104.0550,
+        address="四川省成都市青羊区长顺上街127号",
+        city="成都",
+        district="青羊区",
+        province="四川省",
+        provider="fake-location",
+    )
+    location_service = FakeLocationService(resolved=confirmed)
+    attraction_service = FakeAttractionService(attraction_result())
+    application = Application(
+        location_service=location_service,
+        attraction_service=attraction_service,
+    )
+
+    application.search_nearby(
+        NearbyRequest(
+            location_query="宽窄巷子",
+            city="成都",
+            radius=2000,
+            sort_by="rating",
+            resolved_location=confirmed,
+        )
+    )
+
+    assert location_service.queries == []
+    assert attraction_service.nearby_requests == [
+        AttractionNearbySearchRequest(
+            latitude=30.6631,
+            longitude=104.0550,
+            radius=2000,
+            sort_by="rating",
+        )
+    ]
+
+
 def test_search_nearby_does_not_swap_latitude_and_longitude() -> None:
     _, NearbyRequest, Application = application_types()
     attraction_service = FakeAttractionService(attraction_result())
