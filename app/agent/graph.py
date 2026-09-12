@@ -119,12 +119,16 @@ class ChatResult:
 
 @dataclass(frozen=True)
 class PendingHotelNearbySelection:
-    city: str
+    city: str | None
     radius: int
-    candidate_names: tuple[str, ...]
+    candidate_names: tuple[str, ...] = ()
     sort_by: HotelSortBy | None = None
+    location_query: str | None = None
+    invalid_fields: tuple[str, ...] = ()
 
     def matches(self, message: str) -> bool:
+        if self.city is None and self.location_query is not None:
+            return bool(message.strip())
         normalized = " ".join(message.strip().split()).casefold()
         return normalized in {
             " ".join(name.strip().split()).casefold()
@@ -861,12 +865,22 @@ class SafeTravelAgent:
     ) -> ChatResult:
         if not pending.matches(message):
             return self.collect(message, trip)
-        extracted = HotelNearbyQueryExtraction(
-            location_query=message.strip(),
-            city=pending.city,
-            radius=pending.radius,
-            sort_by=pending.sort_by,
-        )
+        if pending.city is None and pending.location_query is not None:
+            extracted = HotelNearbyQueryExtraction(
+                location_query=pending.location_query,
+                city=message.strip(),
+                radius=pending.radius,
+                sort_by=pending.sort_by,
+                invalid_fields=pending.invalid_fields,
+            )
+        else:
+            extracted = HotelNearbyQueryExtraction(
+                location_query=message.strip(),
+                city=pending.city,
+                radius=pending.radius,
+                sort_by=pending.sort_by,
+                invalid_fields=pending.invalid_fields,
+            )
         return self._hotel_nearby_result(message, extracted=extracted)
 
     def collect_attraction_nearby_selection(
@@ -1374,6 +1388,14 @@ class SafeTravelAgent:
                 intent="hotel_nearby",
             )
         if extracted.city in (None, ""):
+            self._pending_hotel_nearby = PendingHotelNearbySelection(
+                city=None,
+                radius=extracted.radius or 2000,
+                candidate_names=(),
+                sort_by=extracted.sort_by,
+                location_query=extracted.location_query,
+                invalid_fields=extracted.invalid_fields,
+            )
             return ChatResult(
                 "请补充地点所在城市，我才能查询附近酒店。",
                 "collecting",
