@@ -701,6 +701,40 @@ test("a direct trip deep link loads the private trip detail", async () => {
   assert.match(harness.elements.get("trip-detail-page").textContent, /成都三日游/);
 });
 
+test("primary Explore navigation from trip detail updates the route", async () => {
+  const savedTrip = { id: "trip-1", title: "成都三日游", profile: {}, itinerary: { title: "成都三日游", days: [] } };
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ pathname: "/trips/trip-1", auth, fetch: async (call) => {
+    if (call.url === "/api/trips/trip-1") return jsonResponse(200, savedTrip);
+    return jsonResponse(200, {});
+  } });
+  await settle();
+
+  await harness.elements.get("explore-nav-button").dispatch("click");
+
+  assert.equal(harness.elements.get("explore-page").hidden, false);
+  assert.equal(harness.elements.get("trip-detail-page").hidden, true);
+  assert.equal(harness.window.location.pathname, "/");
+});
+
+test("primary Trips navigation from trip detail leaves the detail route", async () => {
+  const savedTrip = { id: "trip-1", title: "成都三日游", profile: {}, itinerary: { title: "成都三日游", days: [] } };
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ pathname: "/trips/trip-1", auth, fetch: async (call) => {
+    if (call.url === "/api/trips/trip-1") return jsonResponse(200, savedTrip);
+    if (call.url === "/api/trips") return jsonResponse(200, [savedTrip]);
+    return jsonResponse(200, {});
+  } });
+  await settle();
+
+  await harness.elements.get("trips-nav-button").dispatch("click");
+
+  assert.equal(harness.elements.get("trips-page").hidden, false);
+  assert.equal(harness.elements.get("trip-detail-page").hidden, true);
+  assert.equal(harness.window.location.pathname, "/");
+  assert.equal(harness.historyCalls.at(-1)?.state?.view, "trips");
+});
+
 test("browser back from a history trip returns to Trips", async () => {
   const savedTrip = { id: "trip-1", title: "成都三日游", profile: {}, itinerary: { title: "成都三日游", days: [] } };
   const auth = new FakeSupabaseAuth({ initialSession: SESSION });

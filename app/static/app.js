@@ -1786,6 +1786,13 @@
     await switchView(route.view, { focusHeading });
   }
 
+  async function navigatePrimaryView(view) {
+    if (view !== "explore" && view !== "trips") return;
+    if (state.activeView === "trip-detail") clearTripDetailState();
+    window.history.pushState({ view }, "", "/");
+    await switchView(view, { focusHeading: true });
+  }
+
   async function initializeApp() {
     if (await showPublicShare()) return;
     await initializeNormalApp();
@@ -1802,7 +1809,7 @@
     if (publicShareActive || /^#share=([^&]+)$/.test(window.location.hash)) exitPublicShareMode();
     await initializeNormalApp({ focusHeading: true });
   });
-  for (const button of elements.navigation) button.addEventListener("click", () => switchView(button.dataset.view, { focusHeading: true }));
+  for (const button of elements.navigation) button.addEventListener("click", () => navigatePrimaryView(button.dataset.view));
   window.addEventListener("popstate", async (event) => {
     if (publicShareActive) return;
     const route = routeFromLocation(event.state);
