@@ -701,6 +701,41 @@ test("a direct trip deep link loads the private trip detail", async () => {
   assert.match(harness.elements.get("trip-detail-page").textContent, /成都三日游/);
 });
 
+test("persisted initial session does not report an account switch", async () => {
+  const auth = new FakeSupabaseAuth({ initialSession: CURRENT_SESSION });
+  const harness = createHarness({ auth, fetch: async () => jsonResponse(200, {}) });
+  await settle();
+
+  assert.equal(harness.elements.get("account-summary").hidden, false);
+  assert.doesNotMatch(harness.elements.get("status-message").textContent, /已切换登录会话，请重新确认行程资料。/);
+});
+
+test("persisted session deep link does not report an account switch", async () => {
+  const savedTrip = { id: "trip-1", title: "成都三日游", profile: {}, itinerary: { title: "成都三日游", days: [] } };
+  const auth = new FakeSupabaseAuth({ initialSession: CURRENT_SESSION });
+  const harness = createHarness({ pathname: "/trips/trip-1", auth, fetch: async (call) => {
+    if (call.url === "/api/trips/trip-1") return jsonResponse(200, savedTrip);
+    return jsonResponse(200, {});
+  } });
+  await settle();
+
+  assert.equal(harness.elements.get("trip-detail-page").hidden, false);
+  assert.match(harness.elements.get("trip-detail-page").textContent, /成都三日游/);
+  assert.doesNotMatch(harness.elements.get("status-message").textContent, /已切换登录会话，请重新确认行程资料。/);
+});
+
+test("anonymous to authenticated sign-in still reports session change", async () => {
+  const auth = new FakeSupabaseAuth();
+  const harness = createHarness({ auth, fetch: async () => jsonResponse(200, {}) });
+  await settle();
+
+  auth.session = CURRENT_SESSION;
+  auth.emit("SIGNED_IN", CURRENT_SESSION);
+  await settle();
+
+  assert.match(harness.elements.get("status-message").textContent, /已切换登录会话，请重新确认行程资料。/);
+});
+
 test("primary Explore navigation from trip detail updates the route", async () => {
   const savedTrip = { id: "trip-1", title: "成都三日游", profile: {}, itinerary: { title: "成都三日游", days: [] } };
   const auth = new FakeSupabaseAuth({ initialSession: SESSION });
