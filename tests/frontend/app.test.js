@@ -648,12 +648,12 @@ test("assistant sends on Enter and keeps Shift+Enter for a newline", async () =>
   assert.equal(input.value, "保留换行");
 });
 
-test("opening a saved trip moves its generated content into the Explore view", async () => {
-  const savedTrip = { id: "trip-open", title: "厦门周末", profile: {}, itinerary: { title: "厦门周末", days: [] } };
+test("opening a history trip navigates to a dedicated detail view instead of Explore", async () => {
+  const savedTrip = { id: "trip-1", title: "成都历史行程", profile: {}, itinerary: { title: "成都历史行程", days: [] } };
   const auth = new FakeSupabaseAuth({ initialSession: SESSION });
   const harness = createHarness({ auth, fetch: async (call) => {
     if (call.url === "/api/trips") return jsonResponse(200, [savedTrip]);
-    if (call.url === "/api/trips/trip-open") return jsonResponse(200, savedTrip);
+    if (call.url === "/api/trips/trip-1") return jsonResponse(200, savedTrip);
     return jsonResponse(200, {});
   } });
   await settle();
@@ -661,11 +661,91 @@ test("opening a saved trip moves its generated content into the Explore view", a
 
   await findByText(harness.elements.get("trip-history-list"), "打开").dispatch("click");
 
+  assert.equal(harness.elements.get("explore-page").hidden, true);
   assert.equal(harness.elements.get("trips-page").hidden, true);
-  assert.equal(harness.elements.get("explore-page").hidden, false);
-  assert.equal(harness.elements.get("explore-output").hidden, false);
-  assert.equal(harness.elements.get("trip-view").hidden, false);
-  assert.equal(harness.elements.get("explore-title").focused, true);
+  const detailPage = harness.elements.get("trip-detail-page");
+  assert.ok(detailPage, "history trips need a dedicated detail page");
+  assert.equal(detailPage.hidden, false);
+  assert.match(detailPage.textContent, /成都历史行程/);
+});
+
+test("opening a history trip records its dedicated trip URL", async () => {
+  const savedTrip = { id: "trip-1", title: "成都历史行程", profile: {}, itinerary: { title: "成都历史行程", days: [] } };
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url === "/api/trips") return jsonResponse(200, [savedTrip]);
+    if (call.url === "/api/trips/trip-1") return jsonResponse(200, savedTrip);
+    return jsonResponse(200, {});
+  } });
+  await settle();
+  await harness.elements.get("trips-nav-button").dispatch("click");
+
+  await findByText(harness.elements.get("trip-history-list"), "打开").dispatch("click");
+
+  assert.equal(harness.window.location.pathname, "/trips/trip-1");
+});
+
+test("a direct trip deep link loads the private trip detail", async () => {
+  const savedTrip = { id: "trip-1", title: "成都三日游", profile: {}, itinerary: { title: "成都三日游", days: [] } };
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ pathname: "/trips/trip-1", auth, fetch: async (call) => {
+    if (call.url === "/api/trips/trip-1") return jsonResponse(200, savedTrip);
+    return jsonResponse(200, {});
+  } });
+  await settle();
+
+  assert.ok(harness.fetchCalls.some((call) => call.url === "/api/trips/trip-1"));
+  assert.equal(harness.elements.get("trip-detail-page").hidden, false);
+  assert.equal(harness.elements.get("explore-page").hidden, true);
+  assert.equal(harness.elements.get("trips-page").hidden, true);
+  assert.match(harness.elements.get("trip-detail-page").textContent, /成都三日游/);
+});
+
+test("browser back from a history trip returns to Trips", async () => {
+  const savedTrip = { id: "trip-1", title: "成都三日游", profile: {}, itinerary: { title: "成都三日游", days: [] } };
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url === "/api/trips") return jsonResponse(200, [savedTrip]);
+    if (call.url === "/api/trips/trip-1") return jsonResponse(200, savedTrip);
+    return jsonResponse(200, {});
+  } });
+  await settle();
+  await harness.elements.get("trips-nav-button").dispatch("click");
+  await findByText(harness.elements.get("trip-history-list"), "打开").dispatch("click");
+
+  await harness.window.history.back();
+
+  assert.equal(harness.window.location.pathname, "/");
+  assert.equal(harness.elements.get("trips-page").hidden, false);
+  assert.equal(harness.elements.get("trip-detail-page").hidden, true);
+  assert.equal(harness.elements.get("explore-page").hidden, true);
+});
+
+test("an invalid trip route cannot keep showing stale trip detail", async () => {
+  const savedTrip = { id: "trip-1", title: "成都三日游", profile: {}, itinerary: { title: "成都三日游", days: [] } };
+  const auth = new FakeSupabaseAuth({ initialSession: SESSION });
+  const harness = createHarness({ auth, fetch: async (call) => {
+    if (call.url === "/api/trips") return jsonResponse(200, [savedTrip]);
+    if (call.url === "/api/trips/trip-1") return jsonResponse(200, savedTrip);
+    if (call.url === "/api/trips/missing-trip") return jsonResponse(404, { detail: "TRIP_NOT_FOUND" });
+    return jsonResponse(200, {});
+  } });
+  await settle();
+  await harness.elements.get("trips-nav-button").dispatch("click");
+  await findByText(harness.elements.get("trip-history-list"), "打开").dispatch("click");
+
+  harness.window.history.pushState(null, "", "/trips/missing-trip");
+  await harness.window.dispatch("popstate");
+  await settle();
+
+  assert.deepEqual(
+    {
+      missingTripRequested: harness.fetchCalls.some((call) => call.url === "/api/trips/missing-trip"),
+      staleDetailVisible: !harness.elements.get("trip-detail-page").hidden
+        && /成都三日游/.test(harness.elements.get("trip-detail-page").textContent),
+    },
+    { missingTripRequested: true, staleDetailVisible: false },
+  );
 });
 
 test("a saved-trip response that succeeds after sign-out cannot restore private content", async () => {

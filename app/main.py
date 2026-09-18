@@ -89,6 +89,11 @@ async def unexpected_error(request: Request, error: Exception) -> JSONResponse:
 @app.get("/", include_in_schema=False)
 def home(): return FileResponse(BASE / "static" / "index.html")
 
+@app.get("/trips/{trip_id}", include_in_schema=False)
+def trip_detail_page(trip_id: str):
+    del trip_id
+    return FileResponse(BASE / "static" / "index.html")
+
 @app.get("/auth", include_in_schema=False)
 def auth_page(): return FileResponse(BASE / "static" / "auth.html")
 

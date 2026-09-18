@@ -2,7 +2,7 @@
   "use strict";
 
   const STATES = new Set(["signed_out", "collecting", "confirming", "planning", "planned", "error"]);
-  const VIEWS = new Set(["explore", "trips"]);
+  const VIEWS = new Set(["explore", "trips", "trip-detail"]);
   const PROFILE_LABELS = {
     origin: "出发地", destination: "目的地", start_date: "出发日期", end_date: "返回日期",
     travelers: "出行人数", budget_cny: "总预算（元）", preferences: "偏好", constraints: "限制",
@@ -47,16 +47,17 @@
     providerUpdatedAt: $("provider-updated-at"), chatPanel: $("chat-panel"), chatForm: $("chat-form"), message: $("message-input"),
     send: $("send-button"), progress: $("request-progress"), messages: $("chat-messages"),
     assistantPanel: $("assistant-panel"), assistantToggle: $("assistant-toggle"), assistantToggleLabel: $("assistant-toggle-label"), assistantReset: $("assistant-reset-position"), assistantMaximize: $("assistant-maximize"),
-    explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"),
+    explorePage: $("explore-page"), exploreOutput: $("explore-output"), tripsPage: $("trips-page"), tripDetailPage: $("trip-detail-page"),
     navigation: [$("explore-nav-button"), $("trips-nav-button")],
-    viewHeadings: { explore: $("explore-title"), trips: $("trips-page-title") },
+    viewHeadings: { explore: $("explore-title"), trips: $("trips-page-title"), "trip-detail": $("trip-detail-title") },
     exploreMap: $("explore-map"), exploreStatus: $("explore-status"),
     mapBreadcrumb: $("map-breadcrumb"), mapTitle: $("map-title"), exploreShortcuts: $("explore-shortcuts"),
     recommendationsTitle: $("recommendations-title"), recommendationCount: $("recommendation-count"),
     recommendationGrid: $("recommendation-grid"), explorePlaceCard: $("explore-place-card"),
     profileCard: $("profile-confirmation"), profileFields: $("profile-fields"), confirm: $("confirm-profile-button"),
     edit: $("edit-profile-button"), tripView: $("trip-view"), tripTitle: $("trip-title"),
-    tripContent: $("trip-content"), tripActions: $("trip-actions"), save: $("save-trip-button"),
+    tripContent: $("trip-content"), tripActions: $("trip-actions"), tripDetailContent: $("trip-detail-content"),
+    tripDetailTitle: $("trip-detail-title"), save: $("save-trip-button"),
     share: $("share-trip-button"), history: $("trip-history"), historyList: $("trip-history-list"),
     tripsAuthPrompt: $("trips-auth-prompt"), tripsLogin: $("trips-login-button"),
     shareDialog: $("share-dialog"), shareLink: $("share-link"), shareExpiry: $("share-expiry"),
@@ -145,7 +146,7 @@
     if (!VIEWS.has(view)) return;
     if (state.activeView !== view) invalidateTripsLoads();
     state.activeView = view;
-    for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage]]) {
+    for (const [name, element] of [["explore", elements.explorePage], ["trips", elements.tripsPage], ["trip-detail", elements.tripDetailPage]]) {
       element.hidden = name !== view;
     }
     for (const button of elements.navigation) {
@@ -158,6 +159,19 @@
     elements.providerNotice.hidden = view !== "explore" || !state.providerNoticeActive;
     if (focusHeading) elements.viewHeadings[view].focus();
     if (view === "trips") await renderTripsPage();
+  }
+
+  function routeFromLocation(historyState = null) {
+    const pathname = window.location.pathname || "/";
+    if (pathname === "/" && historyState && historyState.view === "trips") return { view: "trips" };
+    const match = /^\/trips\/([^/]+)$/.exec(pathname);
+    if (!match) return { view: "explore" };
+    try {
+      const tripId = decodeURIComponent(match[1]);
+      return tripId ? { view: "trip-detail", tripId } : { view: "explore" };
+    } catch (_) {
+      return { view: "explore" };
+    }
   }
 
   function setStatus(message, isError = false) {
@@ -786,10 +800,10 @@
       && Boolean(allowedExternalUrl(citation.source_url || citation.source));
   }
 
-  function renderStructuredItinerary(itinerary, tripTransport = null) {
+  function renderStructuredItinerary(itinerary, tripTransport = null, titleElement = elements.tripTitle) {
     const container = document.createElement("div");
     const title = itinerary && itinerary.title ? itinerary.title : "行程建议";
-    elements.tripTitle.textContent = String(title);
+    titleElement.textContent = String(title);
     const transport = renderTripTransport(tripTransport);
     if (transport) container.append(transport);
     if (itinerary && itinerary.budget) {
@@ -912,8 +926,8 @@
     parent.append(section);
   }
 
-  function renderReply(reply) {
-    elements.tripTitle.textContent = "行程建议";
+  function renderReply(reply, titleElement = elements.tripTitle) {
+    titleElement.textContent = "行程建议";
     const block = document.createElement("p");
     block.className = "message assistant";
     block.textContent = String(reply || "暂未返回行程内容。");
@@ -1167,12 +1181,59 @@
     const itinerary = trip && trip.itinerary && typeof trip.itinerary === "object" ? trip.itinerary : asItinerary(trip && trip.reply);
     const tripTransport = options.transport || (trip && trip.trip_transport) || null;
     elements.tripContent.append(itinerary ? renderStructuredItinerary(itinerary, tripTransport) : renderReply(trip && trip.reply));
+    state.detailTrip = null;
     state.currentTrip = options.public ? null : trip;
     elements.tripActions.hidden = Boolean(options.public || !state.session);
     elements.save.hidden = Boolean(options.public || (trip && trip.id));
     elements.tripView.hidden = false;
     elements.profileCard.hidden = true;
     setState("planned");
+  }
+
+  function renderTripDetail(trip) {
+    clearChildren(elements.tripDetailContent);
+    const itinerary = trip && trip.itinerary && typeof trip.itinerary === "object" ? trip.itinerary : asItinerary(trip && trip.reply);
+    const tripTransport = (trip && trip.trip_transport) || null;
+    elements.tripDetailContent.append(itinerary
+      ? renderStructuredItinerary(itinerary, tripTransport, elements.tripDetailTitle)
+      : renderReply(trip && trip.reply, elements.tripDetailTitle));
+    state.detailTrip = trip;
+    state.currentTrip = trip;
+    setState("planned");
+  }
+
+  function clearTripDetailState() {
+    const detailTripId = state.detailTrip && state.detailTrip.id;
+    if (detailTripId && state.currentTrip && state.currentTrip.id === detailTripId) state.currentTrip = null;
+    state.detailTrip = null;
+    clearChildren(elements.tripDetailContent);
+    elements.tripDetailTitle.textContent = "";
+    elements.tripDetailPage.hidden = true;
+  }
+
+  async function loadTripDetail(tripId, { historyMode = "none" } = {}) {
+    if (!tripId || state.busy) return false;
+    clearTripDetailState();
+    if (!requireAuthentication()) return false;
+    setBusy(true, "正在打开行程…");
+    try {
+      const fullTrip = await requestJson(`/api/trips/${encodeURIComponent(tripId)}`);
+      renderTripDetail(fullTrip);
+      await switchView("trip-detail", { focusHeading: true });
+      if (historyMode === "push") {
+        if (state.activeView === "trip-detail" && window.location.pathname === "/") {
+          window.history.replaceState({ view: "trips" }, "", window.location.href);
+        }
+        window.history.pushState({ view: "trip-detail", tripId }, "", `/trips/${encodeURIComponent(tripId)}`);
+      }
+      return true;
+    } catch (error) {
+      clearTripDetailState();
+      showError(error);
+      return false;
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function sendMessage(event) {
@@ -1327,6 +1388,7 @@
     clearChildren(elements.profileFields);
     clearChildren(elements.tripContent);
     elements.tripTitle.textContent = "";
+    clearTripDetailState();
     elements.providerUpdatedAt.textContent = "";
     clearChildren(elements.providerNotice);
     elements.shareLink.value = "";
@@ -1535,11 +1597,7 @@
   async function historyOperation(operation, trip) {
     if (!requireAuthentication() || state.busy) return;
     if (operation === "open") {
-      setBusy(true, "正在打开行程…");
-      try {
-        renderTrip(await requestJson(`/api/trips/${encodeURIComponent(trip.id)}`));
-        await switchView("explore", { focusHeading: true });
-      } catch (error) { showError(error); } finally { setBusy(false); }
+      await loadTripDetail(trip.id, { historyMode: "push" });
       return;
     }
     if (operation === "rename") {
@@ -1719,7 +1777,13 @@
     setPublicShareMode(false);
     initializeExploreOnce();
     await initializeAuthOnce();
-    await switchView("explore", { focusHeading });
+    const route = routeFromLocation();
+    if (route.view === "trip-detail") {
+      await loadTripDetail(route.tripId);
+      return;
+    }
+    clearTripDetailState();
+    await switchView(route.view, { focusHeading });
   }
 
   async function initializeApp() {
@@ -1739,6 +1803,16 @@
     await initializeNormalApp({ focusHeading: true });
   });
   for (const button of elements.navigation) button.addEventListener("click", () => switchView(button.dataset.view, { focusHeading: true }));
+  window.addEventListener("popstate", async (event) => {
+    if (publicShareActive) return;
+    const route = routeFromLocation(event.state);
+    if (route.view === "trip-detail") {
+      await loadTripDetail(route.tripId);
+      return;
+    }
+    clearTripDetailState();
+    await switchView(route.view, { focusHeading: true });
+  });
   elements.assistantToggle.addEventListener("click", () => {
     if (state.busy) return;
     const open = elements.assistantPanel.hidden;
