@@ -144,6 +144,7 @@ function buildDocument(html) {
   const parents = {
     "chat-messages": "chat-panel", "chat-form": "chat-panel", "trip-history-list": "trip-history", "trip-history": "trips-page",
     "profile-confirmation": "explore-output", "trip-view": "explore-output", "profile-fields": "profile-confirmation",
+    "trip-detail-title": "trip-detail-page", "trip-detail-content": "trip-detail-page",
     "trip-content": "trip-view", "trip-actions": "trip-view",
     "share-link": "share-dialog", "share-expiry": "share-dialog", "rename-input": "rename-dialog",
   };
@@ -212,8 +213,11 @@ function createHarness(options = {}) {
   const fetchCalls = [];
   const fetchImpl = options.fetch || (async () => jsonResponse(200, {}));
   let uuid = 0;
-  const location = new URL(`https://travel.example/${options.hash || ""}`);
+  const location = new URL(options.pathname || "/", "https://travel.example");
+  if (options.hash) location.hash = options.hash;
   const historyCalls = [];
+  const historyEntries = [{ state: null, title: "", url: location.href }];
+  let historyIndex = 0;
   const window = {
     document,
     location,
@@ -222,6 +226,22 @@ function createHarness(options = {}) {
         const next = new URL(String(url), location.href);
         historyCalls.push({ state, title, url: next.href });
         location.href = next.href;
+        historyEntries[historyIndex] = { state, title, url: next.href };
+      },
+      pushState(state, title, url) {
+        const next = new URL(String(url), location.href);
+        historyCalls.push({ state, title, url: next.href });
+        location.href = next.href;
+        historyEntries.splice(historyIndex + 1);
+        historyEntries.push({ state, title, url: next.href });
+        historyIndex += 1;
+      },
+      async back() {
+        if (historyIndex === 0) return;
+        historyIndex -= 1;
+        const entry = historyEntries[historyIndex];
+        location.href = entry.url;
+        await window.dispatch("popstate", { state: entry.state });
       },
     },
     crypto: { randomUUID() { uuid += 1; return `thread-${uuid}`; } },

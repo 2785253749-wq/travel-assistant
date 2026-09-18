@@ -9,6 +9,11 @@ def test_home():
     response = TestClient(app).get("/")
     assert response.status_code == 200 and "旅行助手" in response.text
 
+def test_trip_deep_link_serves_app_shell():
+    response = TestClient(app).get("/trips/trip-1")
+    assert response.status_code == 200
+    assert 'id="main-content"' in response.text
+
 def test_auth_page_is_a_standalone_route():
     response = TestClient(app).get("/auth?mode=signup")
     assert response.status_code == 200
