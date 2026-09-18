@@ -1408,7 +1408,8 @@
   }
 
   function applySession(session, options = {}) {
-    const identityChanged = identitiesDiffer(state.session, session);
+    const initialHydration = options.initialHydration === true && !state.session;
+    const identityChanged = !initialHydration && identitiesDiffer(state.session, session);
     const tokensChanged = !sessionsShareTokens(state.session, session);
     const refreshTrips = identityChanged || options.refreshTrips !== false;
     if (tokensChanged) sessionRevision += 1;
@@ -1734,11 +1735,11 @@
     });
     state.authClient.auth.onAuthStateChange((event, session) => {
       if (event === "SIGNED_OUT") clearSession();
-      else if (session) applySession(session);
+      else if (session) applySession(session, { initialHydration: event === "INITIAL_SESSION" });
     });
     const { data, error } = await state.authClient.auth.getSession();
     if (!error && data && data.session) {
-      await applySession(data.session);
+      await applySession(data.session, { initialHydration: true });
     }
   }
 
