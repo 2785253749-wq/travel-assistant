@@ -564,6 +564,21 @@ class RuleTravelExtractor:
         return None
 
     def _normalized_dates(self, message: str) -> list[str]:
+        explicit_dates = self._explicit_normalized_dates(message)
+        if explicit_dates:
+            return explicit_dates
+
+        offsets = {"今天": 0, "明天": 1, "后天": 2}
+        relative_dates = [
+            (
+                match.start(),
+                (self.reference_date + timedelta(days=offsets[match.group(0)])).isoformat(),
+            )
+            for match in self._RELATIVE_DATE.finditer(message)
+        ]
+        return [normalized for _, normalized in sorted(relative_dates)]
+
+    def _explicit_normalized_dates(self, message: str) -> list[str]:
         candidates: list[tuple[int, str]] = []
         for match in self._DATE.finditer(message):
             year, month, day = map(int, match.groups())
@@ -592,18 +607,30 @@ class RuleTravelExtractor:
                 continue
             candidates.append((match.start(), normalized))
 
-        if candidates:
-            return [normalized for _, normalized in sorted(candidates)]
+        return [normalized for _, normalized in sorted(candidates)]
 
-        offsets = {"今天": 0, "明天": 1, "后天": 2}
-        relative_dates = [
-            (
-                match.start(),
-                (self.reference_date + timedelta(days=offsets[match.group(0)])).isoformat(),
-            )
-            for match in self._RELATIVE_DATE.finditer(message)
-        ]
-        return [normalized for _, normalized in sorted(relative_dates)]
+    def explicit_duration_date_issue(self, message: str) -> ProfileIssue | None:
+        """Report a conflicting current-message duration without persisting it."""
+        dates = self._explicit_normalized_dates(message)
+        declared_duration = self._duration_days(message)
+        if len(dates) < 2 or declared_duration is None:
+            return None
+
+        start_date = date.fromisoformat(dates[0])
+        end_date = date.fromisoformat(dates[1])
+        if end_date < start_date:
+            return None
+        inclusive_days = (end_date - start_date).days + 1
+        if declared_duration == inclusive_days:
+            return None
+        return ProfileIssue(
+            code="duration_date_conflict",
+            field="end_date",
+            message=(
+                f"你填写的日期范围共 {inclusive_days} 天，与“{declared_duration}天”不一致，"
+                "请确认行程日期或天数。"
+            ),
+        )
 
     @classmethod
     def _route_message(cls, message: str) -> str:
@@ -982,6 +1009,14 @@ class SafeTravelAgent:
             if _profile_contains_secret(profile):
                 return self._sensitive_input_refusal(intent=intent)
             issues = [*candidate.issues, *validate_profile(profile)]
+            rule_extractor = (
+                self._extractor
+                if isinstance(self._extractor, RuleTravelExtractor)
+                else RuleTravelExtractor()
+            )
+            duration_date_issue = rule_extractor.explicit_duration_date_issue(message)
+            if duration_date_issue is not None:
+                issues.append(duration_date_issue)
             missing = [name for name in REQUIRED_FIELDS if getattr(profile, name) in (None, "")]
             if issues or missing:
                 return self._collecting(profile, missing, issues, intent=intent)

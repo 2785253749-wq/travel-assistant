@@ -123,6 +123,37 @@ def test_complete_profile_confirmation_prompt_is_in_chinese():
     assert result.reply == "资料已完整，请确认后生成行程。"
 
 
+def test_trip_duration_conflict_blocks_confirmation():
+    result = SafeTravelAgent(
+        classifier=StubClassifier(),
+        extractor=graph.RuleTravelExtractor(reference_date=date(2026, 9, 1)),
+        planner=Mock(),
+        evidence_provider=StubEvidenceProvider(),
+    ).collect("2人9.26出发9.30返回从福州到杭州3天预算9000", trip=None)
+
+    assert result.profile["origin"] == "福州"
+    assert result.profile["destination"] == "杭州"
+    assert result.profile["start_date"] == "2026-09-26"
+    assert result.profile["end_date"] == "2026-09-30"
+    assert result.profile["travelers"] == 2
+    assert result.profile["budget_cny"] == 9000
+    assert result.stage == "collecting"
+    assert result.error_code == "PROFILE_INVALID"
+    assert any(issue.code == "duration_date_conflict" for issue in result.issues)
+
+
+def test_matching_trip_duration_and_dates_allow_confirmation():
+    result = SafeTravelAgent(
+        classifier=StubClassifier(),
+        extractor=graph.RuleTravelExtractor(reference_date=date(2026, 9, 1)),
+        planner=Mock(),
+        evidence_provider=StubEvidenceProvider(),
+    ).collect("2人9.26出发9.28返回从福州到杭州3天预算9000", trip=None)
+
+    assert result.stage == "confirming"
+    assert result.issues == []
+
+
 def test_live_inventory_question_is_refused():
     result = make_agent().run("保证明天还有两张高铁票并帮我买", trip=None)
 
